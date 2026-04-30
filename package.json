@@ -1,0 +1,49 @@
+{
+  "name": "video-intelligence-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "db:check": "tsx scripts/postgres_check.ts",
+    "db:migrate": "tsx scripts/migrate_to_postgres.ts",
+    "db:seed": "tsx scripts/postgres_seed.ts",
+    "db:reset": "tsx scripts/postgres_reset.ts",
+    "embeddings:rebuild": "tsx scripts/rebuild_embeddings.ts",
+    "text:repair": "tsx scripts/repair_text_encoding.ts",
+    "models:doctor": "python3 scripts/model_doctor.py",
+    "models:doctor:ai": "./.venv-ai/bin/python scripts/model_doctor.py",
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "node dist-server/index.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
+    "@opentelemetry/sdk-trace-node": "^2.7.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "multer": "^2.0.2",
+    "pg": "^8.20.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "tsx": "^4.20.6",
+    "vite": "^7.1.12"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^1.4.13",
+    "@types/node": "^24.6.2",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^5.9.2"
+  }
+}

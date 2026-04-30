@@ -1,0 +1,9 @@
+# Optional local AI dependencies.
+# Python 3.10-3.12 is recommended for PaddleOCR/PaddlePaddle compatibility.
+faster-whisper
+openai-whisper
+paddleocr
+paddlepaddle
+sentence-transformers
+open_clip_torch
+torchvision

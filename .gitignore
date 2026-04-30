@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.data/
+.venv-ai/
+uploads/
+.env
+.DS_Store
+*.log
