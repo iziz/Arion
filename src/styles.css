@@ -3179,6 +3179,141 @@ textarea:focus {
   text-transform: uppercase;
 }
 
+.orchestration-card {
+  display: grid;
+  gap: 14px;
+  margin: -6px 0 18px;
+  border: 1px solid rgba(43, 139, 112, 0.18);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.orchestration-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.orchestration-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.orchestration-heading strong {
+  color: #25352f;
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.orchestration-heading span,
+.orchestration-heading em {
+  color: #62766f;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 820;
+  line-height: 1.35;
+}
+
+.decision-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.decision-row span {
+  display: inline-grid;
+  grid-template-columns: auto auto auto;
+  gap: 7px;
+  align-items: center;
+  border-radius: 999px;
+  background: #eef7f3;
+  padding: 8px 10px;
+  color: #263731;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.decision-row span.needs_review {
+  background: #fff7df;
+}
+
+.decision-row span.fallback {
+  background: #f7ece8;
+}
+
+.decision-row b,
+.decision-row em {
+  color: #2b8b70;
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.orchestration-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.orchestration-steps article {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 138px;
+  border: 1px solid rgba(43, 139, 112, 0.14);
+  border-radius: 12px;
+  background: #f8fbfa;
+  padding: 10px;
+}
+
+.orchestration-steps article.needs_review {
+  border-color: rgba(167, 124, 16, 0.25);
+  background: #fffaf0;
+}
+
+.orchestration-steps article.fallback {
+  border-color: rgba(160, 84, 62, 0.22);
+  background: #fff6f2;
+}
+
+.orchestration-steps span {
+  color: #2b8b70;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.orchestration-steps strong {
+  color: #25352f;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1.25;
+}
+
+.orchestration-steps p,
+.orchestration-steps em,
+.orchestration-warning,
+.orchestration-analysis {
+  margin: 0;
+  color: #62766f;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.orchestration-warning {
+  color: #8a5b35;
+}
+
+@media (max-width: 1100px) {
+  .orchestration-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .asset-detail-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

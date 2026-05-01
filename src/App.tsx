@@ -27,6 +27,7 @@ import type {
   JobRecord,
   MetricsSummary,
   OcrBox,
+  OrchestrationPlan,
   SearchResult,
   WebhookRecord
 } from "../shared/types";
@@ -241,6 +242,7 @@ export default function App() {
   const [searchModality, setSearchModality] = useState("");
   const [domainFilters, setDomainFilters] = useState<DomainSearchFilters>({});
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
+  const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
   const [question, setQuestion] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -415,11 +417,13 @@ export default function App() {
       if (value) params.set(key, value);
     }
     try {
-      const [plan, results] = await Promise.all([
+      const [plan, orchestration, results] = await Promise.all([
         api.get<DomainQueryPlan>(`/api/search/plan?${params.toString()}`),
+        api.get<OrchestrationPlan>(`/api/orchestrate/plan?${params.toString()}`),
         api.get<SearchResult[]>(`/api/search?${params.toString()}`)
       ]);
       setQueryPlan(plan);
+      setOrchestrationPlan(orchestration);
       setSearchResults(results);
     } finally {
       setSearching(false);
@@ -775,6 +779,7 @@ export default function App() {
           </form>
           <DomainSearchControls filters={domainFilters} onChange={setDomainFilters} />
           {queryPlan && <QueryPlanCard plan={queryPlan} />}
+          {orchestrationPlan && <OrchestrationPlanCard plan={orchestrationPlan} />}
           <div className="result-list">
             {searching && (
               <article className="result-card search-loading-card" aria-live="polite">
@@ -1238,6 +1243,52 @@ function QueryPlanCard({ plan }: { plan: DomainQueryPlan }) {
       </div>
       {plan.warnings.length > 0 && (
         <p>{plan.warnings.slice(0, 2).join(" ")}</p>
+      )}
+    </section>
+  );
+}
+
+function OrchestrationPlanCard({ plan }: { plan: OrchestrationPlan }) {
+  const ownerLabel: Record<OrchestrationPlan["steps"][number]["owner"], string> = {
+    router: "Router",
+    knowledge: "Knowledge",
+    marengo: "Marengo",
+    pegasus: "Pegasus",
+    platform: "Platform"
+  };
+  return (
+    <section className="orchestration-card" aria-label="Model orchestration plan">
+      <div className="orchestration-heading">
+        <div>
+          <strong>Orchestration</strong>
+          <span>{plan.mode.replace(/_/g, " ")} · confidence {Math.round(plan.confidence * 100)}%</span>
+        </div>
+        <em>{plan.retrieval.engine.replace(/_/g, " ")}</em>
+      </div>
+      <div className="decision-row">
+        {plan.decisions.map((decision) => (
+          <span key={decision.id} className={decision.status}>
+            <b>{decision.label}</b>
+            {decision.value}
+            <em>{Math.round(decision.confidence * 100)}%</em>
+          </span>
+        ))}
+      </div>
+      <div className="orchestration-steps">
+        {plan.steps.map((step) => (
+          <article key={step.id} className={step.status}>
+            <span>{ownerLabel[step.owner]}</span>
+            <strong>{step.label}</strong>
+            <p>{step.action}</p>
+            <em>{step.output}</em>
+          </article>
+        ))}
+      </div>
+      {(plan.retrieval.fallback.length > 0 || plan.warnings.length > 0) && (
+        <p className="orchestration-warning">{[...plan.retrieval.fallback, ...plan.warnings].slice(0, 3).join(" ")}</p>
+      )}
+      {plan.analysis.required && (
+        <p className="orchestration-analysis">Pegasus prompt: {truncateText(plan.analysis.prompt, 180)}</p>
       )}
     </section>
   );

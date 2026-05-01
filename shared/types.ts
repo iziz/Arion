@@ -399,6 +399,42 @@ export type DomainQueryPlan = {
   warnings: string[];
 };
 
+export type OrchestrationPlan = {
+  query: string;
+  mode: "search" | "analysis" | "search_and_analysis";
+  confidence: number;
+  decisions: Array<{
+    id: string;
+    label: string;
+    value: string;
+    confidence: number;
+    status: "ready" | "needs_review" | "fallback";
+    reason: string;
+  }>;
+  steps: Array<{
+    id: string;
+    label: string;
+    owner: "router" | "knowledge" | "marengo" | "pegasus" | "platform";
+    action: string;
+    input: string;
+    output: string;
+    status: "ready" | "needs_review" | "fallback";
+    trigger: string;
+  }>;
+  retrieval: {
+    engine: "marengo_semantic" | "structured_domain" | "hybrid";
+    filters: DomainSearchFilters;
+    fallback: string[];
+  };
+  analysis: {
+    required: boolean;
+    model: "pegasus_generate" | "none";
+    prompt: string;
+    inputs: string[];
+  };
+  warnings: string[];
+};
+
 export type SearchMatchReason = {
   segmentId: string;
   kind: "query_plan" | "domain_filter" | "lexical" | "semantic" | "visual" | "evidence" | "limitation";

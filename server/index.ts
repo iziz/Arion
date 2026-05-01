@@ -7,6 +7,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { analyzeAsset, buildLocalIndex, probeVideo, searchAssets, withSceneData } from "./intelligence";
 import { buildDomainSegmentIndex, expandDomainQuery } from "./domainIndex";
+import { buildOrchestrationPlan } from "./orchestrator";
 import { parseDomainFilters, planDomainQuery } from "./queryPlanner";
 import { enqueueLocalTask, getQueueDepth } from "./localQueue";
 import { embedQueryText, embedTimelineSegments, getEmbeddingModelName } from "./localEmbeddingRuntime";
@@ -329,6 +330,12 @@ app.get("/api/search", async (req, res) => {
 
 app.get("/api/search/plan", async (req, res) => {
   res.json(planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query)));
+});
+
+app.get("/api/orchestrate/plan", async (req, res) => {
+  const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
+  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  res.json(buildOrchestrationPlan(queryPlan, assets, indexes));
 });
 
 app.get("/api/vector-search", async (req, res) => {
