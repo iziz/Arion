@@ -1,5 +1,7 @@
 import "../server/env";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
+import { buildDomainSegmentIndex } from "../server/domainIndex";
+import { withSceneData } from "../server/intelligence";
 import { embedTimelineSegments, getEmbeddingModelName } from "../server/localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../server/localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../server/keyframes";
@@ -7,13 +9,16 @@ import { getObjectPath } from "../server/localObjectStorage";
 import { upsertAssetVectors } from "../server/localVectorStore";
 import { upsertAssetVisualVectors } from "../server/localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
+import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } from "../server/visionDetectionRuntime";
+import { applyEventClassification } from "../server/eventClassifier";
 
 const indexedAssets = (await listAssets()).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
+const indexes = await listIndexes();
 let segments = 0;
 let visualVectors = 0;
 let generatedKeyframes = 0;
 
-for (const index of await listIndexes()) {
+for (const index of indexes) {
   if (index.models.embedding !== getEmbeddingModelName()) {
     await saveIndex({
       ...index,
@@ -24,19 +29,53 @@ for (const index of await listIndexes()) {
 }
 
 for (const asset of indexedAssets) {
-  const timeline = await embedTimelineSegments(asset.timeline);
-  segments += timeline.length;
+  const index = indexes.find((item) => item.id === asset.indexId);
+  const sceneTimeline = asset.timeline.map((segment) => withSceneData(asset, segment));
   const existingKeyframes = asset.keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId);
   const keyframes =
-    existingKeyframes.length >= timeline.length
+    existingKeyframes.length >= sceneTimeline.length
       ? asset.keyframes
       : await generateKeyframes(
           getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey),
           asset.id,
-          timeline,
+          sceneTimeline,
           asset.duration
         );
   generatedKeyframes += Math.max(0, keyframes.filter((keyframe) => keyframe.path).length - existingKeyframes.length);
+  const thumbnailTimeline = sceneTimeline.map((segment) => {
+    const keyframe = keyframes.find((item) => item.segmentId === segment.id);
+    if (!keyframe?.path) return segment;
+    return {
+      ...segment,
+      thumbnailPath: keyframe.path,
+      sceneData: segment.sceneData
+        ? {
+            ...segment.sceneData,
+            image: {
+              ...segment.sceneData.image,
+              thumbnailPath: keyframe.path,
+              keyframeAt: keyframe.at
+            }
+          }
+        : segment.sceneData
+    };
+  });
+  const detections = await detectTimelineObjects(thumbnailTimeline, keyframes);
+  const detectedTimeline = applyEventClassification(applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections)));
+  const sceneAsset = { ...asset, timeline: detectedTimeline };
+  const domainTimeline = index
+    ? detectedTimeline.map((segment) => {
+        const domain = buildDomainSegmentIndex(sceneAsset, index, segment);
+        if (!domain) return segment;
+        return {
+          ...segment,
+          domain,
+          sources: Array.from(new Set([...segment.sources, "domain" as const]))
+        };
+      })
+    : detectedTimeline;
+  const timeline = await embedTimelineSegments(domainTimeline);
+  segments += timeline.length;
   const modelTrace = [...asset.intelligence.modelTrace];
   if (!modelTrace.includes(`embedding:${getEmbeddingModelName()}`)) modelTrace.push(`embedding:${getEmbeddingModelName()}`);
   if (!modelTrace.includes(`visual-embedding:${getVisualEmbeddingModelName()}`)) {

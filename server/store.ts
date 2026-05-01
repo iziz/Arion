@@ -248,6 +248,11 @@ export function createDefaultIndex(now = new Date().toISOString()): IndexRecord 
       embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small"
     },
     modalities: ["visual", "audio", "transcription", "metadata"],
+    domainIndexing: {
+      enabled: false,
+      groups: [],
+      stages: []
+    },
     assetIds: [],
     status: "empty",
     createdAt: now,
@@ -277,7 +282,10 @@ function emptyDatabase(): Database {
 
 function migrate(raw: LegacyDatabase): Database {
   const migrated = emptyDatabase();
-  migrated.indexes = raw.indexes ?? [];
+  migrated.indexes = (raw.indexes ?? []).map((index) => ({
+    ...index,
+    domainIndexing: index.domainIndexing ?? { enabled: false, groups: [], stages: [] }
+  }));
   migrated.assets = raw.assets ?? raw.videos ?? [];
   migrated.jobs = raw.jobs ?? [];
   migrated.webhooks = raw.webhooks ?? [];
@@ -299,11 +307,24 @@ function migrate(raw: LegacyDatabase): Database {
       videoCodec: null
     },
     intelligence: {
+      audio: {
+        extractedPath: asset.intelligence?.audio?.extractedPath ?? null,
+        speechSegments: asset.intelligence?.audio?.speechSegments ?? [],
+        musicSegments: asset.intelligence?.audio?.musicSegments ?? [],
+        hasSpeech: asset.intelligence?.audio?.hasSpeech ?? false,
+        hasMusic: asset.intelligence?.audio?.hasMusic ?? false
+      },
       asr: {
         transcript: asset.intelligence?.asr?.transcript ?? "",
         language: asset.intelligence?.asr?.language ?? "unknown",
         confidence: asset.intelligence?.asr?.confidence ?? 0,
         segments: asset.intelligence?.asr?.segments ?? []
+      },
+      diarization: {
+        provider: asset.intelligence?.diarization?.provider ?? "none",
+        speakers: asset.intelligence?.diarization?.speakers ?? [],
+        segments: asset.intelligence?.diarization?.segments ?? [],
+        error: asset.intelligence?.diarization?.error ?? null
       },
       ocr: {
         tokens: asset.intelligence?.ocr?.tokens ?? [],

@@ -8,40 +8,60 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio/video with a local Whisper implementation.")
     parser.add_argument("media_path")
-    parser.add_argument("--model", default=os.environ.get("WHISPER_MODEL", "tiny"))
+    parser.add_argument("--model", default=os.environ.get("WHISPER_MODEL", "large-v3"))
     parser.add_argument("--language", default=os.environ.get("WHISPER_LANGUAGE"))
     args = parser.parse_args()
+    language = normalize_auto(args.language)
 
     try:
-        result = transcribe_with_faster_whisper(args.media_path, args.model, args.language)
-        print(json.dumps(result, ensure_ascii=False))
+        result = transcribe_with_faster_whisper(args.media_path, args.model, language)
+        emit_result(result)
         return
     except Exception as faster_error:
         try:
-            result = transcribe_with_openai_whisper(args.media_path, args.model, args.language)
-            print(json.dumps(result, ensure_ascii=False))
+            result = transcribe_with_openai_whisper(args.media_path, args.model, language)
+            emit_result(result)
             return
         except Exception as whisper_error:
-            print(
-                json.dumps(
-                    {
-                        "available": False,
-                        "provider": "none",
-                        "transcript": "",
-                        "language": "unknown",
-                        "confidence": 0,
-                        "error": f"faster-whisper: {type(faster_error).__name__}: {faster_error}; openai-whisper: {type(whisper_error).__name__}: {whisper_error}",
-                    },
-                    ensure_ascii=False,
-                )
+            emit_result(
+                {
+                    "available": False,
+                    "provider": "none",
+                    "transcript": "",
+                    "language": "unknown",
+                    "confidence": 0,
+                    "error": f"faster-whisper: {type(faster_error).__name__}: {faster_error}; openai-whisper: {type(whisper_error).__name__}: {whisper_error}",
+                }
             )
+
+
+def normalize_auto(value):
+    if not value or str(value).strip().lower() == "auto":
+        return None
+    return value
+
+
+def emit_result(result):
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+    stop_resource_tracker()
+
+
+def stop_resource_tracker():
+    try:
+        from multiprocessing import resource_tracker
+
+        tracker = getattr(resource_tracker, "_resource_tracker", None)
+        if tracker is not None:
+            tracker._stop()
+    except Exception:
+        pass
 
 
 def transcribe_with_faster_whisper(media_path, model_name, language):
     from faster_whisper import WhisperModel
 
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(media_path, language=language)
+    segments, info = model.transcribe(media_path, language=language, beam_size=5, vad_filter=True)
     segment_list = list(segments)
     transcript = " ".join(segment.text.strip() for segment in segment_list).strip()
     confidence = 0.75
@@ -95,5 +115,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(json.dumps({"available": False, "provider": "none", "error": str(error)}, ensure_ascii=False))
+        emit_result({"available": False, "provider": "none", "error": str(error)})
         sys.exit(0)

@@ -11,12 +11,13 @@ export type SceneBoundary = {
 export async function detectSceneBoundaries(filePath: string, duration: number | null): Promise<SceneBoundary[]> {
   const threshold = process.env.SCENE_THRESHOLD || "0.3";
   try {
+    const timeoutMs = Number(process.env.SCENE_TIMEOUT_MS || 0);
     const { stderr } = await execFileAsync(
       "ffmpeg",
       ["-hide_banner", "-i", filePath, "-vf", `select='gt(scene,${threshold})',showinfo`, "-an", "-f", "null", "-"],
       {
         maxBuffer: 1024 * 1024 * 8,
-        timeout: Number(process.env.SCENE_TIMEOUT_MS || 90000)
+        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {})
       }
     );
     return normalizeBoundaries(parseShowInfo(stderr), duration);

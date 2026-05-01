@@ -379,7 +379,7 @@ export async function upsertAssetVectors(indexId: string, assetId: string, segme
           segment.thumbnailPath,
           segment.modalities,
           segment.tags,
-          `${segment.label} ${segment.transcript}`,
+          vectorRecordText(segment),
           JSON.stringify(segment.embedding),
           pgVector
         ]
@@ -398,7 +398,7 @@ export async function upsertAssetVectors(indexId: string, assetId: string, segme
           segment.thumbnailPath,
           segment.modalities,
           segment.tags,
-          `${segment.label} ${segment.transcript}`,
+          vectorRecordText(segment),
           JSON.stringify(segment.embedding)
         ]
       );
@@ -628,6 +628,11 @@ function createDefaultIndex(now = new Date().toISOString()): IndexRecord {
       embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small"
     },
     modalities: ["visual", "audio", "transcription", "metadata"],
+    domainIndexing: {
+      enabled: false,
+      groups: [],
+      stages: []
+    },
     assetIds: [],
     status: "empty",
     createdAt: now,
@@ -670,6 +675,26 @@ function visualVectorRowToResult(row: VisualVectorRow) {
 
 function vectorLiteral(vector: number[]) {
   return `[${vector.map((value) => Number(value || 0)).join(",")}]`;
+}
+
+function vectorRecordText(segment: TimelineSegment) {
+  const vision = segment.sceneData?.vision;
+  return [
+    segment.label,
+    segment.transcript,
+    segment.domain?.searchText,
+    ...(segment.domain?.captions ?? []),
+    ...(segment.domain?.labels ?? []),
+    vision?.pitch.present ? `pitch ${Math.round(vision.pitch.confidence * 100)}%` : "",
+    vision?.objects.players.status === "estimated" || vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
+    vision?.objects.ball.status === "estimated" || vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
+    vision?.fieldZone.zone !== "unknown" ? `zone ${vision?.fieldZone.zone}` : "",
+    vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
+    vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
+    vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function isPgVectorCompatible(vector: number[]) {

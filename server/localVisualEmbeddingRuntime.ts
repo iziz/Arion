@@ -110,20 +110,24 @@ async function runVisualProcess(items: string[], mode: VisualMode): Promise<Visu
       const child = spawn(pythonBin, [visualScript, "--model", visualModel, "--pretrained", visualPretrained, "--mode", mode], {
         stdio: ["pipe", "pipe", "pipe"]
       });
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error("Visual embedding execution timed out"));
-      }, Number(process.env.VISUAL_EMBEDDING_TIMEOUT_MS || 300000));
+      const timeoutMs = Number(process.env.VISUAL_EMBEDDING_TIMEOUT_MS || 0);
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              child.kill("SIGTERM");
+              reject(new Error(`Visual embedding process exceeded safety limit after ${timeoutMs}ms`));
+            }, timeoutMs)
+          : null;
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
       child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
       child.on("error", (error) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(error);
       });
       child.on("close", (code) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         const output = Buffer.concat(stdoutChunks).toString("utf8");
         if (code === 0) resolve(output);
         else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `Visual embedding exited with code ${code}`));

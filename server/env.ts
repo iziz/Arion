@@ -1,4 +1,4 @@
 import dotenv from "dotenv";
 import path from "node:path";
 
-dotenv.config({ path: path.resolve(".env"), quiet: true });
+dotenv.config({ path: path.resolve(".env"), quiet: true, override: true });

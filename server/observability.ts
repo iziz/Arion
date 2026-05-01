@@ -75,6 +75,18 @@ const recentSpans: SpanRecord[] = [];
 const latencyBuckets = new Map<string, LatencyBucket>();
 let writeChain = Promise.resolve();
 
+const noisyPollingPaths = new Set([
+  "/api/health",
+  "/api/indexes",
+  "/api/assets",
+  "/api/jobs",
+  "/api/events",
+  "/api/webhooks",
+  "/api/metrics",
+  "/api/db/status",
+  "/api/observability"
+]);
+
 export function observabilityMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const requestId = String(req.headers["x-request-id"] || randomUUID());
   const startedAt = performance.now();
@@ -233,10 +245,36 @@ export function logJson(level: JsonLogLevel, event: string, message: string, fie
     fields
   };
   pushBounded(recentLogs, entry, 300);
-  console.log(JSON.stringify(entry));
+  if (shouldPrintToConsole(entry)) {
+    console.log(JSON.stringify(entry));
+  }
   void ensureLogDir().then(() => {
     writeChain = writeChain.then(() => appendFile(logPath, `${JSON.stringify(entry)}\n`)).catch(() => undefined);
   });
+}
+
+function shouldPrintToConsole(entry: JsonLogEntry) {
+  const consoleLogLevel = process.env.CONSOLE_LOG_LEVEL ?? "important";
+  if (consoleLogLevel === "all") {
+    return true;
+  }
+  if (entry.level === "warn" || entry.level === "error") {
+    return true;
+  }
+  if (entry.event !== "http.request") {
+    return true;
+  }
+
+  const method = String(entry.fields?.method ?? "");
+  const path = String(entry.fields?.path ?? "");
+  const statusCode = Number(entry.fields?.statusCode ?? 0);
+  if (method === "GET" && statusCode < 400 && noisyPollingPaths.has(path)) {
+    return false;
+  }
+  if (method === "GET" && statusCode === 304) {
+    return false;
+  }
+  return true;
 }
 
 export function recordLatency(key: string, durationMs: number, status: "ok" | "error", error: string | null = null) {
@@ -272,7 +310,7 @@ export function getObservabilitySnapshot() {
     };
   });
   return {
-    service: "video-intelligence-local",
+    service: "arion-local",
     traceExporter: "local-in-memory",
     logFormat: "json-ndjson",
     logPath,
@@ -322,7 +360,7 @@ const tracerProvider = new NodeTracerProvider({
 });
 tracerProvider.register();
 
-const tracer = trace.getTracer("video-intelligence-local");
+const tracer = trace.getTracer("arion-local");
 
 function sanitizeAttributes(fields: Record<string, unknown>) {
   return Object.fromEntries(

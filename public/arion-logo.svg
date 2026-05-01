@@ -1,0 +1,58 @@
+<svg width="720" height="560" viewBox="86 88 548 470" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Arion</title>
+  <desc id="desc">Gradient Arion logo with a play button, circuit lines, analytics bars, and brand text.</desc>
+  <defs>
+    <linearGradient id="brandGradient" x1="120" y1="80" x2="620" y2="470" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A6DFF"/>
+      <stop offset="0.48" stop-color="#12D4E6"/>
+      <stop offset="1" stop-color="#7146FF"/>
+    </linearGradient>
+    <linearGradient id="textGradient" x1="110" y1="370" x2="605" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A6DFF"/>
+      <stop offset="0.52" stop-color="#02CDE2"/>
+      <stop offset="1" stop-color="#6D46FF"/>
+    </linearGradient>
+    <filter id="softGlow" x="55" y="40" width="610" height="310" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="3"/>
+      <feGaussianBlur stdDeviation="5"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.02 0 0 0 0 0.43 0 0 0 0 1 0 0 0 0.36 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow" result="shape"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#softGlow)" stroke="url(#brandGradient)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M286 112H548C570.091 112 588 129.909 588 152V272C588 294.091 570.091 312 548 312H292C269.909 312 252 294.091 252 272V248"/>
+    <path d="M252 160V152C252 129.909 269.909 112 292 112"/>
+    <circle cx="142" cy="168" r="14"/>
+    <circle cx="116" cy="210" r="14"/>
+    <circle cx="138" cy="252" r="14"/>
+    <circle cx="156" cy="292" r="14"/>
+    <path d="M158 174L188 192L218 224H252"/>
+    <path d="M132 210H174L200 222H252"/>
+    <path d="M154 252H184L210 238H252"/>
+    <path d="M172 292L202 272L230 238H252"/>
+    <path d="M392 246L424 214L460 224L496 174"/>
+    <circle cx="392" cy="246" r="12" fill="#0EA5FF" stroke="none"/>
+    <circle cx="424" cy="214" r="12" fill="#12C7E6" stroke="none"/>
+    <circle cx="460" cy="224" r="12" fill="#177BFF" stroke="none"/>
+    <circle cx="496" cy="174" r="14" fill="#6A4CFF" stroke="none"/>
+  </g>
+
+  <path d="M326 188C326 177.444 337.742 171.132 346.545 176.952L418.901 224.812C426.862 230.078 426.862 241.922 418.901 247.188L346.545 295.048C337.742 300.868 326 294.556 326 284V188Z" fill="url(#brandGradient)"/>
+  <rect x="380" y="262" width="24" height="52" rx="5" fill="#14CDE3"/>
+  <rect x="424" y="250" width="24" height="64" rx="5" fill="#12A7F5"/>
+  <rect x="468" y="230" width="24" height="84" rx="5" fill="#256BFF"/>
+  <rect x="512" y="202" width="24" height="112" rx="5" fill="#694CFF"/>
+  <circle cx="300" cy="334" r="9" fill="#0C7BFF"/>
+  <circle cx="332" cy="334" r="9" fill="#12CFE5"/>
+  <circle cx="366" cy="334" r="9" fill="#6D45FF"/>
+  <rect x="402" y="326" width="100" height="14" rx="7" fill="#1689F8"/>
+  <rect x="516" y="326" width="54" height="14" rx="7" fill="#6448FF"/>
+
+  <text x="360" y="440" text-anchor="middle" fill="#051348" font-family="Inter, Arial, sans-serif" font-size="96" font-weight="900">Arion</text>
+  <text x="360" y="512" text-anchor="middle" fill="url(#textGradient)" font-family="Inter, Arial, sans-serif" font-size="52" font-weight="900">Video Intelligence</text>
+</svg>

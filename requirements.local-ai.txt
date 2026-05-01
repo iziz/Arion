@@ -2,8 +2,16 @@
 # Python 3.10-3.12 is recommended for PaddleOCR/PaddlePaddle compatibility.
 faster-whisper
 openai-whisper
+whisperx
+lightning>=2.4,<2.7
+torchaudio
+pyannote.audio
+nltk
+omegaconf
 paddleocr
 paddlepaddle
 sentence-transformers
 open_clip_torch
 torchvision
+# Optional: enables YOLO person/sports-ball detector. Without it, the app uses OpenCV fallback.
+ultralytics

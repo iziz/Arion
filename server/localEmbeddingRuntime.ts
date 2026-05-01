@@ -44,7 +44,28 @@ export async function embedTimelineSegments(segments: TimelineSegment[]) {
 }
 
 export function segmentToEmbeddingText(segment: TimelineSegment) {
-  return `${segment.label}. ${segment.transcript} Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
+  const sceneText = segment.sceneData?.text;
+  const textEvidence = sceneText
+    ? [sceneText.speech, ...sceneText.subtitles, ...sceneText.screenText, ...sceneText.overlays].filter(Boolean).join(" ")
+    : segment.transcript;
+  const imageEvidence = segment.sceneData?.image.labels.join(", ") ?? "";
+  const visionEvidence = segment.sceneData?.vision
+    ? [
+        segment.sceneData.vision.pitch.present ? `pitch ${Math.round(segment.sceneData.vision.pitch.confidence * 100)}%` : "",
+        segment.sceneData.vision.objects.players.status === "estimated" || segment.sceneData.vision.objects.players.status === "detected"
+          ? `players ${segment.sceneData.vision.objects.players.status} ${segment.sceneData.vision.objects.players.countEstimate}`
+          : "",
+        segment.sceneData.vision.objects.ball.status === "estimated" || segment.sceneData.vision.objects.ball.status === "detected" ? `ball ${segment.sceneData.vision.objects.ball.status}` : "",
+        segment.sceneData.vision.fieldZone.zone !== "unknown" ? `zone ${segment.sceneData.vision.fieldZone.zone}` : "",
+        segment.sceneData.vision.tracking?.ballTrackId ? `ball track ${segment.sceneData.vision.tracking.ballTrackId}` : "",
+        segment.sceneData.vision.tracking?.nearestPlayerTrackId ? `nearest player ${segment.sceneData.vision.tracking.nearestPlayerTrackId}` : "",
+        segment.sceneData.vision.eventClassification && segment.sceneData.vision.eventClassification.label !== "unknown" ? `event classifier ${segment.sceneData.vision.eventClassification.label}` : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+  const domainEvidence = segment.domain ? `${segment.domain.searchText}. Events: ${segment.domain.events.map((event) => event.caption).join(" ")}` : "";
+  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. Image: ${imageEvidence}. Vision: ${visionEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
 }
 
 async function embedTexts(texts: string[], kind: EmbeddingKind) {
@@ -95,20 +116,24 @@ async function runPythonEmbeddingProcess(texts: string[], kind: EmbeddingKind) {
     const child = spawn(pythonBin, [embedScript, "--model", embeddingModel, "--kind", kind], {
       stdio: ["pipe", "pipe", "pipe"]
     });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("Embedding execution timed out"));
-    }, Number(process.env.EMBEDDING_TIMEOUT_MS || 240000));
+    const timeoutMs = Number(process.env.EMBEDDING_TIMEOUT_MS || 0);
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            child.kill("SIGTERM");
+            reject(new Error(`Embedding process exceeded safety limit after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : null;
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       reject(error);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       const output = Buffer.concat(stdout).toString("utf8");
       if (code === 0) {
         resolve(output);

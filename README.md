@@ -1,6 +1,6 @@
-# Video Intelligence Full Spec
+# Arion
 
-A local TwelveLabs-like service prototype for video ingest, index management, asynchronous jobs, timeline search, analysis, webhook delivery, and operational event logs.
+Arion is a local TwelveLabs-like service prototype for video ingest, index management, asynchronous jobs, timeline search, analysis, webhook delivery, and operational event logs.
 
 ## What It Implements
 
@@ -10,7 +10,9 @@ A local TwelveLabs-like service prototype for video ingest, index management, as
 - `ffprobe` metadata extraction
 - Local S3/R2-style object storage under `.data/object-storage`
 - Local queue runner for indexing and reindexing jobs
-- Whisper adapter for real local ASR, with metadata fallback when dependencies are unavailable
+- Whisper `large-v3` adapter for real local ASR, without metadata-as-transcript fallback
+- FFmpeg audio extraction and local VAD/music-region detection
+- Optional WhisperX speaker diarization when `whisperx` and a Hugging Face token are configured
 - PaddleOCR adapter for real frame OCR, with metadata fallback when dependencies are unavailable
 - Local visual-understanding sampler
 - Segment-level Whisper timestamp mapping
@@ -18,6 +20,7 @@ A local TwelveLabs-like service prototype for video ingest, index management, as
 - FFmpeg scene/shot boundary detection for scene-aware timeline segments
 - Timeline segment generation with modality labels and local semantic text embeddings
 - OpenCLIP keyframe image embeddings for visual search over generated thumbnails
+- Optional sports-only domain indexing for football asset groups, with ontology captions, event labels, and structured field/player/ball event placeholders
 - Persistent vector storage in PostgreSQL + pgvector, with `.data/vector-store.json` fallback when `DATABASE_URL` is unset
 - Hybrid search ranking over lexical matches, text semantic vectors, visual vectors, source quality, confidence, and recency
 - Analysis endpoint for selected indexed assets
@@ -110,11 +113,14 @@ Local environment values are loaded from `.env` automatically when present.
 - Webhook URLs beginning with `log://` are marked delivered without a network call.
 - Set `LOCAL_OBJECT_PROVIDER=local-s3` or `LOCAL_OBJECT_PROVIDER=local-r2` to switch the local object-storage namespace.
 - Set `LOCAL_AI_PYTHON=/path/to/python` if Whisper/PaddleOCR are installed in a dedicated virtual environment.
-- Set `WHISPER_MODEL=tiny|base|small|medium|large` to choose the local Whisper model.
-- Set `PADDLEOCR_LANG=en|korean|ch|...` to choose the PaddleOCR language pack.
+- Set `WHISPER_MODEL=large-v3|large-v3-turbo|small|medium|...` to choose the local Whisper model.
+- Set `WHISPER_LANGUAGE=auto` to let Whisper detect the spoken language, or set a specific language code.
+- Set `WHISPERX_MODEL=large-v3` and `WHISPERX_HF_TOKEN=...` to enable optional WhisperX speaker diarization.
+- Set `PADDLEOCR_LANG=auto` to run OCR language candidates based on asset metadata, or set `en|korean|ch|...` to force one language pack.
 - Set `EMBEDDING_MODEL=intfloat/multilingual-e5-small` and `EMBEDDING_DIMENSIONS=384` to choose the local semantic embedding model.
 - Set `VISUAL_EMBEDDING_MODEL=ViT-B-32`, `VISUAL_EMBEDDING_PRETRAINED=laion2b_s34b_b79k`, and `VISUAL_EMBEDDING_DIMENSIONS=512` to choose the local visual embedding model.
 - Set `SCENE_THRESHOLD=0.3` to tune FFmpeg scene-boundary detection sensitivity.
+- Enable `Sports domain indexing` when creating an asset group to add football ontology captions, event labels, and structured event metadata. This layer is asset-group scoped and is skipped for non-sports asset groups.
 - Uploaded filenames and multipart text fields are normalized to UTF-8 NFC. Run `npm run text:repair` if older local records contain mojibake from Korean or CJK filenames.
 - Every API response includes `x-request-id` and W3C `traceparent` headers for request correlation.
 - Structured JSON logs are written to stdout and `.data/logs/app.ndjson`.
@@ -131,8 +137,8 @@ python -m pip install -r requirements.local-ai.txt
 LOCAL_AI_PYTHON="$PWD/.venv-ai/bin/python" npm run dev
 ```
 
-The runtime tries `faster-whisper` first, then `openai-whisper`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg.
-The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `paddleocr`, `paddlepaddle`, and `sentence-transformers`.
+The runtime extracts 16 kHz mono WAV audio with FFmpeg, derives speech/music regions with FFmpeg VAD-style silence detection, then tries `faster-whisper` first and `openai-whisper` second. WhisperX diarization is optional because pyannote-backed diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg and can try multiple OCR language candidates when `PADDLEOCR_LANG=auto`.
+The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, and `sentence-transformers`.
 
 ## Local Embeddings
 

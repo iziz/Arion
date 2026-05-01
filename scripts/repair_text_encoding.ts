@@ -70,7 +70,11 @@ function repairIntelligence(intelligence: LocalIntelligence): LocalIntelligence 
       frames: intelligence.ocr.frames.map((frame) => ({
         ...frame,
         framePath: repairText(frame.framePath),
-        tokens: frame.tokens.map(repairText)
+        tokens: frame.tokens.map(repairText),
+        boxes: frame.boxes?.map((box) => ({
+          ...box,
+          text: repairText(box.text)
+        }))
       }))
     },
     visual: {

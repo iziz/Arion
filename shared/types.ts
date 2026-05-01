@@ -23,18 +23,182 @@ export type WebhookEventType =
   | "asset.indexing.failed"
   | "analysis.completed";
 
+export type DomainEvent = {
+  id: string;
+  domain: string;
+  ontologyVersion: string;
+  caption: string;
+  eventType: string;
+  labels: string[];
+  confidence: number;
+  evidence: {
+    asr: string[];
+    ocr: string[];
+    visual: string[];
+    metadata: string[];
+    heuristics: string[];
+  };
+  football?: {
+    phase: "attack" | "transition" | "set_piece" | "unknown";
+    fieldZone: "defensive_third" | "middle_third" | "final_third" | "penalty_area" | "unknown";
+    passType: "through_ball" | "cross" | "cutback" | "short_pass" | "long_ball" | "unknown";
+    receivingPlayer: {
+      present: boolean;
+      confidence: number;
+      trackId: string | null;
+      trackingStatus: "not_configured" | "estimated" | "detected" | "not_detected";
+      identity?: PlayerIdentity | null;
+    };
+    passingPlayer: {
+      present: boolean;
+      confidence: number;
+      trackId: string | null;
+      trackingStatus: "not_configured" | "estimated" | "detected" | "not_detected";
+      identity?: PlayerIdentity | null;
+    };
+    ball: {
+      state: "in_play" | "pass_travel" | "shot" | "unknown";
+      confidence: number;
+      trackingStatus: "not_configured" | "estimated" | "detected" | "not_detected";
+    };
+    field: {
+      calibrationStatus: "not_configured" | "estimated" | "calibrated";
+      attackingDirection: "left_to_right" | "right_to_left" | "unknown";
+      zoneConfidence: number;
+    };
+    limitations: string[];
+  };
+};
+
+export type PlayerIdentity = {
+  name: string;
+  confidence: number;
+  source: "query" | "title" | "asr" | "ocr" | "metadata";
+  evidence: string[];
+};
+
+export type VisionEvidence = {
+  generatedBy: string;
+  frameAt: number | null;
+  pitch: {
+    present: boolean;
+    greenDominance: number;
+    confidence: number;
+  };
+  objects: {
+    players: {
+      countEstimate: number;
+      confidence: number;
+      status: "not_configured" | "estimated" | "detected" | "not_detected";
+      boxes?: VisionBoundingBox[];
+    };
+    ball: {
+      present: boolean;
+      confidence: number;
+      status: "not_configured" | "estimated" | "detected" | "not_detected";
+      boxes?: VisionBoundingBox[];
+    };
+  };
+  proximity?: {
+    ballNearPlayer: boolean;
+    confidence: number;
+    normalizedDistance: number | null;
+  };
+  tracking?: {
+    status: "not_configured" | "estimated" | "tracked";
+    ballTrackId: string | null;
+    nearestPlayerTrackId: string | null;
+    continuity: number;
+    ballMovement: {
+      fromPrevious: number | null;
+      speedPerSecond: number | null;
+      direction: "left" | "right" | "vertical" | "stationary" | "unknown";
+    };
+  };
+  eventClassification?: {
+    label: "through_ball_receive" | "pass_receive" | "shot" | "cross_receive" | "cutback_receive" | "carry" | "unknown";
+    confidence: number;
+    rules: string[];
+    features: {
+      textCue: boolean;
+      receiverCue: boolean;
+      ballTracked: boolean;
+      playerNearBall: boolean;
+      fieldZone: VisionEvidence["fieldZone"]["zone"];
+      ballDirection: "left" | "right" | "vertical" | "stationary" | "unknown";
+    };
+  };
+  fieldZone: {
+    zone: "defensive_third" | "middle_third" | "final_third" | "penalty_area" | "unknown";
+    confidence: number;
+    method: "color_motion_heuristic" | "detector" | "homography" | "none";
+  };
+  eventCandidates: Array<{
+    type: "pass_receive" | "shot" | "carry" | "unknown";
+    confidence: number;
+    reason: string;
+  }>;
+  limitations: string[];
+};
+
+export type VisionBoundingBox = {
+  label: "person" | "sports_ball" | "unknown";
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  source: string;
+};
+
 export type TimelineSegment = {
   id: string;
   start: number;
   end: number;
   label: string;
   transcript: string;
+  sceneData?: {
+    image: {
+      thumbnailPath: string | null;
+      framePath: string | null;
+      labels: string[];
+      dominantColor: string;
+      brightness: number;
+      motionScore: number;
+      keyframeAt: number | null;
+    };
+    text: {
+      speech: string;
+      subtitles: string[];
+      screenText: string[];
+      overlays: string[];
+      watermarks: string[];
+      comparisons: Array<{
+        kind: "subtitle" | "screen_text";
+        asrText: string;
+        ocrText: string;
+        similarity: number;
+        status: "match" | "review" | "mismatch";
+        suggestedText: string;
+      }>;
+    };
+    vision?: VisionEvidence;
+  };
+  domain?: {
+    groups: string[];
+    captions: string[];
+    labels: string[];
+    events: DomainEvent[];
+    searchText: string;
+    confidence: number;
+    generatedBy: string;
+  };
   tags: string[];
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
   confidence: number;
   embedding: number[];
   thumbnailPath: string | null;
-  sources: Array<"whisper" | "paddleocr" | "visual" | "metadata" | "shot">;
+  sources: Array<"whisper" | "paddleocr" | "visual" | "metadata" | "shot" | "domain">;
   scene?: {
     shotIndex: number;
     boundaryScore: number | null;
@@ -45,12 +209,23 @@ export type WhisperSegment = {
   start: number;
   end: number;
   text: string;
+  speaker?: string | null;
 };
 
 export type OcrFrameResult = {
   framePath: string;
+  at?: number | null;
   tokens: string[];
+  boxes?: OcrBox[];
   confidence: number;
+};
+
+export type OcrBox = {
+  text: string;
+  confidence: number;
+  bbox: Array<[number, number]>;
+  region: "top" | "middle" | "bottom" | "left" | "right";
+  role: "subtitle" | "overlay" | "watermark" | "screen_text";
 };
 
 export type KeyframeRecord = {
@@ -63,11 +238,37 @@ export type KeyframeRecord = {
 };
 
 export type LocalIntelligence = {
+  audio: {
+    extractedPath: string | null;
+    speechSegments: Array<{
+      start: number;
+      end: number;
+      confidence: number;
+    }>;
+    musicSegments: Array<{
+      start: number;
+      end: number;
+      confidence: number;
+    }>;
+    hasSpeech: boolean;
+    hasMusic: boolean;
+  };
   asr: {
     transcript: string;
     language: string;
     confidence: number;
     segments: WhisperSegment[];
+  };
+  diarization: {
+    provider: string;
+    speakers: string[];
+    segments: Array<{
+      start: number;
+      end: number;
+      speaker: string;
+      text: string;
+    }>;
+    error: string | null;
   };
   ocr: {
     tokens: string[];
@@ -93,6 +294,11 @@ export type IndexRecord = {
     embedding: string;
   };
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
+  domainIndexing?: {
+    enabled: boolean;
+    groups: Array<"sports.football">;
+    stages: Array<"domain_caption" | "event_label" | "structured_event">;
+  };
   assetIds: string[];
   status: "ready" | "empty";
   createdAt: string;
@@ -147,6 +353,43 @@ export type SearchResult = {
     total: number;
   };
   explain: string[];
+  queryPlan: DomainQueryPlan | null;
+  matchReasons: SearchMatchReason[];
+};
+
+export type DomainSearchFilters = {
+  competition?: string;
+  season?: string;
+  player?: string;
+  eventType?: string;
+  passType?: string;
+  fieldZone?: string;
+  role?: "receiver" | "passer" | "shooter" | "any";
+};
+
+export type DomainQueryPlan = {
+  originalQuery: string;
+  semanticQuery: string;
+  rewrittenQuery: string;
+  domainFilters: DomainSearchFilters;
+  intent: {
+    domain: string | null;
+    eventType: string | null;
+    passType: string | null;
+    fieldZone: string | null;
+    player: string | null;
+    role: "receiver" | "passer" | "shooter" | "any" | null;
+  };
+  confidence: number;
+  warnings: string[];
+};
+
+export type SearchMatchReason = {
+  segmentId: string;
+  kind: "query_plan" | "domain_filter" | "lexical" | "semantic" | "visual" | "evidence" | "limitation";
+  label: string;
+  value: string;
+  confidence?: number;
 };
 
 export type AnalysisResult = {

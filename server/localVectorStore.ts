@@ -37,7 +37,7 @@ export async function upsertAssetVectors(indexId: string, assetId: string, segme
       thumbnailPath: segment.thumbnailPath,
       modalities: segment.modalities,
       vector: segment.embedding,
-      text: `${segment.label} ${segment.transcript}`,
+      text: vectorRecordText(segment),
       tags: segment.tags
     }))
   );
@@ -71,12 +71,32 @@ export async function rebuildVectorStore(assets: Array<{ indexId: string; id: st
         thumbnailPath: segment.thumbnailPath,
         modalities: segment.modalities,
         vector: normalizeVector(segment.embedding),
-        text: `${segment.label} ${segment.transcript}`,
+        text: vectorRecordText(segment),
         tags: segment.tags
       }))
     );
   }
   await persist();
+}
+
+function vectorRecordText(segment: TimelineSegment) {
+  const vision = segment.sceneData?.vision;
+  return [
+    segment.label,
+    segment.transcript,
+    segment.domain?.searchText,
+    ...(segment.domain?.captions ?? []),
+    ...(segment.domain?.labels ?? []),
+    vision?.pitch.present ? `pitch ${Math.round(vision.pitch.confidence * 100)}%` : "",
+    vision?.objects.players.status === "estimated" || vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
+    vision?.objects.ball.status === "estimated" || vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
+    vision?.fieldZone.zone !== "unknown" ? `zone ${vision?.fieldZone.zone}` : "",
+    vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
+    vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
+    vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export async function getVectorCount() {

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AnalysisResult, AssetRecord, IndexRecord, SearchResult, TimelineSegment } from "../shared/types";
+import type { AnalysisResult, AssetRecord, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VisionEvidence } from "../shared/types";
+import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
 
 const execFileAsync = promisify(execFile);
@@ -109,15 +110,22 @@ export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBou
     const primary = safeTags[item % safeTags.length];
     const secondary = safeTags[(item + 1) % safeTags.length] ?? primary;
     const tertiary = safeTags[(item + 2) % safeTags.length] ?? "context";
-    const ocrContext = nearbyOcrTokens(asset, item).join(" ");
-    const transcript = basis?.text
-      ? `${basis.text}${ocrContext ? ` OCR: ${ocrContext}.` : ""}`
+    const sceneData = buildSceneData(asset, item, start, end);
+    const ocrContext = {
+      subtitle: sceneData.text.subtitles,
+      screenText: sceneData.text.screenText,
+      overlay: [...sceneData.text.overlays, ...sceneData.text.watermarks]
+    };
+    const ocrText = formatOcrEvidence(ocrContext);
+    const speechText = sceneData.text.speech || basis?.text || "";
+    const transcript = speechText
+      ? `${speechText}${ocrText ? ` ${ocrText}` : ""}`
       : `${asset.intelligence.asr.transcript} Detected ${primary}, ${secondary}, and ${tertiary} context from ${formatTime(start)} to ${formatTime(
           end
-        )}.${ocrContext ? ` OCR: ${ocrContext}.` : ""}`;
+        )}.${ocrText ? ` ${ocrText}` : ""}`;
     const sources: TimelineSegment["sources"] = [
       ...(hasWhisperSource ? (["whisper"] as const) : []),
-      ...(ocrContext ? (["paddleocr"] as const) : []),
+      ...(ocrText ? (["paddleocr"] as const) : []),
       ...(hasShotSource ? (["shot"] as const) : []),
       "visual",
       "metadata"
@@ -128,6 +136,7 @@ export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBou
       end,
       label: toTitleCase(`${primary} scene`),
       transcript,
+      sceneData,
       tags: unique([primary, secondary, tertiary, ...asset.intelligence.visual.labels.slice(0, 2)]),
       modalities: chooseModalities(index.modalities, item),
       confidence: Number((0.73 + (item % 5) * 0.04).toFixed(2)),
@@ -141,10 +150,14 @@ export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBou
     };
   });
 
+  const domainTimeline = timeline.map((segment) => withDomainSegment(asset, index, segment));
+
   return {
     tags: safeTags,
-    timeline,
-    summary: `This asset was indexed into ${timeline.length} timeline segments using ${index.models.embedding}. Local ASR, OCR, visual sampling, and vector indexing emphasize ${safeTags
+    timeline: domainTimeline,
+    summary: `This asset was indexed into ${domainTimeline.length} timeline segments using ${index.models.embedding}. Local ASR, OCR, visual sampling, vector indexing${
+      index.domainIndexing?.enabled ? ", and sports domain event indexing" : ""
+    } emphasize ${safeTags
       .slice(0, 5)
       .join(", ")}. Dominant visual color is ${asset.intelligence.visual.dominantColor}.`
   };
@@ -171,9 +184,279 @@ function overlappingWhisperText(asset: AssetRecord, start: number, end: number) 
     .trim();
 }
 
-function nearbyOcrTokens(asset: AssetRecord, index: number) {
+function buildSceneData(asset: AssetRecord, index: number, start: number, end: number): NonNullable<TimelineSegment["sceneData"]> {
+  const ocrFrame = nearbyOcrFrame(asset, index, start, end);
+  const ocrEvidence = ocrFrame ? ocrEvidenceFromFrame(ocrFrame) : { subtitle: [], screenText: [], overlay: [] };
+  const speech = overlappingWhisperText(asset, start, end);
+  const subtitles = ocrEvidence.subtitle;
+  const screenText = ocrEvidence.screenText;
+  const overlays = ocrEvidence.overlay.filter((value) => !isLikelyWatermark(value));
+  const watermarks = ocrEvidence.overlay.filter(isLikelyWatermark);
+  return {
+    image: {
+      thumbnailPath: null,
+      framePath: ocrFrame?.framePath || null,
+      labels: asset.intelligence.visual.labels.slice(0, 6),
+      dominantColor: asset.intelligence.visual.dominantColor,
+      brightness: asset.intelligence.visual.brightness,
+      motionScore: asset.intelligence.visual.motionScore,
+      keyframeAt: Number(((start + end) / 2).toFixed(2))
+    },
+    text: {
+      speech,
+      subtitles,
+      screenText,
+      overlays,
+      watermarks,
+      comparisons: buildTextComparisons(speech, subtitles, screenText)
+    },
+    vision: buildVisionEvidence(asset, start, end)
+  };
+}
+
+export function withSceneData(asset: AssetRecord, segment: TimelineSegment): TimelineSegment {
+  const sceneData = segment.sceneData ?? buildSceneData(asset, Math.max(0, (segment.scene?.shotIndex ?? 1) - 1), segment.start, segment.end);
+  return {
+    ...segment,
+    sceneData: {
+      ...sceneData,
+      image: {
+        ...sceneData.image,
+        thumbnailPath: segment.thumbnailPath ?? sceneData.image.thumbnailPath
+      },
+      vision: sceneData.vision ?? buildVisionEvidence(asset, segment.start, segment.end)
+    }
+  };
+}
+
+function buildVisionEvidence(asset: AssetRecord, start: number, end: number): VisionEvidence {
+  const labels = asset.intelligence.visual.labels;
+  const { red, green, blue } = hexToRgb(asset.intelligence.visual.dominantColor);
+  const greenDominance = green + red + blue > 0 ? Number((green / Math.max(1, red + green + blue)).toFixed(3)) : 0;
+  const pitchPresent = labels.includes("green-dominant") || greenDominance >= 0.36;
+  const motion = asset.intelligence.visual.motionScore;
+  const confidenceBase = Math.min(0.82, 0.28 + (pitchPresent ? 0.24 : 0) + Math.min(0.22, motion * 0.8));
+  const frameAt = Number(((start + end) / 2).toFixed(2));
+  const playersLikely = pitchPresent && (labels.includes("active-motion") || labels.includes("stable-shot"));
+  const ballLikely = pitchPresent && motion >= 0.08;
+  const zone = estimateVisualFieldZone(asset, pitchPresent, motion);
+  const candidates: VisionEvidence["eventCandidates"] = [];
+  if (pitchPresent && motion >= 0.1) {
+    candidates.push({
+      type: "pass_receive",
+      confidence: Number(Math.min(0.62, confidenceBase + 0.08).toFixed(2)),
+      reason: "Green pitch and motion cues suggest an in-play football action candidate."
+    });
+  }
+  if (pitchPresent && hasShotCue(asset)) {
+    candidates.push({
+      type: "shot",
+      confidence: Number(Math.min(0.6, confidenceBase + 0.04).toFixed(2)),
+      reason: "Pitch cue appears with shot/goal language in nearby ASR/OCR context."
+    });
+  }
+
+  return {
+    generatedBy: "vision-evidence-v0-color-motion",
+    frameAt,
+    pitch: {
+      present: pitchPresent,
+      greenDominance,
+      confidence: Number((pitchPresent ? confidenceBase : Math.max(0.08, greenDominance)).toFixed(2))
+    },
+    objects: {
+      players: {
+        countEstimate: playersLikely ? Math.max(2, Math.round(6 + motion * 10)) : 0,
+        confidence: playersLikely ? Number(Math.min(0.58, confidenceBase).toFixed(2)) : 0,
+        status: playersLikely ? "estimated" : "not_detected"
+      },
+      ball: {
+        present: ballLikely,
+        confidence: ballLikely ? Number(Math.min(0.42, 0.18 + motion * 0.9).toFixed(2)) : 0,
+        status: ballLikely ? "estimated" : "not_detected"
+      }
+    },
+    fieldZone: {
+      zone,
+      confidence: zone === "unknown" ? 0 : Number(Math.min(0.54, confidenceBase - 0.05).toFixed(2)),
+      method: zone === "unknown" ? "none" : "color_motion_heuristic"
+    },
+    eventCandidates: candidates,
+    limitations: [
+      "Vision evidence v0 uses color and motion heuristics, not object bounding boxes.",
+      "Player identity, ball trajectory, and calibrated pitch coordinates require detector/tracker stages."
+    ]
+  };
+}
+
+function estimateVisualFieldZone(asset: AssetRecord, pitchPresent: boolean, motion: number): VisionEvidence["fieldZone"]["zone"] {
+  if (!pitchPresent) return "unknown";
+  const text = normalizeSearchValue(
+    [
+      asset.title,
+      asset.description,
+      asset.intelligence.asr.transcript,
+      asset.intelligence.ocr.tokens.join(" ")
+    ].join(" ")
+  );
+  if (/(penalty|box|박스|페널티|goal|keeper|골|슈팅|shot|finish)/i.test(text)) return "penalty_area";
+  if (/(through ball|스루|침투|attack|attacking|chance|찬스)/i.test(text)) return "final_third";
+  if (motion >= 0.14) return "middle_third";
+  return "unknown";
+}
+
+function hasShotCue(asset: AssetRecord) {
+  return /(shot|shoot|finish|goal|슈팅|슛|골|마무리)/i.test(
+    [asset.title, asset.description, asset.intelligence.asr.transcript, asset.intelligence.ocr.tokens.join(" ")].join(" ")
+  );
+}
+
+function hexToRgb(value: string) {
+  const normalized = value.trim().replace(/^#/, "");
+  if (!/^[0-9a-f]{6}$/i.test(normalized)) return { red: 0, green: 0, blue: 0 };
+  return {
+    red: Number.parseInt(normalized.slice(0, 2), 16),
+    green: Number.parseInt(normalized.slice(2, 4), 16),
+    blue: Number.parseInt(normalized.slice(4, 6), 16)
+  };
+}
+
+function isObjectEvidenceReady(status?: "not_configured" | "estimated" | "detected" | "not_detected") {
+  return status === "estimated" || status === "detected";
+}
+
+function segmentSearchText(segment: TimelineSegment) {
+  const text = segment.sceneData?.text;
+  const domainText = domainSearchText(segment);
+  const vision = segment.sceneData?.vision;
+  const visionText = vision
+    ? [
+        vision.pitch.present ? "football pitch field" : "",
+        isObjectEvidenceReady(vision.objects.players.status) ? `players ${vision.objects.players.status}` : "",
+        isObjectEvidenceReady(vision.objects.ball.status) ? `ball ${vision.objects.ball.status}` : "",
+        vision.fieldZone.zone !== "unknown" ? vision.fieldZone.zone : "",
+        vision.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
+        vision.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
+        vision.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+  if (!text) return [segment.transcript, domainText, visionText].filter(Boolean).join(" ");
+  return [text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, visionText].filter(Boolean).join(" ");
+}
+
+function nearbyOcrFrame(asset: AssetRecord, index: number, start: number, end: number) {
+  const frames = asset.intelligence.ocr.frames;
+  if (frames.length === 0) return null;
+  if (!asset.duration || asset.duration <= 0) return frames.find((frame) => typeof frame.at === "number") ?? null;
+  const timestampedFrames = frames.filter((frame) => typeof frame.at === "number");
+  if (timestampedFrames.length === 0) return null;
+  const midpoint = (start + end) / 2;
+  const nearest = timestampedFrames
+    .map((frame) => ({ frame, distance: Math.abs((frame.at ?? 0) - midpoint) }))
+    .sort((a, b) => a.distance - b.distance)[0];
+  const allowedDistance = Math.max(3, Math.min(8, (end - start) / 2 + 2));
+  return nearest && nearest.distance <= allowedDistance ? nearest.frame : null;
+}
+
+function ocrEvidenceFromFrame(frame: NonNullable<AssetRecord["intelligence"]["ocr"]["frames"][number]>) {
+  const boxes = frame.boxes ?? [];
+  if (boxes.length === 0) return { subtitle: [], screenText: cleanOcrValues(unique(frame.tokens)).slice(0, 8), overlay: [] };
+  return {
+    subtitle: cleanOcrValues(unique(boxes.filter((box) => box.role === "subtitle").map((box) => box.text))).slice(0, 4),
+    screenText: cleanOcrValues(unique(boxes.filter((box) => box.role === "screen_text").map((box) => box.text))).slice(0, 5),
+    overlay: unique(boxes.filter((box) => box.role === "overlay" || box.role === "watermark").map((box) => box.text)).slice(0, 4)
+  };
+}
+
+function nearbyOcrEvidence(asset: AssetRecord, index: number) {
   const frame = asset.intelligence.ocr.frames[index % Math.max(1, asset.intelligence.ocr.frames.length)];
-  return unique([...(frame?.tokens ?? []), ...asset.intelligence.ocr.tokens]).slice(0, 8);
+  const boxes = frame?.boxes ?? [];
+  if (boxes.length === 0) {
+    return { subtitle: [], screenText: unique([...(frame?.tokens ?? []), ...asset.intelligence.ocr.tokens]).slice(0, 8), overlay: [] };
+  }
+  return {
+    subtitle: unique(boxes.filter((box) => box.role === "subtitle").map((box) => box.text)).slice(0, 4),
+    screenText: unique(boxes.filter((box) => box.role === "screen_text").map((box) => box.text)).slice(0, 5),
+    overlay: unique(boxes.filter((box) => box.role === "overlay" || box.role === "watermark").map((box) => box.text)).slice(0, 4)
+  };
+}
+
+function formatOcrEvidence(evidence: { subtitle: string[]; screenText: string[]; overlay: string[] }) {
+  const parts = [
+    evidence.subtitle.length ? `OCR subtitle: ${evidence.subtitle.join(" ")}` : "",
+    evidence.screenText.length ? `OCR screen: ${evidence.screenText.join(" ")}` : "",
+    evidence.overlay.length ? `OCR overlay: ${evidence.overlay.join(" ")}` : ""
+  ].filter(Boolean);
+  return parts.length ? `${parts.join(". ")}.` : "";
+}
+
+function isLikelyWatermark(value: string) {
+  return /생성형\s*(a|ai)|이\s*영상(?:엔|에는)?\s*생성형|watermark/i.test(value);
+}
+
+function cleanOcrValues(values: string[]) {
+  return values.map((value) => value.trim()).filter((value) => value.length > 0 && !isLikelyWatermark(value));
+}
+
+function buildTextComparisons(speech: string, subtitles: string[], screenText: string[]) {
+  if (!speech.trim()) return [];
+  const sources = [
+    ...subtitles.map((text) => ({ kind: "subtitle" as const, text })),
+    ...screenText.map((text) => ({ kind: "screen_text" as const, text }))
+  ].filter((item) => item.text.trim().length > 0);
+  return sources
+    .map((source) => {
+      const similarity = textSimilarity(speech, source.text);
+      return {
+        kind: source.kind,
+        asrText: speech,
+        ocrText: source.text,
+        similarity,
+        status: similarity >= 0.82 ? ("match" as const) : similarity >= 0.58 ? ("review" as const) : ("mismatch" as const),
+        suggestedText: chooseSuggestedCorrection(speech, source.text, similarity)
+      };
+    })
+    .sort((a, b) => a.similarity - b.similarity)
+    .slice(0, 3);
+}
+
+function chooseSuggestedCorrection(asrText: string, ocrText: string, similarity: number) {
+  if (similarity >= 0.82) return asrText.length >= ocrText.length ? asrText : ocrText;
+  const normalizedAsr = normalizeForComparison(asrText);
+  const normalizedOcr = normalizeForComparison(ocrText);
+  if (normalizedAsr.length >= normalizedOcr.length * 0.7 && normalizedAsr.length <= normalizedOcr.length * 1.4) return asrText;
+  return asrText.length >= ocrText.length ? asrText : ocrText;
+}
+
+function textSimilarity(left: string, right: string) {
+  const a = comparisonBigrams(normalizeForComparison(left));
+  const b = comparisonBigrams(normalizeForComparison(right));
+  if (a.length === 0 || b.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const item of a) counts.set(item, (counts.get(item) ?? 0) + 1);
+  let overlap = 0;
+  for (const item of b) {
+    const count = counts.get(item) ?? 0;
+    if (count <= 0) continue;
+    overlap += 1;
+    counts.set(item, count - 1);
+  }
+  return Number(((2 * overlap) / (a.length + b.length)).toFixed(3));
+}
+
+function comparisonBigrams(value: string) {
+  if (value.length <= 1) return value ? [value] : [];
+  return Array.from({ length: value.length - 1 }, (_item, index) => value.slice(index, index + 2));
+}
+
+function normalizeForComparison(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/ocr\s*(subtitle|screen|overlay)?:/gi, " ")
+    .replace(/[^a-z0-9가-힣]/g, "")
+    .trim();
 }
 
 export function searchAssets(
@@ -188,22 +471,31 @@ export function searchAssets(
     queryVector?: number[];
     vectorHitsBySegment?: Map<string, number>;
     visualHitsBySegment?: Map<string, number>;
+    domainFilters?: DomainSearchFilters;
+    queryPlan?: DomainQueryPlan;
   } = {}
 ): SearchResult[] {
-  const queryTerms = extractKeywords(query);
-  if (queryTerms.length === 0) return [];
-  const queryVector = options.queryVector ?? vectorize(queryTerms.join(" "));
+  const domainProfile = expandDomainQuery(options.queryPlan?.semanticQuery ?? query);
+  const queryTerms = extractKeywords(domainProfile.expandedText);
+  const hasVectorHits = (options.vectorHitsBySegment?.size ?? 0) > 0 || (options.visualHitsBySegment?.size ?? 0) > 0;
+  const hasDomainFilters = hasActiveDomainFilters(options.domainFilters);
+  if (query.trim().length === 0 && queryTerms.length === 0 && !hasVectorHits && !hasDomainFilters) return [];
+  const queryVector = options.queryVector ?? vectorize(domainProfile.expandedText);
   const limit = options.limit ?? 10;
 
   return assets
-    .filter((asset) => asset.status === "indexed")
+    .filter((asset) => asset.status === "indexed" || asset.timeline.length > 0)
     .filter((asset) => !options.indexId || asset.indexId === options.indexId)
     .filter((asset) => !options.tag || asset.tags.includes(options.tag))
+    .filter((asset) => matchesAssetDomainText(asset, options.domainFilters))
     .map((asset) => {
-      const matchingSegments = asset.timeline
+      const assetLexicalScore = scoreText(`${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`, queryTerms);
+      const segmentCandidates = asset.timeline
         .filter((segment) => !options.modality || segment.modalities.includes(options.modality as TimelineSegment["modalities"][number]))
+        .filter((segment) => matchesSegmentDomainFilters(asset, segment, options.domainFilters))
         .map((segment) => {
-          const lexicalScore = scoreText(`${segment.label} ${segment.transcript} ${segment.tags.join(" ")}`, queryTerms);
+          const lexicalScore = scoreText(segmentSearchText(segment), queryTerms);
+          const domainScore = scoreDomainMatch(segment, domainProfile);
           const semanticScore = Math.max(
             queryVector.length === segment.embedding.length ? cosineSimilarity(queryVector, segment.embedding) : 0,
             options.vectorHitsBySegment?.get(segment.id) ?? 0
@@ -218,25 +510,36 @@ export function searchAssets(
             visualScore,
             sourceScore,
             confidenceScore,
-            score: lexicalScore * 3 + semanticScore * 8 + visualScore * 6 + sourceScore + confidenceScore * 1.5
+            domainScore,
+            score: lexicalScore * 3 + domainScore * 5 + semanticScore * 8 + visualScore * 6 + sourceScore + confidenceScore * 1.5
           };
         })
-        .filter((item) => item.lexicalScore > 0 || item.semanticScore > 0.58 || item.visualScore > 0.12)
+        .filter((item) => hasDomainFilters || item.lexicalScore > 0 || item.domainScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25);
+      const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
+      const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
+      const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore > 0.72 || item.visualScore > 0.25);
+      const matchingSegments = (hasDomainFilters
+        ? segmentCandidates
+        : lexicalSegmentMatches.length > 0 || domainSegmentMatches.length > 0
+          ? [...lexicalSegmentMatches, ...domainSegmentMatches]
+          : semanticSegmentMatches)
+        .filter((item, index, items) => items.findIndex((candidate) => candidate.segment.id === item.segment.id) === index)
         .sort((a, b) => b.score - a.score);
 
-      const assetLexicalScore = scoreText(`${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`, queryTerms);
-      const lexical = assetLexicalScore * 2 + matchingSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * 3;
+      const lexical = assetLexicalScore * 0.5 + matchingSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * 3;
+      const domain = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.domainScore, 0) * 5;
       const semantic = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.semanticScore, 0) * 8;
       const visual = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.visualScore, 0) * 6;
       const source = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.sourceScore, 0);
       const confidence = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.confidenceScore, 0) * 1.5;
       const recency = recencyBoost(asset.createdAt);
-      const totalScore = Number((lexical + semantic + visual + source + confidence + recency).toFixed(3));
+      const totalScore = Number((lexical + domain + semantic + visual + source + confidence + recency).toFixed(3));
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;
+      const selectedSegments = matchingSegments.slice(0, 5);
       return {
         asset,
         index,
-        segments: matchingSegments.slice(0, 5).map((item) => item.segment),
+        segments: selectedSegments.map((item) => withSceneData(asset, item.segment)),
         score: totalScore,
         ranking: {
           lexical: Number(lexical.toFixed(3)),
@@ -249,16 +552,23 @@ export function searchAssets(
         },
         explain: [
           `${assetLexicalScore} lexical asset matches`,
+          `${Number(domain.toFixed(3))} sports domain rank score`,
           `${Number(semantic.toFixed(3))} semantic rank score`,
           `${Number(visual.toFixed(3))} visual rank score`,
           `${Number(source.toFixed(3))} source quality boost`,
           `${Number(confidence.toFixed(3))} confidence boost`,
           `${matchingSegments.length} matching timeline segments`,
+          hasDomainFilters ? `domain filters=${formatDomainFilters(options.domainFilters)}` : "",
+          options.queryPlan ? `query plan=${options.queryPlan.rewrittenQuery}` : "",
           index ? `index=${index.name}` : "index=unknown"
-        ]
+        ].filter(Boolean),
+        queryPlan: options.queryPlan ?? null,
+        matchReasons: selectedSegments.flatMap((item) =>
+          buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan)
+        )
       };
     })
-    .filter((result) => result.score > 0)
+    .filter((result) => result.score > 0 && result.segments.length > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
@@ -300,7 +610,7 @@ export function extractKeywords(input: string) {
       .replace(/[^a-z0-9가-힣\s-]/g, " ")
       .split(/\s+/)
       .map((term) => term.trim().replace(/^-+|-+$/g, ""))
-      .filter((term) => term.length > 2 && !stopWords.has(term))
+      .filter((term) => !stopWords.has(term) && (/[가-힣]/.test(term) ? term.length >= 2 : term.length > 2))
   ).slice(0, 24);
 }
 
@@ -317,6 +627,229 @@ function scoreSources(sources: TimelineSegment["sources"]) {
   if (sources.includes("visual")) score += 0.25;
   if (sources.includes("metadata")) score += 0.1;
   return score;
+}
+
+function hasActiveDomainFilters(filters?: DomainSearchFilters) {
+  return Boolean(filters && Object.values(filters).some((value) => typeof value === "string" && value.trim().length > 0));
+}
+
+function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearchFilters) {
+  if (!filters) return true;
+  const terms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
+  if (terms.length === 0) return true;
+  const haystack = normalizeSearchValue(
+    [
+      asset.title,
+      asset.description,
+      asset.originalName,
+      asset.tags.join(" "),
+      asset.summary,
+      asset.intelligence.asr.transcript,
+      asset.intelligence.ocr.tokens.join(" "),
+      asset.timeline.map((segment) => segmentSearchText(segment)).join(" ")
+    ].join(" ")
+  );
+  return terms.every((term) => haystack.includes(normalizeSearchValue(term)));
+}
+
+function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
+  if (!filters || !hasActiveDomainFilters(filters)) return true;
+  const textTerms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
+  if (textTerms.length > 0) {
+    const segmentText = normalizeSearchValue(
+      [
+        asset.title,
+        asset.description,
+        segment.label,
+        segment.transcript,
+        segment.tags.join(" "),
+        segmentSearchText(segment),
+        segment.domain?.searchText,
+        ...(segment.domain?.events.flatMap((event) => [
+          event.caption,
+          ...event.labels,
+          ...event.evidence.asr,
+          ...event.evidence.ocr,
+          ...event.evidence.metadata,
+          ...event.evidence.heuristics
+        ]) ?? [])
+      ].join(" ")
+    );
+    if (!textTerms.every((term) => segmentText.includes(normalizeSearchValue(term)))) return false;
+  }
+
+  const eventFilters = {
+    eventType: filters.eventType?.trim(),
+    passType: filters.passType?.trim(),
+    fieldZone: filters.fieldZone?.trim(),
+    role: filters.role?.trim()
+  };
+  const needsEventMatch = Object.values(eventFilters).some(Boolean);
+  if (!needsEventMatch) return true;
+  return (segment.domain?.events ?? []).some((event) => {
+    if (eventFilters.eventType && event.eventType !== eventFilters.eventType) return false;
+    if (eventFilters.passType && event.football?.passType !== eventFilters.passType) return false;
+    if (eventFilters.fieldZone && event.football?.fieldZone !== eventFilters.fieldZone) return false;
+    if (filters.role === "receiver" && !event.football?.receivingPlayer.present) return false;
+    if (filters.role === "passer" && !event.football?.passingPlayer.present) return false;
+    if (filters.role === "shooter" && event.eventType !== "shot") return false;
+    return true;
+  });
+}
+
+function buildSearchMatchReasons(
+  asset: AssetRecord,
+  segment: TimelineSegment,
+  scores: {
+    lexicalScore: number;
+    semanticScore: number;
+    visualScore: number;
+    domainScore: number;
+  },
+  filters?: DomainSearchFilters,
+  queryPlan?: DomainQueryPlan
+): SearchMatchReason[] {
+  const reasons: SearchMatchReason[] = [];
+  const events = segment.domain?.events ?? [];
+  const firstEvent = events[0];
+  const segmentText = normalizeSearchValue(
+    [
+      asset.title,
+      asset.description,
+      segment.label,
+      segment.transcript,
+      segment.tags.join(" "),
+      segmentSearchText(segment),
+      segment.domain?.searchText
+    ].join(" ")
+  );
+
+  if (queryPlan && Object.keys(queryPlan.domainFilters).length > 0) {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "query_plan",
+      label: "Query plan",
+      value: queryPlan.rewrittenQuery,
+      confidence: queryPlan.confidence
+    });
+  }
+
+  if (filters?.competition && segmentText.includes(normalizeSearchValue(filters.competition))) {
+    reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Competition", value: filters.competition });
+  }
+  if (filters?.season && segmentText.includes(normalizeSearchValue(filters.season))) {
+    reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Season", value: filters.season });
+  }
+  if (filters?.player && segmentText.includes(normalizeSearchValue(filters.player))) {
+    reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Player", value: filters.player });
+  }
+
+  for (const event of events) {
+    if (filters?.eventType && event.eventType === filters.eventType) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Event", value: filters.eventType, confidence: event.confidence });
+    }
+    if (filters?.passType && event.football?.passType === filters.passType) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Pass", value: filters.passType, confidence: event.football.ball.confidence });
+    }
+    if (filters?.fieldZone && event.football?.fieldZone === filters.fieldZone) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Zone", value: filters.fieldZone, confidence: event.football.field.zoneConfidence });
+    }
+    if (filters?.role === "receiver" && event.football?.receivingPlayer.present) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Role", value: "receiver", confidence: event.football.receivingPlayer.confidence });
+    }
+  }
+
+  if (scores.lexicalScore > 0) {
+    reasons.push({ segmentId: segment.id, kind: "lexical", label: "Text", value: `${scores.lexicalScore} query terms matched` });
+  }
+  if (scores.domainScore > 0) {
+    reasons.push({ segmentId: segment.id, kind: "semantic", label: "Domain rank", value: `${scores.domainScore} sports score` });
+  }
+  if (scores.semanticScore > 0.72) {
+    reasons.push({ segmentId: segment.id, kind: "semantic", label: "Vector", value: `${Math.round(scores.semanticScore * 100)}% text similarity` });
+  }
+  if (scores.visualScore > 0.25) {
+    reasons.push({ segmentId: segment.id, kind: "visual", label: "Visual", value: `${Math.round(scores.visualScore * 100)}% visual similarity` });
+  }
+  const vision = segment.sceneData?.vision;
+  if (vision?.pitch.present) {
+    reasons.push({ segmentId: segment.id, kind: "visual", label: "Pitch", value: `estimated ${Math.round(vision.pitch.confidence * 100)}%`, confidence: vision.pitch.confidence });
+  }
+  if (vision && isObjectEvidenceReady(vision.objects.players.status)) {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "visual",
+      label: "Players",
+      value: `${vision.objects.players.status} ${vision.objects.players.countEstimate}`,
+      confidence: vision.objects.players.confidence
+    });
+  }
+  if (vision && isObjectEvidenceReady(vision.objects.ball.status)) {
+    reasons.push({ segmentId: segment.id, kind: "visual", label: "Ball", value: vision.objects.ball.status, confidence: vision.objects.ball.confidence });
+  }
+  if (vision && vision.fieldZone.zone !== "unknown") {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "visual",
+      label: "Visual zone",
+      value: vision.fieldZone.zone,
+      confidence: vision.fieldZone.confidence
+    });
+  }
+  if (vision?.tracking?.status === "tracked") {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "visual",
+      label: "Track",
+      value: [
+        vision.tracking.ballTrackId ?? "ball untracked",
+        vision.tracking.nearestPlayerTrackId ? `near ${vision.tracking.nearestPlayerTrackId}` : "",
+        vision.tracking.ballMovement.direction !== "unknown" ? vision.tracking.ballMovement.direction : ""
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      confidence: vision.tracking.continuity
+    });
+  }
+  if (vision?.eventClassification && vision.eventClassification.label !== "unknown") {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "evidence",
+      label: "Classifier",
+      value: vision.eventClassification.label,
+      confidence: vision.eventClassification.confidence
+    });
+  }
+
+  if (firstEvent) {
+    const receiverIdentity = firstEvent.football?.receivingPlayer.identity;
+    const passerIdentity = firstEvent.football?.passingPlayer.identity;
+    if (receiverIdentity) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Receiver ID", value: `${receiverIdentity.name} (${receiverIdentity.source})`, confidence: receiverIdentity.confidence });
+    } else if (passerIdentity) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Player ID", value: `${passerIdentity.name} (${passerIdentity.source})`, confidence: passerIdentity.confidence });
+    }
+    for (const heuristic of firstEvent.evidence.heuristics.slice(0, 2)) {
+      reasons.push({ segmentId: segment.id, kind: "evidence", label: "Evidence", value: heuristic, confidence: firstEvent.confidence });
+    }
+    for (const limitation of firstEvent.football?.limitations.slice(0, 1) ?? []) {
+      reasons.push({ segmentId: segment.id, kind: "limitation", label: "Limitation", value: limitation });
+    }
+  }
+
+  return reasons.slice(0, 10);
+}
+
+function formatDomainFilters(filters?: DomainSearchFilters) {
+  if (!filters) return "none";
+  return Object.entries(filters)
+    .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+    .map(([key, value]) => `${key}:${value}`)
+    .join(",");
+}
+
+function normalizeSearchValue(value: string) {
+  return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
 }
 
 function recencyBoost(createdAt: string) {
