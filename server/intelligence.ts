@@ -654,6 +654,8 @@ function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearchFilter
 
 function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
   if (!filters || !hasActiveDomainFilters(filters)) return true;
+  if (!scopeFilterAllows(segment, "competition", filters.competition)) return false;
+  if (!scopeFilterAllows(segment, "season", filters.season)) return false;
   const textTerms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
   if (textTerms.length > 0) {
     const segmentText = normalizeSearchValue(
@@ -695,6 +697,14 @@ function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegmen
     if (filters.role === "shooter" && event.eventType !== "shot") return false;
     return true;
   });
+}
+
+function scopeFilterAllows(segment: TimelineSegment, field: "competition" | "season", filterValue?: string) {
+  const normalizedFilter = normalizeSearchValue(filterValue ?? "");
+  if (!normalizedFilter) return true;
+  const scopeValue = field === "competition" ? segment.domain?.scope?.competition : segment.domain?.scope?.season;
+  if (!scopeValue) return true;
+  return normalizeSearchValue(scopeValue.value).includes(normalizedFilter) || normalizedFilter.includes(normalizeSearchValue(scopeValue.value));
 }
 
 function buildSearchMatchReasons(
@@ -739,6 +749,26 @@ function buildSearchMatchReasons(
   }
   if (filters?.season && segmentText.includes(normalizeSearchValue(filters.season))) {
     reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Season", value: filters.season });
+  }
+  if (firstEvent && segment.domain?.scope?.competition) {
+    const competition = segment.domain.scope.competition;
+    reasons.push({
+      segmentId: segment.id,
+      kind: "domain_filter",
+      label: "Scope competition",
+      value: `${competition.value} (${competition.source})`,
+      confidence: competition.confidence
+    });
+  }
+  if (firstEvent && segment.domain?.scope?.season) {
+    const season = segment.domain.scope.season;
+    reasons.push({
+      segmentId: segment.id,
+      kind: "domain_filter",
+      label: "Scope season",
+      value: `${season.value} (${season.source})`,
+      confidence: season.confidence
+    });
   }
   if (filters?.player && segmentText.includes(normalizeSearchValue(filters.player))) {
     reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Player", value: filters.player });

@@ -77,6 +77,20 @@ export type PlayerIdentity = {
   evidence: string[];
 };
 
+export type DomainScopeValue = {
+  value: string;
+  confidence: number;
+  source: "title" | "asr" | "ocr" | "metadata";
+  evidence: string[];
+};
+
+export type DomainScope = {
+  competition: DomainScopeValue | null;
+  season: DomainScopeValue | null;
+  teams: DomainScopeValue[];
+  players: DomainScopeValue[];
+};
+
 export type VisionEvidence = {
   generatedBy: string;
   frameAt: number | null;
@@ -189,6 +203,7 @@ export type TimelineSegment = {
     captions: string[];
     labels: string[];
     events: DomainEvent[];
+    scope?: DomainScope;
     searchText: string;
     confidence: number;
     generatedBy: string;

@@ -1576,6 +1576,8 @@ function SignalEvidence({ asset }: { asset: AssetRecord }) {
                 </div>
                 {event.football && (
                   <div className="domain-structured-grid">
+                    {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
+                    {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
                     <span><b>Event</b>{event.eventType}</span>
                     <span><b>Pass</b>{event.football.passType}</span>
                     <span><b>Zone</b>{event.football.fieldZone}</span>
@@ -1922,7 +1924,10 @@ function getDomainSummary(segment: AssetRecord["timeline"][number]) {
   const event = segment.domain?.events[0];
   if (!event) return "";
   const football = event.football;
+  const scope = segment.domain?.scope;
   const parts = [
+    scope?.competition ? `competition ${scope.competition.value}` : "",
+    scope?.season ? `season ${scope.season.value}` : "",
     event.caption,
     football?.fieldZone && football.fieldZone !== "unknown" ? `zone ${football.fieldZone.replace(/_/g, " ")}` : "",
     football?.passType && football.passType !== "unknown" ? `pass ${football.passType.replace(/_/g, " ")}` : "",
