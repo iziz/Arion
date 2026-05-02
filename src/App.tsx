@@ -112,6 +112,15 @@ type EvidenceLedger = {
   limitations: EvidenceLedgerItem[];
 };
 
+type SearchTrustFilters = {
+  verifiedOnly: boolean;
+  includeSoft: boolean;
+  hideFailed: boolean;
+  minScore: number;
+  requireHardPlayer: boolean;
+  requireHardFieldZone: boolean;
+};
+
 type FootballDataImportResult = {
   competitionCode: string;
   season: number;
@@ -314,6 +323,14 @@ export default function App() {
   const [searchTag, setSearchTag] = useState("");
   const [searchModality, setSearchModality] = useState("");
   const [domainFilters, setDomainFilters] = useState<DomainSearchFilters>({});
+  const [trustFilters, setTrustFilters] = useState<SearchTrustFilters>({
+    verifiedOnly: false,
+    includeSoft: true,
+    hideFailed: true,
+    minScore: 0,
+    requireHardPlayer: false,
+    requireHardFieldZone: false
+  });
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
   const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
   const [question, setQuestion] = useState("");
@@ -344,6 +361,7 @@ export default function App() {
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
   const filterTags = useMemo(() => Array.from(new Set(visibleAssets.flatMap((asset) => asset.tags))).sort(), [visibleAssets]);
   const runningJobCount = jobs.filter((job) => job.status === "running" || job.status === "queued").length;
+  const filteredSearchResults = useMemo(() => filterSearchResultsByTrust(searchResults, trustFilters), [searchResults, trustFilters]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1016,6 +1034,12 @@ export default function App() {
             </button>
           </form>
           <DomainSearchControls filters={domainFilters} onChange={setDomainFilters} />
+          <TrustSearchControls
+            filters={trustFilters}
+            onChange={setTrustFilters}
+            total={searchResults.length}
+            visible={filteredSearchResults.length}
+          />
           {queryPlan && <QueryPlanCard plan={queryPlan} />}
           {orchestrationPlan && <OrchestrationPlanCard plan={orchestrationPlan} />}
           <div className="result-list">
@@ -1028,7 +1052,7 @@ export default function App() {
                 <span className="search-loading-bar" />
               </article>
             )}
-            {searchResults.map((result) => (
+            {filteredSearchResults.map((result) => (
               <article key={result.asset.id} className="result-card">
                 <div className="result-card-header">
                   <div>
@@ -1070,6 +1094,9 @@ export default function App() {
             ))}
             {!searching && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
               <EmptyState text="No indexed moment matched the query." />
+            )}
+            {!searching && searchResults.length > 0 && filteredSearchResults.length === 0 && (
+              <EmptyState text="No results match the trust filters. Lower the minimum score or include soft matches." />
             )}
           </div>
         </section>
@@ -1793,6 +1820,72 @@ function DomainSearchControls({
       <div className="domain-filter-actions">
         <button type="button" className="small-button" onClick={presetHaaland}>Haaland through ball preset</button>
         <button type="button" className="small-button" onClick={clearFilters}>Clear filters</button>
+      </div>
+    </section>
+  );
+}
+
+function TrustSearchControls({
+  filters,
+  onChange,
+  total,
+  visible
+}: {
+  filters: SearchTrustFilters;
+  onChange: Dispatch<SetStateAction<SearchTrustFilters>>;
+  total: number;
+  visible: number;
+}) {
+  const update = <Key extends keyof SearchTrustFilters>(key: Key, value: SearchTrustFilters[Key]) => {
+    onChange((current) => ({ ...current, [key]: value }));
+  };
+  const reset = () =>
+    onChange({
+      verifiedOnly: false,
+      includeSoft: true,
+      hideFailed: true,
+      minScore: 0,
+      requireHardPlayer: false,
+      requireHardFieldZone: false
+    });
+  return (
+    <section className="trust-search-controls" aria-label="Trust filters">
+      <div className="domain-search-header">
+        <strong>Trust filters</strong>
+        <span>
+          Showing {visible}/{total} results after evidence quality filters.
+        </span>
+      </div>
+      <div className="trust-filter-grid">
+        <label className="inline-toggle">
+          <input type="checkbox" checked={filters.verifiedOnly} onChange={(event) => update("verifiedOnly", event.target.checked)} />
+          <span>Verified only</span>
+        </label>
+        <label className="inline-toggle">
+          <input type="checkbox" checked={filters.includeSoft} onChange={(event) => update("includeSoft", event.target.checked)} />
+          <span>Include soft matches</span>
+        </label>
+        <label className="inline-toggle">
+          <input type="checkbox" checked={filters.hideFailed} onChange={(event) => update("hideFailed", event.target.checked)} />
+          <span>Hide failed evidence</span>
+        </label>
+        <label className="inline-toggle">
+          <input type="checkbox" checked={filters.requireHardPlayer} onChange={(event) => update("requireHardPlayer", event.target.checked)} />
+          <span>Hard player evidence</span>
+        </label>
+        <label className="inline-toggle">
+          <input type="checkbox" checked={filters.requireHardFieldZone} onChange={(event) => update("requireHardFieldZone", event.target.checked)} />
+          <span>Hard field zone</span>
+        </label>
+        <label className="trust-score-filter">
+          <span>Minimum trust</span>
+          <input type="range" min="0" max="100" step="5" value={filters.minScore} onChange={(event) => update("minScore", Number(event.target.value))} />
+          <b>{filters.minScore}%</b>
+        </label>
+      </div>
+      <div className="domain-filter-actions">
+        <button type="button" className="small-button" onClick={() => update("minScore", 70)}>High trust preset</button>
+        <button type="button" className="small-button" onClick={reset}>Reset trust filters</button>
       </div>
     </section>
   );
@@ -3002,6 +3095,24 @@ function buildEvidenceLedger(
     tone,
     summary: `${deduped.hard.length} hard, ${deduped.soft.length} soft, ${deduped.missing.length} missing, ${deduped.failed.length} failed checks.`
   };
+}
+
+function filterSearchResultsByTrust(results: SearchResult[], filters: SearchTrustFilters) {
+  return results.filter((result) => {
+    const ledger = buildEvidenceLedger(result.verification, result.matchReasons, result.segments);
+    if (filters.verifiedOnly && ledger.tone !== "verified") return false;
+    if (!filters.includeSoft && ledger.soft.length > 0) return false;
+    if (filters.hideFailed && ledger.failed.length > 0) return false;
+    if (ledger.score < filters.minScore) return false;
+    if (filters.requireHardPlayer && !hasHardConstraint(ledger, "Player")) return false;
+    if (filters.requireHardFieldZone && !hasHardConstraint(ledger, "Field zone")) return false;
+    return true;
+  });
+}
+
+function hasHardConstraint(ledger: EvidenceLedger, label: string) {
+  const normalized = label.toLowerCase();
+  return ledger.hard.some((item) => item.label.toLowerCase() === normalized);
 }
 
 function calculateTrustScore(ledger: Pick<EvidenceLedger, "hard" | "soft" | "missing" | "failed" | "limitations">) {

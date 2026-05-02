@@ -3213,6 +3213,16 @@ textarea:focus {
   padding: 14px;
 }
 
+.trust-search-controls {
+  display: grid;
+  gap: 12px;
+  margin: -6px 0 18px;
+  border-radius: 14px;
+  background: #fbfcfc;
+  border: 1px solid #d7e1dc;
+  padding: 14px;
+}
+
 .domain-search-header {
   display: grid;
   gap: 3px;
@@ -3250,6 +3260,45 @@ textarea:focus {
 
 .domain-filter-actions .small-button {
   min-height: 34px;
+}
+
+.trust-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trust-filter-grid .inline-toggle {
+  min-height: 42px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 10px;
+}
+
+.trust-score-filter {
+  display: grid;
+  grid-column: span 3;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 10px;
+}
+
+.trust-score-filter span,
+.trust-score-filter b {
+  color: #25352f;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.trust-score-filter input {
+  min-height: auto;
 }
 
 .query-plan-card {
