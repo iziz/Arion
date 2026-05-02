@@ -4305,6 +4305,91 @@ textarea:focus {
   font-weight: 850;
 }
 
+.clip-use-summary {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d7e1dc;
+  border-radius: 14px;
+  background: #f7faf8;
+  padding: 12px;
+}
+
+.clip-use-summary > div:first-child {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.clip-use-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #e6f5ef;
+  color: #247b64;
+}
+
+.clip-use-summary.review .clip-use-icon {
+  background: #fff1cf;
+  color: #8b651f;
+}
+
+.clip-use-summary.weak .clip-use-icon {
+  background: #fdece7;
+  color: #9d4937;
+}
+
+.clip-use-summary strong {
+  color: #25352f;
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.clip-use-summary p {
+  margin: 3px 0 0;
+  color: #526660;
+  font-size: 12px;
+  font-weight: 820;
+  line-height: 1.35;
+}
+
+.clip-use-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.clip-use-stats span {
+  display: grid;
+  gap: 2px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #25352f;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 950;
+  text-align: center;
+}
+
+.clip-use-stats b {
+  color: #657970;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.clip-use-summary ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: #526660;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
 .clip-detail-section {
   display: grid;
   gap: 8px;

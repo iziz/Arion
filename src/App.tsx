@@ -2134,6 +2134,53 @@ function EvidenceLedgerPanel({ ledger }: { ledger: EvidenceLedger }) {
   );
 }
 
+function ClipUseSummary({ ledger, detail }: { ledger: EvidenceLedger; detail: ClipDetailResult }) {
+  const primaryCautions = buildClipCautions(ledger, detail);
+  const canUse = ledger.tone === "verified" && ledger.failed.length === 0;
+  const title = canUse ? "Ready for use" : ledger.tone === "review" ? "Use with caution" : "Needs verification";
+  const copy = canUse
+    ? "Structured checks are mostly backed by hard evidence."
+    : primaryCautions[0] ?? "Important evidence is missing or failed for this clip.";
+  return (
+    <section className={`clip-use-summary ${ledger.tone}`}>
+      <div>
+        <span className="clip-use-icon">{ledger.tone === "verified" ? <ShieldCheck size={18} /> : ledger.tone === "review" ? <CircleHelp size={18} /> : <AlertTriangle size={18} />}</span>
+        <div>
+          <strong>{title}</strong>
+          <p>{copy}</p>
+        </div>
+      </div>
+      <div className="clip-use-stats">
+        <span><b>Hard</b>{ledger.hard.length}</span>
+        <span><b>Soft</b>{ledger.soft.length}</span>
+        <span><b>Missing</b>{ledger.missing.length}</span>
+        <span><b>Failed</b>{ledger.failed.length}</span>
+      </div>
+      {primaryCautions.length > 0 && (
+        <ul>
+          {primaryCautions.slice(0, 4).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function buildClipCautions(ledger: EvidenceLedger, detail: ClipDetailResult) {
+  const cautions = [
+    ...ledger.failed.map((item) => `${item.label}: ${item.value}`),
+    ...ledger.missing.map((item) => `${item.label}: missing ${item.value}`),
+    ...ledger.soft
+      .filter((item) => /field|player|vlm/i.test(`${item.label} ${item.value} ${item.detail}`))
+      .map((item) => `${item.label}: ${item.value}`),
+    ...ledger.limitations.map((item) => item.value),
+    detail.tracking.length === 0 ? "No persisted tracking record for this segment." : "",
+    detail.clip.verificationSummary.softPass > 0 ? `${detail.clip.verificationSummary.softPass} verification checks are soft matches.` : ""
+  ].filter(Boolean);
+  return Array.from(new Set(cautions)).slice(0, 6);
+}
+
 function SearchSceneEvidence({
   segment,
   query,
@@ -2300,6 +2347,8 @@ function ClipDetailDrawer({
               <em>{detail.clip.event}{detail.clip.player ? ` · ${detail.clip.player}` : ""} · {Math.round(detail.clip.confidence * 100)}%</em>
             </span>
           </button>
+
+          {ledger && <ClipUseSummary ledger={ledger} detail={detail} />}
 
           <section className="clip-detail-section">
             <div className="clip-section-title-row">
