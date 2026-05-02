@@ -550,6 +550,11 @@ export type SportsKnowledgeSnapshot = {
 export type AnalysisResult = {
   assetId: string;
   indexId: string;
+  scope: {
+    type: "asset" | "asset_group";
+    label: string;
+    assetCount: number;
+  };
   summary: string;
   answer: string;
   chapters: TimelineSegment[];

@@ -5,7 +5,7 @@ import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { analyzeAsset, buildClipDetail, buildLocalIndex, listAssetClips, probeVideo, searchAssets, withSceneData } from "./intelligence";
+import { analyzeAsset, analyzeAssetGroup, buildClipDetail, buildLocalIndex, listAssetClips, probeVideo, searchAssets, withSceneData } from "./intelligence";
 import { buildDomainSegmentIndex, expandDomainQuery } from "./domainIndex";
 import { buildOrchestrationPlan } from "./orchestrator";
 import { parseDomainFilters, planDomainQuery } from "./queryPlanner";
@@ -236,6 +236,21 @@ app.post("/api/assets", upload.single("video"), async (req, res) => {
 app.post("/api/indexes/:id/assets", upload.single("video"), async (req, res) => {
   const result = await createAssetFromUpload(req, res, String(req.params.id));
   if (result) res.status(202).json(result);
+});
+
+app.post("/api/indexes/:id/analyze", async (req, res) => {
+  const index = await getIndex(String(req.params.id));
+  if (!index) return sendNotFound(res, "Index not found");
+  const assets = await listAssets(index.id);
+  const indexes = await listIndexes();
+  const result = await analyzeAssetGroup(assets, indexes, index, String(req.body.question ?? ""));
+  const event = await recordEvent("analysis.completed", "Asset group analysis completed", {
+    indexId: index.id,
+    payload: { question: String(req.body.question ?? ""), scope: result.scope, signals: result.signals }
+  });
+  await deliverEvent("analysis.completed", event);
+  await recordBilling(null, null, Math.max(1, result.clips.length), "local asset group analysis request");
+  res.json(result);
 });
 
 app.post("/api/assets/:id/reindex", async (req, res) => {

@@ -649,7 +649,86 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
   return {
     assetId: asset.id,
     indexId: asset.indexId,
+    scope: {
+      type: "asset",
+      label: asset.title,
+      assetCount: 1
+    },
     summary: generated.summary ?? asset.summary,
+    answer: generated.answer,
+    chapters,
+    clips,
+    signals,
+    patterns,
+    report: generated.report,
+    generator: generated.generator,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRecord[], index: IndexRecord, question = ""): Promise<AnalysisResult> {
+  const scopedAssets = assets.filter((asset) => asset.indexId === index.id && (asset.status === "indexed" || asset.timeline.length > 0));
+  const queryPlan = planDomainQuery(question);
+  const searchResults = searchAssets(scopedAssets, indexes, question, {
+    indexId: index.id,
+    domainFilters: queryPlan.domainFilters,
+    queryPlan,
+    limit: 12
+  });
+  const moments = searchResults
+    .flatMap((result) =>
+      result.segments.map((segment) => ({
+        asset: result.asset,
+        segment,
+        reasons: result.matchReasons.filter((reason) => reason.segmentId === segment.id),
+        verification: result.verification.filter((check) => check.segmentId === segment.id)
+      }))
+    )
+    .slice(0, 18);
+  const chapters = moments.map((moment) => moment.segment);
+  const verification = moments.flatMap((moment) =>
+    moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters)
+  );
+  const features = moments.map((moment) => featureFromSegment(moment.segment, moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters)));
+  const patterns = aggregatePatterns(features);
+  const signals = unique(
+    [
+      index.name,
+      ...scopedAssets.flatMap((asset) => asset.tags),
+      ...chapters.flatMap((segment) => segment.tags),
+      ...chapters.flatMap((segment) => segment.domain?.labels ?? []),
+      ...chapters.flatMap((segment) => segment.domain?.scope?.players.map((player) => player.value) ?? []),
+      ...chapters.map((segment) => segment.domain?.scope?.competition?.value ?? ""),
+      ...chapters.map((segment) => segment.domain?.scope?.season?.value ?? "")
+    ].filter(Boolean)
+  ).slice(0, 16);
+  const clips = moments.map((moment) =>
+    clipFromSegment(
+      moment.asset,
+      withSceneData(moment.asset, moment.segment),
+      moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters),
+      moment.reasons
+    )
+  );
+  const subject = buildGroupAnalysisSubject(index, scopedAssets, chapters);
+  const generated = await createAnalysisGenerator().generate({
+    question,
+    asset: subject,
+    chapters,
+    clips,
+    signals,
+    patterns,
+    verification
+  });
+  return {
+    assetId: `asset-group:${index.id}`,
+    indexId: index.id,
+    scope: {
+      type: "asset_group",
+      label: index.name,
+      assetCount: scopedAssets.length
+    },
+    summary: generated.summary ?? subject.summary,
     answer: generated.answer,
     chapters,
     clips,
@@ -740,6 +819,63 @@ function featureFromSegment(segment: TimelineSegment, verification: Verification
     ballState: football?.ball.state ?? "unknown_ball",
     confidence: event?.confidence ?? segment.confidence,
     verification
+  };
+}
+
+function buildGroupAnalysisSubject(index: IndexRecord, assets: AssetRecord[], chapters: TimelineSegment[]): AssetRecord {
+  const base = assets[0];
+  const now = new Date().toISOString();
+  if (base) {
+    return {
+      ...base,
+      id: `asset-group:${index.id}`,
+      indexId: index.id,
+      title: index.name,
+      description: index.description,
+      summary: `Asset group analysis across ${assets.length} indexed assets and ${chapters.length} retrieved moments.`,
+      timeline: chapters,
+      keyframes: base.keyframes.filter((keyframe) => chapters.some((segment) => segment.id === keyframe.segmentId)),
+      updatedAt: now
+    };
+  }
+  return {
+    id: `asset-group:${index.id}`,
+    indexId: index.id,
+    title: index.name,
+    description: index.description,
+    originalName: index.name,
+    storedName: "",
+    mimeType: "application/octet-stream",
+    size: 0,
+    duration: null,
+    width: null,
+    height: null,
+    status: "indexed",
+    progress: 100,
+    tags: [],
+    summary: "Asset group analysis has no indexed assets available.",
+    timeline: chapters,
+    keyframes: [],
+    technicalMetadata: {
+      storageProvider: "local",
+      bucket: "analysis",
+      objectKey: index.id,
+      checksum: null,
+      frameRate: null,
+      audioCodec: null,
+      videoCodec: null
+    },
+    intelligence: {
+      audio: { extractedPath: null, speechSegments: [], musicSegments: [], hasSpeech: false, hasMusic: false },
+      asr: { transcript: "", language: "unknown", confidence: 0, segments: [] },
+      diarization: { provider: "none", speakers: [], segments: [], error: null },
+      ocr: { tokens: [], confidence: 0, frames: [] },
+      visual: { labels: [], dominantColor: "#000000", brightness: 0, motionScore: 0 },
+      modelTrace: []
+    },
+    error: null,
+    createdAt: now,
+    updatedAt: now
   };
 }
 

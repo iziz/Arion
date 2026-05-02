@@ -1266,6 +1266,21 @@ button:disabled {
   margin-top: 10px;
 }
 
+.analysis-scope {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef7f3;
+  color: #2b8b70;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .analysis-patterns span,
 .analysis-pattern-list span {
   display: inline-grid;

@@ -459,6 +459,12 @@ export default function App() {
     await refresh();
   }
 
+  async function runGroupAnalysis() {
+    if (!selectedIndex) return;
+    setAnalysis(await api.post<AnalysisResult>(`/api/indexes/${selectedIndex.id}/analyze`, { question }));
+    await refresh();
+  }
+
   async function registerWebhook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -859,16 +865,23 @@ export default function App() {
             <input
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
-              placeholder="Ask about the selected asset"
+              placeholder="Ask about the selected asset or asset group"
               disabled={!selectedAsset || selectedAsset.status !== "indexed"}
             />
             <button type="submit" disabled={!selectedAsset || selectedAsset.status !== "indexed"}>
               <BrainCircuit size={16} />
-              Analyze
+              Analyze asset
+            </button>
+            <button type="button" disabled={!selectedIndex || visibleIndexedAssets === 0} onClick={() => void runGroupAnalysis()}>
+              <Layers3 size={16} />
+              Analyze group
             </button>
           </form>
           {analysis ? (
             <article className="analysis-card">
+              <span className="analysis-scope">
+                {analysis.scope.type === "asset_group" ? "Asset group" : "Asset"} · {analysis.scope.label} · {analysis.scope.assetCount} asset{analysis.scope.assetCount === 1 ? "" : "s"}
+              </span>
               <strong>{analysis.answer}</strong>
               <p>{analysis.summary}</p>
               <div className="chips">
