@@ -521,6 +521,11 @@ export type AnalysisResult = {
     }>;
     limitations: string[];
   };
+  generator: {
+    provider: string;
+    model: string;
+    mode: "local" | "http" | "fallback";
+  };
   generatedAt: string;
 };
 

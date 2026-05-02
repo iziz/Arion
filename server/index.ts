@@ -908,7 +908,7 @@ async function analyzeAndEmit(asset: AssetRecord, question: string) {
   if (asset.status !== "indexed") {
     throw Object.assign(new Error("Asset is not indexed yet"), { statusCode: 409 });
   }
-  const result = analyzeAsset(asset, question);
+  const result = await analyzeAsset(asset, question);
   const event = await recordEvent("analysis.completed", "Analysis completed", {
     indexId: asset.indexId,
     assetId: asset.id,

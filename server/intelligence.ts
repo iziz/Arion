@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AnalysisResult, AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
+import { createAnalysisGenerator } from "./analysisGenerator";
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
 import { planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
@@ -590,7 +591,7 @@ export function searchAssets(
     .slice(0, limit);
 }
 
-export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult {
+export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<AnalysisResult> {
   const queryPlan = planDomainQuery(question);
   const domainProfile = expandDomainQuery(queryPlan.semanticQuery || question);
   const queryTerms = extractKeywords(domainProfile.expandedText);
@@ -609,9 +610,6 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
     .sort((a, b) => b.score - a.score);
   const chapters = (candidateChapters.length > 0 ? candidateChapters.map((item) => item.segment) : question.trim() ? [] : asset.timeline).slice(0, 6);
   const verification = chapters.flatMap((segment) => buildVerificationChecks(asset, segment, queryPlan.domainFilters));
-  const verified = verification.filter((check) => check.status === "pass").length;
-  const uncertain = verification.filter((check) => check.status === "soft_pass" || check.status === "unknown").length;
-  const failed = verification.filter((check) => check.status === "fail").length;
   const features = chapters.map((segment) => featureFromSegment(segment, buildVerificationChecks(asset, segment, queryPlan.domainFilters)));
   const patterns = aggregatePatterns(features);
   const domainSignals = chapters.flatMap((segment) => [
@@ -637,25 +635,27 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
     );
     return clipFromSegment(asset, withSceneData(asset, segment), segmentChecks, segmentReasons);
   });
-  const answer =
-    question.trim().length > 0
-      ? `Grounded analysis for "${question}" used ${chapters.length} retrieved moments with ${verified} verified constraints, ${uncertain} soft or missing constraints, and ${failed} failed constraints. ${
-          signals.length > 0 ? `Strongest signals are ${signals.slice(0, 6).join(", ")}.` : "No grounded signals were available."
-        } Review ${chapters
-          .map((chapter) => `${formatTime(chapter.start)}-${formatTime(chapter.end)}`)
-          .join(", ") || "no grounded moments"}.`
-      : `The asset is indexed with ${asset.timeline.length} segments and emphasizes ${signals.slice(0, 5).join(", ")}.`;
-
-  return {
-    assetId: asset.id,
-    indexId: asset.indexId,
-    summary: asset.summary,
-    answer,
+  const generated = await createAnalysisGenerator().generate({
+    question,
+    asset,
     chapters,
     clips,
     signals,
     patterns,
-    report: buildAnalysisReport(question, asset, patterns, clips, verification, signals),
+    verification
+  });
+
+  return {
+    assetId: asset.id,
+    indexId: asset.indexId,
+    summary: generated.summary ?? asset.summary,
+    answer: generated.answer,
+    chapters,
+    clips,
+    signals,
+    patterns,
+    report: generated.report,
+    generator: generated.generator,
     generatedAt: new Date().toISOString()
   };
 }
@@ -777,43 +777,6 @@ function summarizeVerification(verification: VerificationCheck[]): ClipResult["v
     softPass: verification.filter((check) => check.status === "soft_pass").length,
     unknown: verification.filter((check) => check.status === "unknown").length,
     fail: verification.filter((check) => check.status === "fail").length
-  };
-}
-
-function buildAnalysisReport(
-  question: string,
-  asset: AssetRecord,
-  patterns: AnalysisResult["patterns"],
-  clips: ClipResult[],
-  verification: VerificationCheck[],
-  signals: string[]
-): AnalysisResult["report"] {
-  const passed = verification.filter((check) => check.status === "pass").length;
-  const total = verification.length;
-  const confidence = clips.length > 0 ? Number((clips.reduce((sum, clip) => sum + clip.confidence, 0) / clips.length).toFixed(2)) : 0;
-  const topGroups = patterns.topGroups.slice(0, 5).map((group) => `${group.label} (${group.count}/${patterns.totalMoments})`);
-  const verifiedRatio = total > 0 ? `${passed}/${total}` : "0/0";
-  return {
-    title: question.trim() ? `Grounded report for ${question}` : `Asset report for ${asset.title}`,
-    confidence,
-    sections: [
-      {
-        heading: "Retrieval Grounding",
-        body: `${clips.length} clips were selected from indexed timeline moments. Structured verification passed ${verifiedRatio} constraints.`,
-        bullets: clips.slice(0, 5).map((clip) => `${clip.title}: ${clip.event}${clip.player ? ` · ${clip.player}` : ""}`)
-      },
-      {
-        heading: "Pattern Summary",
-        body: patterns.totalMoments > 0 ? "The aggregator grouped retrieved moments by event, role, zone, season, and tracking signals." : "No grounded moments were available for aggregation.",
-        bullets: topGroups.length > 0 ? topGroups : ["No dominant pattern group was available."]
-      },
-      {
-        heading: "Operational Notes",
-        body: signals.length > 0 ? `Primary indexed signals: ${signals.slice(0, 6).join(", ")}.` : "No strong indexed signals were available.",
-        bullets: patterns.gaps.length > 0 ? patterns.gaps.slice(0, 5) : ["No major indexed evidence gaps were detected for the selected clips."]
-      }
-    ],
-    limitations: patterns.gaps.length > 0 ? patterns.gaps : ["This report is generated from indexed metadata and local heuristics, not direct foundation-model generation."]
   };
 }
 
