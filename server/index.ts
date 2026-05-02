@@ -21,6 +21,7 @@ import { rebuildVisualVectorStore, searchVisualVectors, upsertAssetVisualVectors
 import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } from "./visionDetectionRuntime";
 import { detectSceneBoundaries } from "./sceneDetection";
 import { getPostgresStatus, isPostgresEnabled } from "./postgresStore";
+import { getSportsKnowledgeSnapshot } from "./sportsKnowledge";
 import { getObservabilitySnapshot, logJson, observabilityMiddleware, traceAsync, traceJobAsync } from "./observability";
 import { normalizeUploadedText } from "./textEncoding";
 import {
@@ -330,6 +331,10 @@ app.get("/api/search", async (req, res) => {
 
 app.get("/api/search/plan", async (req, res) => {
   res.json(planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query)));
+});
+
+app.get("/api/knowledge/sports", async (_req, res) => {
+  res.json(getSportsKnowledgeSnapshot());
 });
 
 app.get("/api/orchestrate/plan", async (req, res) => {

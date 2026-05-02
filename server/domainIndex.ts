@@ -120,6 +120,41 @@ const footballRules = {
       label: "event.shot",
       terms: ["shot", "shoots", "finish", "finishes", "슈팅", "슛", "마무리", "abschluss"],
       aliases: ["shot", "슛"]
+    },
+    {
+      label: "event.dribble",
+      terms: ["dribble", "dribbles", "dribbling", "take on", "takes on", "carry", "carries", "드리블", "돌파", "운반"],
+      aliases: ["dribble", "드리블"]
+    },
+    {
+      label: "event.progressive_pass",
+      terms: ["progressive pass", "line breaking pass", "breaks the line", "전진 패스", "라인 브레이킹", "라인브레이킹"],
+      aliases: ["progressive pass", "전진 패스"]
+    },
+    {
+      label: "event.save",
+      terms: ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"],
+      aliases: ["save", "선방"]
+    },
+    {
+      label: "event.pressure",
+      terms: ["pressure", "under pressure", "pressured", "압박", "pressure situation"],
+      aliases: ["pressure", "압박"]
+    },
+    {
+      label: "event.scramble",
+      terms: ["scramble", "scrambles", "scramble play", "스크램블"],
+      aliases: ["scramble", "스크램블"]
+    },
+    {
+      label: "event.pocket_escape",
+      terms: ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"],
+      aliases: ["pocket escape", "포켓 탈출"]
+    },
+    {
+      label: "event.throw_on_run",
+      terms: ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"],
+      aliases: ["throw on the run"]
     }
   ] satisfies OntologyRule[],
   fieldZones: [
@@ -664,7 +699,7 @@ function passTypeFromClassifier(label?: string): NonNullable<DomainEvent["footba
 
 function eventTypeFromClassifier(label: string | undefined, passType: NonNullable<DomainEvent["football"]>["passType"]) {
   if (label === "shot") return "shot";
-  if (label === "carry") return "carry";
+  if (label === "carry" || label === "dribble" || label === "progressive_pass" || label === "save" || label === "pressure" || label === "scramble" || label === "pocket_escape" || label === "throw_on_run") return label;
   if (label?.endsWith("_receive") || passType !== "unknown") return "pass_receive";
   return "scene";
 }
@@ -689,6 +724,13 @@ function fieldZoneFromLabel(label: string): NonNullable<DomainEvent["football"]>
 function eventTypeFromLabel(label: string) {
   if (label.endsWith("pass_receive")) return "pass_receive";
   if (label.endsWith("shot")) return "shot";
+  if (label.endsWith("dribble")) return "dribble";
+  if (label.endsWith("progressive_pass")) return "progressive_pass";
+  if (label.endsWith("save")) return "save";
+  if (label.endsWith("pressure")) return "pressure";
+  if (label.endsWith("scramble")) return "scramble";
+  if (label.endsWith("pocket_escape")) return "pocket_escape";
+  if (label.endsWith("throw_on_run")) return "throw_on_run";
   return "scene";
 }
 

@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 export type SportsLeague = "Premier League" | "NFL" | "Champions League" | "Bundesliga";
 
 export type SportsKnowledgePlayer = {
@@ -17,14 +20,17 @@ export type KnowledgeMatch<T> = {
   evidence: string[];
 };
 
-export const sportsCompetitions = [
+type SportsCompetitionRecord = { value: SportsLeague; aliases: string[] };
+type SportsTeamRecord = { value: string; aliases: string[] };
+
+export const sportsCompetitions: SportsCompetitionRecord[] = [
   { value: "Premier League" as const, aliases: ["Premier League", "EPL", "프리미어 리그", "프리미어리그"] },
   { value: "NFL" as const, aliases: ["NFL", "National Football League"] },
   { value: "Champions League" as const, aliases: ["Champions League", "UCL", "챔피언스 리그", "챔피언스리그"] },
   { value: "Bundesliga" as const, aliases: ["Bundesliga", "분데스리가"] }
 ];
 
-export const sportsTeams = [
+export const sportsTeams: SportsTeamRecord[] = [
   { value: "Manchester City", aliases: ["Manchester City", "Man City"] },
   { value: "Manchester United", aliases: ["Manchester United", "Man United"] },
   { value: "Arsenal", aliases: ["Arsenal"] },
@@ -52,7 +58,7 @@ export const sportsPlayers: SportsKnowledgePlayer[] = [
 
 export function matchKnowledgePlayer(text: string): KnowledgeMatch<SportsKnowledgePlayer> | null {
   const normalized = normalize(text);
-  for (const candidate of sportsPlayers) {
+  for (const candidate of getSportsPlayers()) {
     const alias = candidate.aliases.find((value) => normalized.includes(normalize(value)));
     if (!alias) continue;
     return {
@@ -67,7 +73,7 @@ export function matchKnowledgePlayer(text: string): KnowledgeMatch<SportsKnowled
 
 export function matchKnowledgePlayers(text: string): Array<KnowledgeMatch<SportsKnowledgePlayer>> {
   const normalized = normalize(text);
-  return sportsPlayers
+  return getSportsPlayers()
     .map((candidate) => {
       const alias = candidate.aliases.find((value) => normalized.includes(normalize(value)));
       if (!alias) return null;
@@ -83,7 +89,7 @@ export function matchKnowledgePlayers(text: string): Array<KnowledgeMatch<Sports
 
 export function matchCompetition(text: string): KnowledgeMatch<SportsLeague> | null {
   const normalized = normalize(text);
-  for (const candidate of sportsCompetitions) {
+  for (const candidate of getSportsCompetitions()) {
     const alias = candidate.aliases.find((value) => normalized.includes(normalize(value)));
     if (!alias) continue;
     return {
@@ -98,7 +104,7 @@ export function matchCompetition(text: string): KnowledgeMatch<SportsLeague> | n
 
 export function matchTeams(text: string) {
   const normalized = normalize(text);
-  return sportsTeams
+  return getSportsTeams()
     .filter((candidate) => candidate.aliases.some((alias) => normalized.includes(normalize(alias))))
     .map((candidate) => ({
       value: candidate.value,
@@ -114,7 +120,7 @@ export function resolveRecentSeasons(league: SportsLeague | undefined, count: nu
 }
 
 export function playerTeamForSeason(playerName: string, season: string | undefined) {
-  const player = sportsPlayers.find((candidate) => candidate.canonical === playerName);
+  const player = getSportsPlayers().find((candidate) => candidate.canonical === playerName);
   if (!player || !season) return null;
   if (season.includes(",")) {
     const values = season.split(",");
@@ -122,6 +128,63 @@ export function playerTeamForSeason(playerName: string, season: string | undefin
     return teams.length > 0 ? teams.join(", ") : null;
   }
   return player.teamsBySeason[season] ?? null;
+}
+
+export function getKnowledgePlayer(playerName: string) {
+  const normalized = normalize(playerName);
+  return getSportsPlayers().find((candidate) => normalize(candidate.canonical) === normalized || candidate.aliases.some((alias) => normalize(alias) === normalized)) ?? null;
+}
+
+export function getSportsKnowledgeSnapshot() {
+  return {
+    competitions: getSportsCompetitions(),
+    teams: getSportsTeams(),
+    players: getSportsPlayers()
+  };
+}
+
+function getSportsCompetitions() {
+  const external = loadExternalKnowledge();
+  return dedupeByValue([...sportsCompetitions, ...(external.competitions ?? [])], (item) => item.value);
+}
+
+function getSportsTeams() {
+  const external = loadExternalKnowledge();
+  return dedupeByValue([...sportsTeams, ...(external.teams ?? [])], (item) => item.value);
+}
+
+function getSportsPlayers() {
+  const external = loadExternalKnowledge();
+  return dedupeByValue([...sportsPlayers, ...(external.players ?? [])], (player) => player.canonical);
+}
+
+function loadExternalKnowledge(): {
+  competitions?: SportsCompetitionRecord[];
+  teams?: SportsTeamRecord[];
+  players?: SportsKnowledgePlayer[];
+} {
+  const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
+  if (!existsSync(knowledgePath)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(knowledgePath, "utf8"));
+    return {
+      competitions: Array.isArray(parsed.competitions) ? parsed.competitions : undefined,
+      teams: Array.isArray(parsed.teams) ? parsed.teams : undefined,
+      players: Array.isArray(parsed.players) ? parsed.players : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
+function dedupeByValue<T>(items: T[], keyFn: (item: T) => string) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = normalize(keyFn(item));
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function player(

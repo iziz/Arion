@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AnalysisResult, AssetRecord, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
+import type { AnalysisResult, AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
 import { planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
@@ -541,10 +541,22 @@ export function searchAssets(
       const totalScore = Number((lexical + domain + filters + semantic + visual + source + confidence + recency).toFixed(3));
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;
       const selectedSegments = matchingSegments.slice(0, 5);
+      const selectedDetails = selectedSegments.map((item) => {
+        const segment = withSceneData(asset, item.segment);
+        const matchReasons = buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan);
+        const verification = buildVerificationChecks(asset, item.segment, options.domainFilters);
+        return {
+          segment,
+          matchReasons,
+          verification,
+          clip: clipFromSegment(asset, segment, verification, matchReasons)
+        };
+      });
       return {
         asset,
         index,
-        segments: selectedSegments.map((item) => withSceneData(asset, item.segment)),
+        segments: selectedDetails.map((item) => item.segment),
+        clips: selectedDetails.map((item) => item.clip),
         score: totalScore,
         ranking: {
           lexical: Number(lexical.toFixed(3)),
@@ -569,10 +581,8 @@ export function searchAssets(
           index ? `index=${index.name}` : "index=unknown"
         ].filter(Boolean),
         queryPlan: options.queryPlan ?? null,
-        matchReasons: selectedSegments.flatMap((item) =>
-          buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan)
-        ),
-        verification: selectedSegments.flatMap((item) => buildVerificationChecks(asset, item.segment, options.domainFilters))
+        matchReasons: selectedDetails.flatMap((item) => item.matchReasons),
+        verification: selectedDetails.flatMap((item) => item.verification)
       };
     })
     .filter((result) => result.score > 0 && result.segments.length > 0)
@@ -611,6 +621,22 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
     segment.domain?.scope?.season?.value ?? ""
   ]);
   const signals = unique([...(chapters.length > 0 ? asset.tags.slice(0, 6) : []), ...chapters.flatMap((segment) => segment.tags), ...domainSignals].filter(Boolean)).slice(0, 12);
+  const clips = chapters.map((segment) => {
+    const segmentChecks = buildVerificationChecks(asset, segment, queryPlan.domainFilters);
+    const segmentReasons = buildSearchMatchReasons(
+      asset,
+      segment,
+      {
+        lexicalScore: scoreText(`${segment.transcript} ${segment.tags.join(" ")} ${segmentSearchText(segment)}`, queryTerms),
+        semanticScore: 0,
+        visualScore: 0,
+        domainScore: scoreDomainMatch(segment, domainProfile)
+      },
+      queryPlan.domainFilters,
+      queryPlan
+    );
+    return clipFromSegment(asset, withSceneData(asset, segment), segmentChecks, segmentReasons);
+  });
   const answer =
     question.trim().length > 0
       ? `Grounded analysis for "${question}" used ${chapters.length} retrieved moments with ${verified} verified constraints, ${uncertain} soft or missing constraints, and ${failed} failed constraints. ${
@@ -626,8 +652,10 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
     summary: asset.summary,
     answer,
     chapters,
+    clips,
     signals,
     patterns,
+    report: buildAnalysisReport(question, asset, patterns, clips, verification, signals),
     generatedAt: new Date().toISOString()
   };
 }
@@ -635,6 +663,13 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
 function featureFromSegment(segment: TimelineSegment, verification: VerificationCheck[]) {
   const event = segment.domain?.events[0];
   const football = event?.football;
+  const vision = segment.sceneData?.vision;
+  const receiverTrackId = football?.receivingPlayer.trackId ?? null;
+  const passerTrackId = football?.passingPlayer.trackId ?? null;
+  const nearestPlayerTrackId = vision?.tracking?.nearestPlayerTrackId ?? null;
+  const ballTrackId = vision?.tracking?.ballTrackId ?? null;
+  const roleGrounding =
+    receiverTrackId || passerTrackId ? "structured_event" : nearestPlayerTrackId && ballTrackId ? "tracking_v0" : "unknown_grounding";
   return {
     segmentId: segment.id,
     player: football?.receivingPlayer.identity?.name ?? football?.passingPlayer.identity?.name ?? segment.domain?.scope?.players[0]?.value ?? "unknown_player",
@@ -644,6 +679,10 @@ function featureFromSegment(segment: TimelineSegment, verification: Verification
     passType: football?.passType ?? "unknown_pass",
     fieldZone: football?.fieldZone ?? "unknown_zone",
     role: football?.receivingPlayer.present ? "receiver" : football?.passingPlayer.present ? "passer" : event?.eventType === "shot" ? "shooter" : "unknown_role",
+    roleGrounding,
+    playerTrackId: receiverTrackId ?? passerTrackId ?? nearestPlayerTrackId ?? "unknown_player_track",
+    ballTrackId: ballTrackId ?? "unknown_ball_track",
+    ballDirection: vision?.tracking?.ballMovement.direction ?? "unknown_direction",
     ballState: football?.ball.state ?? "unknown_ball",
     confidence: event?.confidence ?? segment.confidence,
     verification
@@ -657,7 +696,9 @@ function aggregatePatterns(features: ReturnType<typeof featureFromSegment>[]): A
     ...topFeatureGroups(features, "passType", "Pass"),
     ...topFeatureGroups(features, "eventType", "Event"),
     ...topFeatureGroups(features, "player", "Player"),
-    ...topFeatureGroups(features, "season", "Season")
+    ...topFeatureGroups(features, "season", "Season"),
+    ...topFeatureGroups(features, "roleGrounding", "Role grounding"),
+    ...topFeatureGroups(features, "ballDirection", "Ball direction")
   ]
     .filter((group) => !group.key.startsWith("unknown_"))
     .sort((a, b) => b.count - a.count || b.confidence - a.confidence)
@@ -666,6 +707,8 @@ function aggregatePatterns(features: ReturnType<typeof featureFromSegment>[]): A
     features.some((feature) => feature.player === "unknown_player") ? "Some moments have no resolved player identity." : "",
     features.some((feature) => feature.season === "unknown_season") ? "Some moments have no season scope." : "",
     features.some((feature) => feature.competition === "unknown_competition") ? "Some moments have no competition scope." : "",
+    features.some((feature) => feature.playerTrackId === "unknown_player_track") ? "Some moments have no player track grounding." : "",
+    features.some((feature) => feature.ballTrackId === "unknown_ball_track") ? "Some moments have no ball track grounding." : "",
     verification.some((check) => check.status === "fail") ? "Some retrieved moments failed structured verification." : "",
     verification.some((check) => check.status === "unknown") ? "Some constraints are missing indexed evidence." : ""
   ].filter(Boolean);
@@ -679,7 +722,11 @@ function aggregatePatterns(features: ReturnType<typeof featureFromSegment>[]): A
   };
 }
 
-function topFeatureGroups(features: ReturnType<typeof featureFromSegment>[], key: "player" | "competition" | "season" | "eventType" | "passType" | "fieldZone" | "role", label: string) {
+function topFeatureGroups(
+  features: ReturnType<typeof featureFromSegment>[],
+  key: "player" | "competition" | "season" | "eventType" | "passType" | "fieldZone" | "role" | "roleGrounding" | "ballDirection",
+  label: string
+) {
   const groups = new Map<string, { count: number; confidence: number }>();
   for (const feature of features) {
     const value = feature[key];
@@ -696,6 +743,78 @@ function topFeatureGroups(features: ReturnType<typeof featureFromSegment>[], key
     share: features.length > 0 ? Number((group.count / features.length).toFixed(2)) : 0,
     confidence: Number((group.confidence / Math.max(1, group.count)).toFixed(2))
   }));
+}
+
+function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, verification: VerificationCheck[], reasons: SearchMatchReason[]): ClipResult {
+  const event = segment.domain?.events[0];
+  const football = event?.football;
+  const player = football?.receivingPlayer.identity?.name ?? football?.passingPlayer.identity?.name ?? segment.domain?.scope?.players[0]?.value ?? null;
+  const start = Math.max(0, Number((segment.start - 2).toFixed(2)));
+  const end = Number((segment.end + 2).toFixed(2));
+  return {
+    id: `${asset.id}:${segment.id}:clip`,
+    assetId: asset.id,
+    segmentId: segment.id,
+    title: `${formatTime(segment.start)}-${formatTime(segment.end)} · ${segment.label}`,
+    start,
+    end,
+    thumbnailPath: segment.sceneData?.image.thumbnailPath ?? segment.thumbnailPath,
+    event: event?.eventType ?? segment.sceneData?.vision?.eventClassification?.label ?? "moment",
+    player,
+    confidence: Number(Math.max(event?.confidence ?? 0, segment.confidence).toFixed(2)),
+    verificationSummary: summarizeVerification(verification),
+    reasons: unique([
+      event?.caption ?? "",
+      ...reasons.map((reason) => `${reason.label}: ${reason.value}`),
+      ...(event?.evidence.heuristics ?? [])
+    ].filter(Boolean)).slice(0, 6)
+  };
+}
+
+function summarizeVerification(verification: VerificationCheck[]): ClipResult["verificationSummary"] {
+  return {
+    pass: verification.filter((check) => check.status === "pass").length,
+    softPass: verification.filter((check) => check.status === "soft_pass").length,
+    unknown: verification.filter((check) => check.status === "unknown").length,
+    fail: verification.filter((check) => check.status === "fail").length
+  };
+}
+
+function buildAnalysisReport(
+  question: string,
+  asset: AssetRecord,
+  patterns: AnalysisResult["patterns"],
+  clips: ClipResult[],
+  verification: VerificationCheck[],
+  signals: string[]
+): AnalysisResult["report"] {
+  const passed = verification.filter((check) => check.status === "pass").length;
+  const total = verification.length;
+  const confidence = clips.length > 0 ? Number((clips.reduce((sum, clip) => sum + clip.confidence, 0) / clips.length).toFixed(2)) : 0;
+  const topGroups = patterns.topGroups.slice(0, 5).map((group) => `${group.label} (${group.count}/${patterns.totalMoments})`);
+  const verifiedRatio = total > 0 ? `${passed}/${total}` : "0/0";
+  return {
+    title: question.trim() ? `Grounded report for ${question}` : `Asset report for ${asset.title}`,
+    confidence,
+    sections: [
+      {
+        heading: "Retrieval Grounding",
+        body: `${clips.length} clips were selected from indexed timeline moments. Structured verification passed ${verifiedRatio} constraints.`,
+        bullets: clips.slice(0, 5).map((clip) => `${clip.title}: ${clip.event}${clip.player ? ` · ${clip.player}` : ""}`)
+      },
+      {
+        heading: "Pattern Summary",
+        body: patterns.totalMoments > 0 ? "The aggregator grouped retrieved moments by event, role, zone, season, and tracking signals." : "No grounded moments were available for aggregation.",
+        bullets: topGroups.length > 0 ? topGroups : ["No dominant pattern group was available."]
+      },
+      {
+        heading: "Operational Notes",
+        body: signals.length > 0 ? `Primary indexed signals: ${signals.slice(0, 6).join(", ")}.` : "No strong indexed signals were available.",
+        bullets: patterns.gaps.length > 0 ? patterns.gaps.slice(0, 5) : ["No major indexed evidence gaps were detected for the selected clips."]
+      }
+    ],
+    limitations: patterns.gaps.length > 0 ? patterns.gaps : ["This report is generated from indexed metadata and local heuristics, not direct foundation-model generation."]
+  };
 }
 
 export function checksum(input: string) {

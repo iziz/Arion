@@ -815,6 +815,7 @@ export default function App() {
                     />
                   </button>
                 ))}
+                {result.clips.length > 0 && <ClipStrip clips={result.clips} onSelect={selectSegment} />}
               </article>
             ))}
             {!searching && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
@@ -878,6 +879,22 @@ export default function App() {
                 </div>
               )}
               {analysis.patterns.gaps.length > 0 && <p className="analysis-gaps">{analysis.patterns.gaps.slice(0, 3).join(" ")}</p>}
+              {analysis.clips.length > 0 && <ClipStrip clips={analysis.clips} onSelect={selectSegment} />}
+              <div className="analysis-report">
+                <strong>{analysis.report.title}</strong>
+                <span>Confidence {Math.round(analysis.report.confidence * 100)}%</span>
+                {analysis.report.sections.map((section) => (
+                  <section key={section.heading}>
+                    <b>{section.heading}</b>
+                    <p>{section.body}</p>
+                    <ul>
+                      {section.bullets.slice(0, 4).map((bullet) => (
+                        <li key={bullet}>{bullet}</li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
             </article>
           ) : (
             <EmptyState text="Select an indexed asset and ask a question." />
@@ -1592,6 +1609,35 @@ function SearchSceneEvidence({
         </span>
       </span>
     </>
+  );
+}
+
+function ClipStrip({
+  clips,
+  onSelect
+}: {
+  clips: SearchResult["clips"];
+  onSelect: (assetId: string, segmentId: string, start: number) => void;
+}) {
+  return (
+    <div className="clip-strip">
+      {clips.slice(0, 5).map((clip) => {
+        const imagePath = clip.thumbnailPath ? mediaPath(clip.thumbnailPath) : null;
+        return (
+          <button key={clip.id} type="button" onClick={() => onSelect(clip.assetId, clip.segmentId, clip.start)}>
+            {imagePath ? <img src={imagePath} alt="" /> : <span>No image</span>}
+            <b>{clip.title}</b>
+            <em>
+              {clip.event}
+              {clip.player ? ` · ${clip.player}` : ""} · {Math.round(clip.confidence * 100)}%
+            </em>
+            <small>
+              pass {clip.verificationSummary.pass} · soft {clip.verificationSummary.softPass} · unknown {clip.verificationSummary.unknown} · fail {clip.verificationSummary.fail}
+            </small>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

@@ -8,7 +8,9 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const warnings: string[] = [];
   let confidence = originalQuery ? 0.35 : 0.15;
 
-  const competition = inferCompetition(originalQuery);
+  const playerMatch = matchKnowledgePlayer(originalQuery);
+  let competition = inferCompetition(originalQuery);
+  if (!competition && playerMatch) competition = playerMatch.value.league;
   if (competition) {
     inferred.competition = competition;
     confidence += 0.08;
@@ -20,7 +22,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.06;
   }
 
-  const player = inferPlayer(originalQuery);
+  const player = playerMatch?.value.canonical;
   if (player) {
     inferred.player = player;
     confidence += 0.12;
@@ -47,6 +49,11 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
 
   const receiveIntent = hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
   const shotIntent = hasAny(normalized, ["shot", "shoot", "finish", "슛", "슈팅", "마무리"]);
+  const dribbleIntent = hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
+  const pressureIntent = hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
+  const scrambleIntent = hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
+  const pocketEscapeIntent = hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
+  const throwOnRunIntent = hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
   if (receiveIntent || inferred.passType) {
     inferred.eventType = "pass_receive";
     inferred.role = "receiver";
@@ -55,6 +62,21 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     inferred.eventType = "shot";
     inferred.role = "shooter";
     confidence += 0.1;
+  } else if (dribbleIntent) {
+    inferred.eventType = "dribble";
+    confidence += 0.1;
+  } else if (scrambleIntent) {
+    inferred.eventType = "scramble";
+    confidence += 0.1;
+  } else if (pocketEscapeIntent) {
+    inferred.eventType = "pocket_escape";
+    confidence += 0.1;
+  } else if (throwOnRunIntent) {
+    inferred.eventType = "throw_on_run";
+    confidence += 0.1;
+  } else if (pressureIntent) {
+    inferred.eventType = "pressure";
+    confidence += 0.08;
   }
 
   if (!inferred.eventType && (inferred.player || inferred.competition || inferred.fieldZone)) {
@@ -77,7 +99,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     rewrittenQuery,
     domainFilters,
     intent: {
-      domain: Object.keys(domainFilters).length > 0 ? "sports.football" : null,
+      domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -114,16 +136,17 @@ function inferSeason(query: string, competition?: string) {
   return year?.[1];
 }
 
-function inferPlayer(query: string) {
-  return matchKnowledgePlayer(query)?.value.canonical;
-}
-
 function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
   return [
     query,
     filters.player,
     filters.competition,
     filters.eventType === "pass_receive" ? "receive receiving player" : "",
+    filters.eventType === "dribble" ? "dribble carry take on 드리블 돌파" : "",
+    filters.eventType === "pressure" ? "pressure under pressure 압박" : "",
+    filters.eventType === "scramble" ? "scramble quarterback carry pocket escape" : "",
+    filters.eventType === "pocket_escape" ? "pocket escape out of the pocket quarterback" : "",
+    filters.eventType === "throw_on_run" ? "throw on the run rolling right rolling left" : "",
     filters.passType === "through_ball" ? "through ball ball in behind 스루패스 침투패스" : "",
     filters.fieldZone === "final_third" ? "final third attacking third 파이널 서드" : ""
   ]
@@ -148,6 +171,11 @@ function compactFilters(filters: DomainSearchFilters): DomainSearchFilters {
   return Object.fromEntries(
     Object.entries(filters).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
   ) as DomainSearchFilters;
+}
+
+function domainFromFilters(filters: DomainSearchFilters) {
+  if (filters.competition === "NFL" || ["scramble", "pocket_escape", "throw_on_run", "pressure"].includes(filters.eventType ?? "")) return "sports.american_football";
+  return "sports.football";
 }
 
 function stringValue(value: unknown) {

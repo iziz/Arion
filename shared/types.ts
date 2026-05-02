@@ -130,7 +130,21 @@ export type VisionEvidence = {
     };
   };
   eventClassification?: {
-    label: "through_ball_receive" | "pass_receive" | "shot" | "cross_receive" | "cutback_receive" | "carry" | "unknown";
+    label:
+      | "through_ball_receive"
+      | "pass_receive"
+      | "shot"
+      | "cross_receive"
+      | "cutback_receive"
+      | "carry"
+      | "dribble"
+      | "progressive_pass"
+      | "save"
+      | "pressure"
+      | "scramble"
+      | "pocket_escape"
+      | "throw_on_run"
+      | "unknown";
     confidence: number;
     rules: string[];
     features: {
@@ -357,6 +371,7 @@ export type SearchResult = {
   asset: AssetRecord;
   index: IndexRecord | null;
   segments: TimelineSegment[];
+  clips: ClipResult[];
   score: number;
   ranking: {
     lexical: number;
@@ -454,12 +469,33 @@ export type VerificationCheck = {
   evidence: string[];
 };
 
+export type ClipResult = {
+  id: string;
+  assetId: string;
+  segmentId: string;
+  title: string;
+  start: number;
+  end: number;
+  thumbnailPath: string | null;
+  event: string;
+  player: string | null;
+  confidence: number;
+  verificationSummary: {
+    pass: number;
+    softPass: number;
+    unknown: number;
+    fail: number;
+  };
+  reasons: string[];
+};
+
 export type AnalysisResult = {
   assetId: string;
   indexId: string;
   summary: string;
   answer: string;
   chapters: TimelineSegment[];
+  clips: ClipResult[];
   signals: string[];
   patterns: {
     totalMoments: number;
@@ -474,6 +510,16 @@ export type AnalysisResult = {
       confidence: number;
     }>;
     gaps: string[];
+  };
+  report: {
+    title: string;
+    confidence: number;
+    sections: Array<{
+      heading: string;
+      body: string;
+      bullets: string[];
+    }>;
+    limitations: string[];
   };
   generatedAt: string;
 };

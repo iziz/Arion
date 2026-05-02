@@ -30,6 +30,41 @@ const classifierRules: Array<{
     label: "shot",
     textTerms: ["shot", "shoot", "finish", "goal", "골", "슛", "슈팅", "마무리", "abschluss", "tor"],
     eventCandidate: "shot"
+  },
+  {
+    label: "dribble",
+    textTerms: ["dribble", "dribbles", "dribbling", "take on", "takes on", "carry", "carries", "드리블", "돌파", "운반"],
+    eventCandidate: "carry"
+  },
+  {
+    label: "progressive_pass",
+    textTerms: ["progressive pass", "line breaking pass", "breaks the line", "전진 패스", "라인 브레이킹", "라인브레이킹"],
+    eventCandidate: "pass_receive"
+  },
+  {
+    label: "save",
+    textTerms: ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"],
+    eventCandidate: "shot"
+  },
+  {
+    label: "pressure",
+    textTerms: ["pressure", "under pressure", "pressured", "압박", "pressure situation"],
+    eventCandidate: "unknown"
+  },
+  {
+    label: "scramble",
+    textTerms: ["scramble", "scrambles", "scramble play", "스크램블"],
+    eventCandidate: "carry"
+  },
+  {
+    label: "pocket_escape",
+    textTerms: ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"],
+    eventCandidate: "carry"
+  },
+  {
+    label: "throw_on_run",
+    textTerms: ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"],
+    eventCandidate: "pass_receive"
   }
 ];
 
@@ -114,7 +149,7 @@ function mergeClassificationCandidate(
   classification: NonNullable<VisionEvidence["eventClassification"]>
 ): VisionEvidence["eventCandidates"] {
   if (classification.label === "unknown" || classification.confidence <= 0) return candidates;
-  const type = classification.label === "shot" ? "shot" : classification.label === "carry" ? "carry" : "pass_receive";
+  const type = eventCandidateType(classification.label);
   const reason = `Event classifier v1: ${classification.label}`;
   const existing = candidates.find((candidate) => candidate.reason === reason);
   if (existing) return candidates;
@@ -126,6 +161,13 @@ function mergeClassificationCandidate(
       reason
     }
   ];
+}
+
+function eventCandidateType(label: EventLabel): VisionEvidence["eventCandidates"][number]["type"] {
+  if (label === "shot" || label === "save") return "shot";
+  if (label === "carry" || label === "dribble" || label === "scramble" || label === "pocket_escape") return "carry";
+  if (label === "pressure") return "unknown";
+  return "pass_receive";
 }
 
 function collectClassifierText(segment: TimelineSegment) {

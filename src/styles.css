@@ -1295,6 +1295,42 @@ button:disabled {
   font-weight: 800;
 }
 
+.analysis-report {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border-top: 1px solid #d7e1dc;
+  padding-top: 12px;
+}
+
+.analysis-report > span {
+  color: #2b8b70;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.analysis-report section {
+  display: grid;
+  gap: 6px;
+}
+
+.analysis-report b {
+  color: #25352f;
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.analysis-report ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: #526660;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
 .timeline em {
   margin-top: 6px;
   color: #52636b;
@@ -3885,6 +3921,81 @@ textarea:focus {
 .result-card > div {
   display: grid;
   gap: 3px;
+}
+
+.clip-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.clip-strip button,
+.clip-strip button:hover,
+.clip-strip button:active,
+.clip-strip button:focus {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #d8e4df;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #25352f;
+  box-shadow: none;
+  padding: 8px;
+  text-align: left;
+  transform: none;
+}
+
+.clip-strip button:hover {
+  border-color: #9bc8b8;
+  background: #f1f8f5;
+}
+
+.clip-strip img,
+.clip-strip button > span {
+  grid-row: 1 / span 3;
+  width: 68px;
+  aspect-ratio: 16 / 9;
+  border-radius: 7px;
+  background: #e7efeb;
+  object-fit: cover;
+}
+
+.clip-strip button > span {
+  display: grid;
+  place-items: center;
+  color: #71857d;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.clip-strip b,
+.clip-strip em,
+.clip-strip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-strip b {
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.clip-strip em,
+.clip-strip small {
+  color: #526660;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 820;
+}
+
+.clip-strip em {
+  color: #2b8b70;
 }
 
 .result-segment,
