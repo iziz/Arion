@@ -165,6 +165,12 @@ export type VisionEvidence = {
       playerNearBall: boolean;
       fieldZone: VisionEvidence["fieldZone"]["zone"];
       ballDirection: "left" | "right" | "vertical" | "stationary" | "unknown";
+      trackingContinuity?: number;
+      ballSpeed?: number | null;
+      directionMatchesAttack?: boolean;
+      sameNearestPlayerWindow?: boolean;
+      pressureCue?: boolean;
+      calibratedZone?: boolean;
     };
   };
   fieldZone: {

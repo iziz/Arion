@@ -69,10 +69,11 @@ const classifierRules: Array<{
 ];
 
 export function applyEventClassification(timeline: TimelineSegment[]): TimelineSegment[] {
-  return timeline.map((segment) => {
+  return timeline.map((segment, index) => {
     const vision = segment.sceneData?.vision;
     if (!vision) return segment;
-    const classification = classifySegmentEvent(segment, vision);
+    const context = buildSequenceContext(timeline, index, vision);
+    const classification = classifySegmentEvent(segment, vision, context);
     return {
       ...segment,
       sceneData: {
@@ -87,7 +88,17 @@ export function applyEventClassification(timeline: TimelineSegment[]): TimelineS
   });
 }
 
-function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence): NonNullable<VisionEvidence["eventClassification"]> {
+type SequenceContext = {
+  sameNearestPlayerWindow: boolean;
+  directionMatchesAttack: boolean;
+  trackingContinuity: number;
+  ballSpeed: number | null;
+  pressureCue: boolean;
+  calibratedZone: boolean;
+  sequenceRules: string[];
+};
+
+function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence, context: SequenceContext): NonNullable<VisionEvidence["eventClassification"]> {
   const normalized = normalizeText(collectClassifierText(segment));
   const receiverCue = hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브", "first touch"]);
   const playerNearBall = Boolean(vision.proximity?.ballNearPlayer);
@@ -112,12 +123,33 @@ function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence):
     confidence += playerNearBall ? 0.12 : 0;
     confidence += ballTracked ? 0.08 : 0;
     confidence += vision.fieldZone.zone === "final_third" || vision.fieldZone.zone === "penalty_area" ? 0.08 : 0;
+    confidence += context.directionMatchesAttack ? 0.08 : 0;
+    confidence += context.sameNearestPlayerWindow && rule.label.endsWith("_receive") ? 0.06 : 0;
+    confidence += context.trackingContinuity >= 0.45 ? 0.06 : 0;
+    confidence += context.calibratedZone ? 0.06 : 0;
     confidence += direction !== "unknown" && direction !== "stationary" ? 0.04 : 0;
     if (candidateMatch) confidence += 0.08;
     confidence = roundConfidence(confidence);
 
     rules.push(`${rule.label}: ${[...textMatches, ...receiverMatches].join(", ") || "vision candidate"}`);
     if (!selected || confidence > selected.confidence) selected = { label: rule.label, confidence };
+  }
+
+  const trackingReceive = inferTrackingReceive(vision, context);
+  if (trackingReceive && (!selected || trackingReceive.confidence > selected.confidence)) {
+    selected = trackingReceive;
+    rules.push(...context.sequenceRules, `tracking-event: ${trackingReceive.label}`);
+  }
+
+  const trackingCarry = inferTrackingCarry(vision, context);
+  if (trackingCarry && (!selected || trackingCarry.confidence > selected.confidence)) {
+    selected = trackingCarry;
+    rules.push(...context.sequenceRules, `tracking-event: ${trackingCarry.label}`);
+  }
+
+  if (!selected && context.pressureCue) {
+    selected = { label: "pressure", confidence: roundConfidence(0.4 + (vision.objects.players.confidence ?? 0) * 0.18) };
+    rules.push("text/vision: pressure cue near player cluster");
   }
 
   if (!selected && ballTracked && playerNearBall) {
@@ -139,9 +171,75 @@ function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence):
       ballTracked,
       playerNearBall,
       fieldZone: vision.fieldZone.zone,
-      ballDirection: direction
+      ballDirection: direction,
+      trackingContinuity: context.trackingContinuity,
+      ballSpeed: context.ballSpeed,
+      directionMatchesAttack: context.directionMatchesAttack,
+      sameNearestPlayerWindow: context.sameNearestPlayerWindow,
+      pressureCue: context.pressureCue,
+      calibratedZone: context.calibratedZone
     }
   };
+}
+
+function buildSequenceContext(timeline: TimelineSegment[], index: number, vision: VisionEvidence): SequenceContext {
+  const previousVision = timeline[index - 1]?.sceneData?.vision ?? null;
+  const nextVision = timeline[index + 1]?.sceneData?.vision ?? null;
+  const nearest = vision.tracking?.nearestPlayerTrackId ?? null;
+  const sameNearestPlayerWindow = Boolean(
+    nearest && (previousVision?.tracking?.nearestPlayerTrackId === nearest || nextVision?.tracking?.nearestPlayerTrackId === nearest)
+  );
+  const ballSpeed = vision.tracking?.ballMovement.speedPerSecond ?? null;
+  const trackingContinuity = vision.tracking?.continuity ?? 0;
+  const attackDirection = vision.fieldCalibration?.attackingDirection ?? "unknown";
+  const ballDirection = vision.tracking?.ballMovement.direction ?? "unknown";
+  const directionMatchesAttack =
+    (attackDirection === "left_to_right" && ballDirection === "right") || (attackDirection === "right_to_left" && ballDirection === "left");
+  const pressureCue = Boolean(vision.objects.players.countEstimate >= 8 && vision.proximity?.ballNearPlayer && (ballSpeed ?? 0) < 0.06);
+  const calibratedZone = vision.fieldCalibration?.status === "calibrated";
+  const sequenceRules = [
+    trackingContinuity > 0 ? `sequence: tracking continuity ${trackingContinuity}` : "",
+    ballSpeed !== null ? `sequence: ball speed ${ballSpeed}` : "",
+    sameNearestPlayerWindow ? `sequence: same nearest player ${nearest} in adjacent window` : "",
+    directionMatchesAttack ? `sequence: ball direction matches attack direction ${attackDirection}` : "",
+    vision.fieldCalibration ? `sequence: field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}` : ""
+  ].filter(Boolean);
+  return {
+    sameNearestPlayerWindow,
+    directionMatchesAttack,
+    trackingContinuity,
+    ballSpeed,
+    pressureCue,
+    calibratedZone,
+    sequenceRules
+  };
+}
+
+function inferTrackingReceive(vision: VisionEvidence, context: SequenceContext): { label: EventLabel; confidence: number } | null {
+  const inAttackingZone = vision.fieldZone.zone === "final_third" || vision.fieldZone.zone === "penalty_area";
+  const movingBall = (context.ballSpeed ?? 0) >= 0.025;
+  const receiveSequence = Boolean(vision.tracking?.ballTrackId && vision.proximity?.ballNearPlayer && movingBall);
+  if (!receiveSequence) return null;
+  const throughLike = inAttackingZone && context.directionMatchesAttack;
+  const confidence = roundConfidence(
+    0.42 +
+      (vision.proximity?.confidence ?? 0) * 0.18 +
+      Math.min(0.14, (context.ballSpeed ?? 0) * 1.4) +
+      (context.sameNearestPlayerWindow ? 0.08 : 0) +
+      (inAttackingZone ? 0.08 : 0) +
+      (context.directionMatchesAttack ? 0.08 : 0) +
+      (context.calibratedZone ? 0.06 : 0)
+  );
+  return { label: throughLike ? "through_ball_receive" : "pass_receive", confidence };
+}
+
+function inferTrackingCarry(vision: VisionEvidence, context: SequenceContext): { label: EventLabel; confidence: number } | null {
+  const samePlayer = context.sameNearestPlayerWindow;
+  const nearBall = Boolean(vision.proximity?.ballNearPlayer);
+  const lowOrMediumSpeed = (context.ballSpeed ?? 0) > 0 && (context.ballSpeed ?? 0) < 0.09;
+  if (!samePlayer || !nearBall || !lowOrMediumSpeed) return null;
+  const confidence = roundConfidence(0.38 + (vision.proximity?.confidence ?? 0) * 0.14 + context.trackingContinuity * 0.14);
+  return { label: "dribble", confidence };
 }
 
 function mergeClassificationCandidate(
