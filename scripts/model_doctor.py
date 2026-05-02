@@ -6,7 +6,10 @@ import sys
 
 
 def present(module_name):
-    return importlib.util.find_spec(module_name) is not None
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 result = {
@@ -31,6 +34,8 @@ result = {
     "transformers": present("transformers"),
     "accelerate": present("accelerate"),
     "qwen_vl_utils": present("qwen_vl_utils"),
+    "mlx": present("mlx"),
+    "mlx_vlm": present("mlx_vlm"),
 }
 
 print(json.dumps(result, indent=2))

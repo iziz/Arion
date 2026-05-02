@@ -8,6 +8,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const inferred: DomainSearchFilters = {};
   const warnings: string[] = [];
   let confidence = playerInventory ? 0.72 : originalQuery ? 0.35 : 0.15;
+  const statMetric = inferStatMetric(normalized);
+  const statQuestion = Boolean(statMetric && hasAny(normalized, ["how many", "number of", "몇", "얼마나", "득점 수", "기록"]));
 
   const playerMatch = matchKnowledgePlayer(originalQuery);
   let competition = inferCompetition(originalQuery);
@@ -48,8 +50,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.08;
   }
 
-  const receiveIntent = hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
-  const shotIntent = hasAny(normalized, ["shot", "shoot", "finish", "슛", "슈팅", "마무리"]);
+  const receiveIntent = !statQuestion && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
+  const shotIntent = !statQuestion && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
   const dribbleIntent = hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
   const pressureIntent = hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
   const scrambleIntent = hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
@@ -81,7 +83,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   }
 
   if (!inferred.eventType && (inferred.player || inferred.competition || inferred.fieldZone)) {
-    warnings.push("No explicit event was detected, so semantic search remains broad.");
+    warnings.push(statQuestion ? "This is a stats question; use knowledge QA instead of moment retrieval for the direct answer." : "No explicit event was detected, so semantic search remains broad.");
   }
   if (inferred.player && inferred.role === "receiver") {
     warnings.push("Player role is inferred from language; detector/tracker evidence is not available yet.");
@@ -101,6 +103,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     domainFilters,
     intent: {
       domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
+      questionType: statQuestion ? "stat_qa" : "moment_retrieval",
+      metric: statMetric,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -138,10 +142,31 @@ function inferCompetition(query: string) {
 function inferSeason(query: string, competition?: string) {
   const recent = query.match(/최근\s*(\d+)\s*시즌|last\s*(\d+)\s*seasons?|recent\s*(\d+)\s*seasons?/i);
   if (recent) return resolveRecentSeasons(competition === "NFL" ? "NFL" : competition === "Premier League" ? "Premier League" : undefined, Number(recent[1] ?? recent[2] ?? recent[3]));
+  if (/이번\s*시즌|올\s*시즌|현재\s*시즌|this\s*season|current\s*season/i.test(query)) {
+    return currentSeason(competition);
+  }
   const range = query.match(/\b(20\d{2})\s*[-/]\s*(\d{2}|20\d{2})\b/);
   if (range) return `${range[1]}-${range[2]}`;
   const year = query.match(/\b(20\d{2})\b/);
   return year?.[1];
+}
+
+function currentSeason(competition?: string) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  if (competition === "NFL") return String(month >= 8 ? year : year - 1);
+  const start = month >= 7 ? year : year - 1;
+  return `${start}-${String(start + 1).slice(2)}`;
+}
+
+function inferStatMetric(normalized: string): DomainQueryPlan["intent"]["metric"] {
+  if (hasAny(normalized, ["goal", "goals", "scored", "score", "득점", "골"])) return "goals";
+  if (hasAny(normalized, ["assist", "assists", "도움", "어시스트"])) return "assists";
+  if (hasAny(normalized, ["appearance", "appearances", "apps", "출전"])) return "appearances";
+  if (hasAny(normalized, ["minute", "minutes", "mins", "출장 시간", "출전 시간"])) return "minutes";
+  if (hasAny(normalized, ["card", "cards", "경고", "퇴장"])) return "cards";
+  return null;
 }
 
 function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
@@ -150,6 +175,7 @@ function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
     filters.player,
     filters.competition,
     filters.eventType === "pass_receive" ? "receive receiving player" : "",
+    filters.eventType === "shot" ? "goal scoring shot finish" : "",
     filters.eventType === "dribble" ? "dribble carry take on 드리블 돌파" : "",
     filters.eventType === "pressure" ? "pressure under pressure 압박" : "",
     filters.eventType === "scramble" ? "scramble quarterback carry pocket escape" : "",

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { SportsKnowledgeSnapshot } from "../shared/types";
 
@@ -40,6 +40,7 @@ type ExternalSportsKnowledge = {
 };
 
 let externalKnowledgeCache: ExternalSportsKnowledge | null = null;
+let externalKnowledgeCacheMtimeMs = 0;
 
 export const sportsCompetitions: SportsCompetitionRecord[] = [
   { value: "Premier League" as const, aliases: ["Premier League", "EPL", "프리미어 리그", "프리미어리그"] },
@@ -66,18 +67,18 @@ export const sportsTeams: SportsTeamRecord[] = [
 ];
 
 export const sportsPlayers: SportsKnowledgePlayer[] = [
-  player("erling-haaland", "Erling Haaland", ["Haaland", "Erling Haaland", "Holland"], "football", "Premier League", "Manchester City", ["2022-23", "2023-24", "2024-25", "2025-26"]),
-  player("son-heung-min", "Son Heung-min", ["Son Heung-min", "Heung-min Son", "Sonny"], "football", "Premier League", "Tottenham Hotspur", ["2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
-  player("mohamed-salah", "Mohamed Salah", ["Mohamed Salah", "Salah"], "football", "Premier League", "Liverpool", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
-  player("phil-foden", "Phil Foden", ["Phil Foden", "Foden"], "football", "Premier League", "Manchester City", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
-  player("kylian-mbappe", "Kylian Mbappé", ["Kylian Mbappé", "Kylian Mbappe", "Mbappé", "Mbappe"], "football", "Champions League", "Paris Saint-Germain", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]),
+  player("erling-haaland", "Erling Haaland", ["Haaland", "Erling Haaland", "Holland", "홀란", "홀란드", "엘링 홀란"], "football", "Premier League", "Manchester City", ["2022-23", "2023-24", "2024-25", "2025-26"]),
+  player("son-heung-min", "Son Heung-min", ["Son Heung-min", "Heung-min Son", "Sonny", "Son", "손흥민", "쏘니"], "football", "Premier League", "Tottenham Hotspur", ["2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+  player("mohamed-salah", "Mohamed Salah", ["Mohamed Salah", "Salah", "살라", "모하메드 살라"], "football", "Premier League", "Liverpool", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+  player("phil-foden", "Phil Foden", ["Phil Foden", "Foden", "포든", "필 포든"], "football", "Premier League", "Manchester City", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]),
+  player("kylian-mbappe", "Kylian Mbappé", ["Kylian Mbappé", "Kylian Mbappe", "Mbappé", "Mbappe", "음바페", "킬리안 음바페"], "football", "Champions League", "Paris Saint-Germain", ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22", "2022-23", "2023-24"]),
   player("patrick-mahomes", "Patrick Mahomes", ["Patrick Mahomes", "Mahomes"], "american_football", "NFL", "Kansas City Chiefs", ["2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"])
 ];
 
 export function matchKnowledgePlayer(text: string): KnowledgeMatch<SportsKnowledgePlayer> | null {
   const normalized = normalize(text);
   for (const candidate of getSportsPlayers()) {
-    const alias = candidate.aliases.find((value) => normalized.includes(normalize(value)));
+    const alias = candidate.aliases.find((value) => matchesAlias(normalized, value));
     if (!alias) continue;
     return {
       value: candidate,
@@ -93,7 +94,7 @@ export function matchKnowledgePlayers(text: string): Array<KnowledgeMatch<Sports
   const normalized = normalize(text);
   return getSportsPlayers()
     .map((candidate) => {
-      const alias = candidate.aliases.find((value) => normalized.includes(normalize(value)));
+      const alias = candidate.aliases.find((value) => matchesAlias(normalized, value));
       if (!alias) return null;
       return {
         value: candidate,
@@ -250,12 +251,14 @@ function getFacts() {
 }
 
 function loadExternalKnowledge(): ExternalSportsKnowledge {
-  if (externalKnowledgeCache) return externalKnowledgeCache;
   const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
   if (!existsSync(knowledgePath)) {
     externalKnowledgeCache = {};
+    externalKnowledgeCacheMtimeMs = 0;
     return externalKnowledgeCache;
   }
+  const mtimeMs = statSync(knowledgePath).mtimeMs;
+  if (externalKnowledgeCache && externalKnowledgeCacheMtimeMs === mtimeMs) return externalKnowledgeCache;
   try {
     const parsed = JSON.parse(readFileSync(knowledgePath, "utf8"));
     externalKnowledgeCache = {
@@ -266,9 +269,11 @@ function loadExternalKnowledge(): ExternalSportsKnowledge {
       facts: Array.isArray(parsed.facts) ? parsed.facts : undefined,
       deletedPlayerIds: Array.isArray(parsed.deletedPlayerIds) ? parsed.deletedPlayerIds.filter((item: unknown): item is string => typeof item === "string") : undefined
     };
+    externalKnowledgeCacheMtimeMs = mtimeMs;
     return externalKnowledgeCache;
   } catch {
     externalKnowledgeCache = {};
+    externalKnowledgeCacheMtimeMs = mtimeMs;
     return externalKnowledgeCache;
   }
 }
@@ -278,6 +283,7 @@ function writeExternalKnowledge(value: ExternalSportsKnowledge) {
   mkdirSync(resolve(process.cwd(), ".data"), { recursive: true });
   externalKnowledgeCache = value;
   writeFileSync(knowledgePath, JSON.stringify(value, null, 2));
+  externalKnowledgeCacheMtimeMs = statSync(knowledgePath).mtimeMs;
 }
 
 function isSportsLeague(value: unknown): value is SportsLeague {
@@ -340,4 +346,17 @@ function player(
 
 function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
+}
+
+function matchesAlias(normalizedText: string, alias: string) {
+  const normalizedAlias = normalize(alias);
+  if (!normalizedAlias) return false;
+  if (/^[a-z0-9\s-]+$/.test(normalizedAlias)) {
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedAlias)}($|[^a-z0-9])`, "i").test(normalizedText);
+  }
+  return normalizedText.includes(normalizedAlias);
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

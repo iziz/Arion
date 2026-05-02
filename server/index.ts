@@ -9,7 +9,8 @@ import { analyzeAsset, analyzeAssetGroup, buildClipDetail, buildLocalIndex, list
 import { buildDomainSegmentIndex, expandDomainQuery } from "./domainIndex";
 import { groundQueryWithKnowledge } from "./knowledgeGrounding";
 import { buildOrchestrationPlan } from "./orchestrator";
-import { isPlayerInventoryQuery, parseDomainFilters, planDomainQuery } from "./queryPlanner";
+import { isPlayerInventoryQuery, parseDomainFilters } from "./queryPlanner";
+import { planDomainQueryWithOpenAi } from "./openaiQueryPlanner";
 import { enqueueLocalTask, getQueueDepth } from "./localQueue";
 import { embedQueryText, embedTimelineSegments, getEmbeddingModelName } from "./localEmbeddingRuntime";
 import { embedKeyframes, embedVisualQuery, getVisualEmbeddingModelName } from "./localVisualEmbeddingRuntime";
@@ -24,6 +25,7 @@ import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } fro
 import { detectSceneBoundaries } from "./sceneDetection";
 import { getPostgresStatus, isPostgresEnabled } from "./postgresStore";
 import { deleteSportsKnowledgePlayer, getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "./sportsKnowledge";
+import { answerSportsKnowledgeQuestion } from "./sportsKnowledgeQa";
 import { importStatbunkerKnowledge } from "./statbunkerImport";
 import { getTrackingSummary, listTrackingRecords, rebuildTrackingStore, upsertAssetTracking } from "./trackingStore";
 import { checkVlmWorkerHealth, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "./vlmWorkerClient";
@@ -54,7 +56,24 @@ import {
   saveVideo,
   saveWebhook
 } from "./store";
-import type { AssetRecord, EventRecord, IndexRecord, JobRecord, LocalIntelligence, TimelineSegment, WebhookEventType, WebhookRecord } from "../shared/types";
+import type {
+  AskOperation,
+  AskOperationStep,
+  AskResponse,
+  AssetRecord,
+  DomainQueryPlan,
+  DomainSearchFilters,
+  EventRecord,
+  IndexRecord,
+  JobRecord,
+  LocalIntelligence,
+  OrchestrationPlan,
+  SearchResult,
+  SportsKnowledgeAnswer,
+  TimelineSegment,
+  WebhookEventType,
+  WebhookRecord
+} from "../shared/types";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -62,6 +81,7 @@ const uploadDir = path.resolve(".data", "tmp-uploads");
 const legacyUploadDir = path.resolve("uploads");
 const requestBuckets = new Map<string, { count: number; resetAt: number }>();
 const rateLimitPerMinute = Number(process.env.RATE_LIMIT_PER_MINUTE ?? 600);
+const askOperations = new Map<string, { operation: AskOperation; response: AskResponse | null }>();
 const rateLimitExemptGetPaths = new Set([
   "/api/health",
   "/api/indexes",
@@ -192,7 +212,7 @@ app.get("/api/assets/:id", async (req, res) => {
 app.get("/api/assets/:id/clips", async (req, res) => {
   const asset = await getAsset(String(req.params.id));
   if (!asset) return sendNotFound(res, "Asset not found");
-  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
   const clips = listAssetClips(asset, queryPlan.domainFilters, queryPlan);
   res.json(clips);
 });
@@ -200,7 +220,7 @@ app.get("/api/assets/:id/clips", async (req, res) => {
 app.get("/api/assets/:id/clips/:segmentId", async (req, res) => {
   const asset = await getAsset(String(req.params.id));
   if (!asset) return sendNotFound(res, "Asset not found");
-  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
   const detail = await buildClipDetail(asset, String(req.params.segmentId), queryPlan.domainFilters, queryPlan);
   if (!detail) return sendNotFound(res, "Clip segment not found");
   res.json(detail);
@@ -409,45 +429,255 @@ app.post("/api/jobs/:id/retry", async (req, res) => {
   res.status(202).json(retry);
 });
 
+app.post("/api/ask", async (req, res) => {
+  const request = parseAskRequest(req.body);
+  const entry = createAskOperation(request);
+  pruneAskOperations();
+  askOperations.set(entry.operation.id, entry);
+  void runAskOperation(entry, request);
+  res.status(202).json(toAskResponse(entry));
+});
+
+app.get("/api/ask/:id", async (req, res) => {
+  const entry = askOperations.get(String(req.params.id));
+  if (!entry) return sendNotFound(res, "Ask operation not found");
+  res.json(toAskResponse(entry));
+});
+
 app.get("/api/search", async (req, res) => {
   const query = String(req.query.q ?? "");
   const explicitFilters = parseDomainFilters(req.query);
-  const queryPlan = planDomainQuery(query, explicitFilters);
+  const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
   const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
-  const groundedQuery = groundQueryWithKnowledge(queryPlan, assets);
+  if (queryPlan.intent.questionType === "stat_qa") {
+    res.status(409).json({
+      error: "This query asks for aggregate sports statistics. Use /api/knowledge/sports/answer instead of /api/search.",
+      route: "stat_qa",
+      answer: answerSportsKnowledgeQuestion(queryPlan)
+    });
+    return;
+  }
+  res.json(
+    await executeSearchPipeline({
+      query,
+      explicitFilters,
+      queryPlan,
+      assets,
+      indexes,
+      indexId: req.query.indexId ? String(req.query.indexId) : undefined,
+      tag: req.query.tag ? String(req.query.tag) : undefined,
+      modality: req.query.modality ? String(req.query.modality) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined
+    })
+  );
+});
+
+async function runAskOperation(entry: { operation: AskOperation; response: AskResponse | null }, request: AskRequest) {
+  try {
+    updateAskOperation(entry, { status: "running", route: "pending", error: null });
+    const queryPlan = await runAskStep(entry, {
+      id: "plan",
+      label: "Query planning",
+      owner: "router",
+      input: request.query || "Filtered search"
+    }, async () => {
+      const plan = await planDomainQueryWithOpenAi(request.query, request.explicitFilters);
+      return {
+        value: plan,
+        output: `${plan.intent.questionType ?? "moment_retrieval"} · ${plan.rewrittenQuery} · ${Math.round(plan.confidence * 100)}%`
+      };
+    });
+
+    const scoped = await runAskStep(entry, {
+      id: "scope",
+      label: "Asset scope",
+      owner: "platform",
+      input: [request.indexId ? `index=${request.indexId}` : "all indexes", request.tag ? `tag=${request.tag}` : "", request.modality ? `modality=${request.modality}` : ""].filter(Boolean).join(" · ")
+    }, async () => {
+      const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
+      const scopedAssets = scopeAssetsForQuery(assets, request);
+      return {
+        value: { assets, indexes, scopedAssets },
+        output: `${scopedAssets.length}/${assets.length} assets in scope`
+      };
+    });
+
+    const orchestrationPlan = await runAskStep(entry, {
+      id: "orchestrate",
+      label: "Query orchestration",
+      owner: "router",
+      input: queryPlan.rewrittenQuery
+    }, async () => {
+      const plan = buildOrchestrationPlan(queryPlan, scoped.scopedAssets, scoped.indexes);
+      return {
+        value: plan,
+        output: `${plan.mode.replace(/_/g, " ")} · ${plan.retrieval.engine.replace(/_/g, " ")}`
+      };
+    });
+
+    const sportsAnswer = await runAskStep(entry, {
+      id: "knowledge_answer",
+      label: "Sports knowledge answer",
+      owner: "knowledge",
+      input: queryPlan.rewrittenQuery
+    }, async () => {
+      const answer = answerSportsKnowledgeQuestion(queryPlan);
+      return {
+        value: answer,
+        output: answer.applicable ? `${answer.status} · ${answer.subject.metric ?? "no metric"} · ${Math.round(answer.confidence * 100)}%` : "not applicable",
+        status: answer.applicable && answer.status !== "answered" ? "fallback" : "succeeded"
+      };
+    });
+
+    if (sportsAnswer.applicable && sportsAnswer.route === "stat_qa") {
+      skipAskStep(entry, {
+        id: "retrieve",
+        label: "Moment retrieval",
+        owner: "retrieval",
+        input: queryPlan.semanticQuery,
+        output: "Skipped because this is a structured sports statistics question."
+      });
+      completeAskOperation(entry, {
+        operation: entry.operation,
+        route: "stat_qa",
+        answer: sportsAnswer.answer,
+        queryPlan,
+        orchestrationPlan,
+        sportsAnswer,
+        results: [],
+        warnings: [...queryPlan.warnings, ...sportsAnswer.warnings]
+      });
+      return;
+    }
+
+    const results = await executeSearchPipeline({
+      query: request.query,
+      explicitFilters: request.explicitFilters,
+      queryPlan,
+      assets: scoped.assets,
+      indexes: scoped.indexes,
+      indexId: request.indexId,
+      tag: request.tag,
+      modality: request.modality,
+      limit: request.limit,
+      askEntry: entry
+    });
+    const answer = orchestrationPlan.analysis.required
+      ? await runAskStep(entry, {
+          id: "analysis",
+          label: "Grounded analysis",
+          owner: "analysis",
+          input: `${results.length} retrieved assets`
+        }, async () => {
+          const nextAnswer = buildAskAnalysisAnswer(results, queryPlan, orchestrationPlan);
+          return {
+            value: nextAnswer,
+            output: results.length > 0 ? "Generated a local pattern summary from retrieved moments." : "Skipped because retrieval returned no moments.",
+            status: results.length > 0 ? "succeeded" : "skipped"
+          };
+        })
+      : buildAskVideoAnswer(results, queryPlan);
+    const route = results.length > 0 ? "moment_retrieval" : "empty";
+    completeAskOperation(entry, {
+      operation: entry.operation,
+      route,
+      answer,
+      queryPlan,
+      orchestrationPlan,
+      sportsAnswer: null,
+      results,
+      warnings: queryPlan.warnings
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Ask operation failed";
+    failAskOperation(entry, message);
+  }
+}
+
+async function executeSearchPipeline({
+  query,
+  queryPlan,
+  assets,
+  indexes,
+  indexId,
+  tag,
+  modality,
+  limit,
+  askEntry
+}: SearchPipelineRequest): Promise<SearchResult[]> {
+  const groundedQuery = await runOptionalAskStep(askEntry, {
+    id: "ground",
+    label: "Knowledge grounding",
+    owner: "knowledge",
+    input: queryPlan.rewrittenQuery
+  }, async () => {
+    const grounded = groundQueryWithKnowledge(queryPlan, assets);
+    return {
+      value: grounded,
+      output: grounded.evidenceSummary
+    };
+  });
   const expandedQuery = expandDomainQuery(groundedQuery.semanticQuery).expandedText;
   const options = {
-    indexId: req.query.indexId ? String(req.query.indexId) : undefined,
-    tag: req.query.tag ? String(req.query.tag) : undefined,
-    modality: req.query.modality ? String(req.query.modality) : undefined,
-    limit: req.query.limit ? Number(req.query.limit) : undefined,
+    indexId,
+    tag,
+    modality,
+    limit,
     domainFilters: groundedQuery.filters,
     queryPlan,
     knowledgeEvidence: groundedQuery.evidence
   };
   if (isPlayerInventoryQuery(query)) {
-    const results = searchAssets(assets, indexes, query, options);
-    res.json(results.map((result) => ({ ...result, explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`] })));
-    return;
+    return runOptionalAskStep(askEntry, {
+      id: "rank",
+      label: "Rank matching assets",
+      owner: "retrieval",
+      input: "player inventory query"
+    }, async () => {
+      const results = searchAssets(assets, indexes, query, options).map((result) => ({ ...result, explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`] }));
+      return {
+        value: results,
+        output: `${results.length} assets`
+      };
+    });
   }
-  const queryVector = await traceAsync("search.embed_text_query", { indexId: options.indexId ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query");
-  const visualQueryVector = await traceAsync(
-    "search.embed_visual_query",
-    { indexId: options.indexId ?? "all" },
-    () => embedVisualQuery(query),
-    "search.embed_visual_query"
-  );
-  const [vectorHits, visualHits] = await Promise.all([
-    traceAsync("search.vector_text", { indexId: options.indexId ?? "all" }, () => searchVectors(options.indexId, queryVector, Number(req.query.limit ?? 25)), "search.vector_text"),
-    visualQueryVector.length
-      ? traceAsync(
-          "search.vector_visual",
-          { indexId: options.indexId ?? "all" },
-          () => searchVisualVectors(options.indexId, visualQueryVector, Number(req.query.limit ?? 25)),
-          "search.vector_visual"
-        )
-      : Promise.resolve([])
-  ]);
+  const vectors = await runOptionalAskStep(askEntry, {
+    id: "embed_query",
+    label: "Query embeddings",
+    owner: "retrieval",
+    input: expandedQuery
+  }, async () => {
+    const [queryVector, visualQueryVector] = await Promise.all([
+      traceAsync("search.embed_text_query", { indexId: options.indexId ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query"),
+      traceAsync("search.embed_visual_query", { indexId: options.indexId ?? "all" }, () => embedVisualQuery(query), "search.embed_visual_query")
+    ]);
+    return {
+      value: { queryVector, visualQueryVector },
+      output: `text=${queryVector.length} dims · visual=${visualQueryVector.length} dims`
+    };
+  });
+  const { vectorHits, visualHits } = await runOptionalAskStep(askEntry, {
+    id: "vector_search",
+    label: "Vector search",
+    owner: "retrieval",
+    input: `index=${options.indexId ?? "all"} · limit=${limit ?? 25}`
+  }, async () => {
+    const [vectorHits, visualHits] = await Promise.all([
+      traceAsync("search.vector_text", { indexId: options.indexId ?? "all" }, () => searchVectors(options.indexId, vectors.queryVector, Number(limit ?? 25)), "search.vector_text"),
+      vectors.visualQueryVector.length
+        ? traceAsync(
+            "search.vector_visual",
+            { indexId: options.indexId ?? "all" },
+            () => searchVisualVectors(options.indexId, vectors.visualQueryVector, Number(limit ?? 25)),
+            "search.vector_visual"
+          )
+        : Promise.resolve([])
+    ]);
+    return {
+      value: { vectorHits, visualHits },
+      output: `${vectorHits.length} text hits · ${visualHits.length} visual hits`
+    };
+  });
   const vectorSegmentsByAsset = new Map<string, number>();
   const vectorHitsBySegment = new Map<string, number>();
   const visualHitsBySegment = new Map<string, number>();
@@ -459,19 +689,282 @@ app.get("/api/search", async (req, res) => {
     vectorSegmentsByAsset.set(hit.assetId, (vectorSegmentsByAsset.get(hit.assetId) ?? 0) + 1);
     visualHitsBySegment.set(hit.segmentId, Math.max(visualHitsBySegment.get(hit.segmentId) ?? 0, hit.score));
   }
-  const results = searchAssets(assets, indexes, query, { ...options, queryVector, vectorHitsBySegment, visualHitsBySegment }).map((result) => ({
-    ...result,
-    explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
-  }));
-  res.json(results);
-});
+  return runOptionalAskStep(askEntry, {
+    id: "rank",
+    label: "Rank and verify moments",
+    owner: "retrieval",
+    input: formatSearchScope({ indexId, tag, modality })
+  }, async () => {
+    const results = searchAssets(assets, indexes, query, { ...options, queryVector: vectors.queryVector, vectorHitsBySegment, visualHitsBySegment }).map((result) => ({
+      ...result,
+      explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
+    }));
+    return {
+      value: results,
+      output: `${results.length} assets · ${results.reduce((sum, result) => sum + result.segments.length, 0)} moments`
+    };
+  });
+}
+
+type AskRequest = {
+  query: string;
+  explicitFilters: DomainSearchFilters;
+  indexId?: string;
+  tag?: string;
+  modality?: string;
+  limit?: number;
+};
+
+type SearchPipelineRequest = AskRequest & {
+  queryPlan: DomainQueryPlan;
+  assets: AssetRecord[];
+  indexes: IndexRecord[];
+  askEntry?: { operation: AskOperation; response: AskResponse | null };
+};
+
+function parseAskRequest(body: unknown): AskRequest {
+  const value = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};
+  const filtersValue = typeof value.domainFilters === "object" && value.domainFilters !== null ? value.domainFilters as Record<string, unknown> : value;
+  const limit = typeof value.limit === "number" && Number.isFinite(value.limit) ? value.limit : undefined;
+  return {
+    query: typeof value.q === "string" ? value.q.trim() : typeof value.query === "string" ? value.query.trim() : "",
+    explicitFilters: parseDomainFilters(filtersValue),
+    indexId: typeof value.indexId === "string" && value.indexId.trim() ? value.indexId.trim() : undefined,
+    tag: typeof value.tag === "string" && value.tag.trim() ? value.tag.trim() : undefined,
+    modality: typeof value.modality === "string" && value.modality.trim() ? value.modality.trim() : undefined,
+    limit
+  };
+}
+
+function createAskOperation(request: AskRequest) {
+  const now = new Date().toISOString();
+  return {
+    operation: {
+      id: randomUUID(),
+      query: request.query,
+      indexId: request.indexId ?? null,
+      status: "queued",
+      route: "pending",
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+      error: null,
+      steps: []
+    } satisfies AskOperation,
+    response: null
+  };
+}
+
+async function runAskStep<T>(
+  entry: { operation: AskOperation; response: AskResponse | null },
+  spec: Pick<AskOperationStep, "id" | "label" | "owner" | "input">,
+  action: () => Promise<{ value: T; output: string; status?: AskOperationStep["status"] }>
+) {
+  const step = startAskStep(entry, spec);
+  try {
+    const result = await action();
+    finishAskStep(entry, step.id, result.status ?? "succeeded", result.output, null);
+    return result.value;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Step failed";
+    finishAskStep(entry, step.id, "failed", "", message);
+    throw error;
+  }
+}
+
+async function runOptionalAskStep<T>(
+  entry: { operation: AskOperation; response: AskResponse | null } | undefined,
+  spec: Pick<AskOperationStep, "id" | "label" | "owner" | "input">,
+  action: () => Promise<{ value: T; output: string; status?: AskOperationStep["status"] }>
+) {
+  if (!entry) return (await action()).value;
+  return runAskStep(entry, spec, action);
+}
+
+function startAskStep(entry: { operation: AskOperation; response: AskResponse | null }, spec: Pick<AskOperationStep, "id" | "label" | "owner" | "input">) {
+  const now = new Date().toISOString();
+  const step: AskOperationStep = {
+    ...spec,
+    output: "",
+    status: "running",
+    startedAt: now,
+    completedAt: null,
+    durationMs: null,
+    error: null
+  };
+  entry.operation.steps = [...entry.operation.steps.filter((item) => item.id !== spec.id), step];
+  updateAskOperation(entry, {});
+  return step;
+}
+
+function finishAskStep(
+  entry: { operation: AskOperation; response: AskResponse | null },
+  stepId: string,
+  status: AskOperationStep["status"],
+  output: string,
+  error: string | null
+) {
+  const completedAt = new Date().toISOString();
+  entry.operation.steps = entry.operation.steps.map((step) =>
+    step.id === stepId
+      ? {
+          ...step,
+          status,
+          output,
+          completedAt,
+          durationMs: step.startedAt ? new Date(completedAt).getTime() - new Date(step.startedAt).getTime() : null,
+          error
+        }
+      : step
+  );
+  updateAskOperation(entry, {});
+}
+
+function skipAskStep(
+  entry: { operation: AskOperation; response: AskResponse | null },
+  spec: Pick<AskOperationStep, "id" | "label" | "owner" | "input" | "output">
+) {
+  const now = new Date().toISOString();
+  entry.operation.steps = [
+    ...entry.operation.steps.filter((item) => item.id !== spec.id),
+    {
+      ...spec,
+      status: "skipped",
+      startedAt: now,
+      completedAt: now,
+      durationMs: 0,
+      error: null
+    }
+  ];
+  updateAskOperation(entry, {});
+}
+
+function updateAskOperation(entry: { operation: AskOperation; response: AskResponse | null }, patch: Partial<Pick<AskOperation, "status" | "route" | "error" | "completedAt">>) {
+  entry.operation = {
+    ...entry.operation,
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function completeAskOperation(entry: { operation: AskOperation; response: AskResponse | null }, response: Omit<AskResponse, "operation"> & { operation: AskOperation }) {
+  updateAskOperation(entry, {
+    status: "succeeded",
+    route: response.route,
+    completedAt: new Date().toISOString(),
+    error: null
+  });
+  entry.response = {
+    ...response,
+    operation: entry.operation
+  };
+}
+
+function failAskOperation(entry: { operation: AskOperation; response: AskResponse | null }, message: string) {
+  updateAskOperation(entry, {
+    status: "failed",
+    route: "error",
+    completedAt: new Date().toISOString(),
+    error: message
+  });
+  entry.response = {
+    operation: entry.operation,
+    route: "error",
+    answer: message,
+    queryPlan: null,
+    orchestrationPlan: null,
+    sportsAnswer: null,
+    results: [],
+    warnings: [message]
+  };
+}
+
+function toAskResponse(entry: { operation: AskOperation; response: AskResponse | null }): AskResponse {
+  return entry.response ?? {
+    operation: entry.operation,
+    route: entry.operation.route,
+    answer: null,
+    queryPlan: null,
+    orchestrationPlan: null,
+    sportsAnswer: null,
+    results: [],
+    warnings: []
+  };
+}
+
+function pruneAskOperations() {
+  const entries = Array.from(askOperations.values());
+  if (entries.length < 80) return;
+  const removable = entries
+    .filter((entry) => entry.operation.status === "succeeded" || entry.operation.status === "failed")
+    .sort((a, b) => new Date(a.operation.updatedAt).getTime() - new Date(b.operation.updatedAt).getTime())
+    .slice(0, Math.max(0, entries.length - 60));
+  for (const entry of removable) askOperations.delete(entry.operation.id);
+}
+
+function scopeAssetsForQuery(assets: AssetRecord[], request: AskRequest) {
+  return assets
+    .filter((asset) => !request.indexId || asset.indexId === request.indexId)
+    .filter((asset) => !request.tag || asset.tags.includes(request.tag))
+    .map((asset) =>
+      request.modality
+        ? {
+            ...asset,
+            timeline: asset.timeline.filter((segment) => segment.modalities.includes(request.modality as TimelineSegment["modalities"][number]))
+          }
+        : asset
+    );
+}
+
+function formatSearchScope({ indexId, tag, modality }: Pick<AskRequest, "indexId" | "tag" | "modality">) {
+  return [indexId ? `index=${indexId}` : "all indexes", tag ? `tag=${tag}` : "", modality ? `modality=${modality}` : ""].filter(Boolean).join(" · ");
+}
+
+function buildAskVideoAnswer(results: SearchResult[], queryPlan: DomainQueryPlan) {
+  if (results.length === 0) {
+    return "No indexed video moment matched this query. Try adding an event, player, season, or lowering the trust filters.";
+  }
+  const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
+  const player = queryPlan.intent.player ? ` for ${queryPlan.intent.player}` : "";
+  const event = queryPlan.intent.eventType ? ` matching ${queryPlan.intent.eventType.replace(/_/g, " ")}` : "";
+  return `Found ${segmentCount} indexed moments across ${results.length} assets${player}${event}.`;
+}
+
+function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, orchestrationPlan: OrchestrationPlan) {
+  if (results.length === 0) return buildAskVideoAnswer(results, queryPlan);
+  const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
+  const top = results[0];
+  const topMoments = top.segments.slice(0, 3).map((segment) => `${formatClock(segment.start)}-${formatClock(segment.end)}`).join(", ");
+  const focus = [
+    queryPlan.intent.player ? `player=${queryPlan.intent.player}` : "",
+    queryPlan.intent.eventType ? `event=${queryPlan.intent.eventType}` : "",
+    queryPlan.intent.fieldZone ? `zone=${queryPlan.intent.fieldZone}` : ""
+  ].filter(Boolean).join(" · ");
+  return [
+    `I found ${segmentCount} evidence-backed moments across ${results.length} assets${focus ? ` (${focus})` : ""}.`,
+    `The strongest source asset is "${top.asset.title}" with key moments around ${topMoments || "the retrieved timeline"}.`,
+    orchestrationPlan.analysis.required ? "The analysis is grounded only in retrieved indexed moments, not an external generator." : ""
+  ].filter(Boolean).join(" ");
+}
+
+function formatClock(seconds: number) {
+  const safe = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(safe / 60);
+  const rest = safe % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
 
 app.get("/api/models/vlm/health", async (_req, res) => {
   res.json(await checkVlmWorkerHealth());
 });
 
 app.get("/api/search/plan", async (req, res) => {
-  res.json(planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query)));
+  res.json(await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query)));
+});
+
+app.get("/api/knowledge/sports/answer", async (req, res) => {
+  const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  res.json(answerSportsKnowledgeQuestion(queryPlan));
 });
 
 app.get("/api/knowledge/sports", async (_req, res) => {
@@ -592,7 +1085,7 @@ app.get("/api/orchestrate/plan", async (req, res) => {
           }
         : asset
     );
-  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
   res.json(buildOrchestrationPlan(queryPlan, scopedAssets, indexes));
 });
 

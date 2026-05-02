@@ -1,7 +1,6 @@
 import {
   Activity,
   AlertTriangle,
-  Bell,
   BrainCircuit,
   CheckCircle2,
   CircleHelp,
@@ -15,14 +14,18 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   UploadCloud,
   X
 } from "lucide-react";
 import { Fragment, type Dispatch, FormEvent, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnalysisResult,
+  AskOperation,
+  AskResponse,
   AssetRecord,
   ClipDetailResult,
+  ClipResult,
   DomainQueryPlan,
   DomainSearchFilters,
   EventRecord,
@@ -32,9 +35,9 @@ import type {
   OcrBox,
   OrchestrationPlan,
   SearchResult,
+  SportsKnowledgeAnswer,
   SportsKnowledgeSnapshot,
   VerificationCheck,
-  WebhookRecord
 } from "../shared/types";
 
 type DatabaseStatus = {
@@ -71,10 +74,18 @@ type ObservabilitySnapshot = {
   recentLogs: Array<{ timestamp: string; level: string; event: string; message: string; requestId: string | null; traceId: string | null }>;
 };
 
-type ConsoleTab = "dashboard" | "data" | "knowledge" | "search" | "system";
+type ConsoleTab = "data" | "knowledge" | "search" | "system";
 type AssetDetailTab = "overview" | "workflow" | "evidence" | "timeline";
 type DialogMode = "index" | "edit-index" | "asset" | null;
 type FlowStepState = "done" | "active" | "waiting" | "skipped" | "error";
+
+function isConsoleTab(value: string | null): value is ConsoleTab {
+  return value === "data" || value === "knowledge" || value === "search" || value === "system";
+}
+
+function isAssetDetailTab(value: string | null): value is AssetDetailTab {
+  return value === "overview" || value === "workflow" || value === "evidence" || value === "timeline";
+}
 
 type FlowStep = {
   id: string;
@@ -119,6 +130,45 @@ type SearchTrustFilters = {
   minScore: number;
   requireHardPlayer: boolean;
   requireHardFieldZone: boolean;
+};
+
+type TrustPreset = "broad" | "balanced" | "strict";
+
+const TRUST_PRESETS: Record<TrustPreset, SearchTrustFilters> = {
+  broad: {
+    verifiedOnly: false,
+    includeSoft: true,
+    hideFailed: false,
+    minScore: 0,
+    requireHardPlayer: false,
+    requireHardFieldZone: false
+  },
+  balanced: {
+    verifiedOnly: false,
+    includeSoft: true,
+    hideFailed: true,
+    minScore: 0,
+    requireHardPlayer: false,
+    requireHardFieldZone: false
+  },
+  strict: {
+    verifiedOnly: true,
+    includeSoft: false,
+    hideFailed: true,
+    minScore: 70,
+    requireHardPlayer: true,
+    requireHardFieldZone: false
+  }
+};
+
+type SearchConversationTurn = {
+  id: string;
+  query: string;
+  answer: string;
+  route: "stat_qa" | "moment_retrieval" | "empty" | "error";
+  sportsAnswer: SportsKnowledgeAnswer | null;
+  results: SearchResult[];
+  plan: DomainQueryPlan | null;
 };
 
 type FootballDataImportResult = {
@@ -197,6 +247,10 @@ const api = {
     return readJson<T>(response);
   }
 };
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = await response.text();
@@ -311,7 +365,6 @@ export default function App() {
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [events, setEvents] = useState<EventRecord[]>([]);
-  const [webhooks, setWebhooks] = useState<WebhookRecord[]>([]);
   const [metrics, setMetrics] = useState<MetricsSummary>(emptyMetrics);
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
@@ -322,17 +375,14 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [searchTag, setSearchTag] = useState("");
   const [searchModality, setSearchModality] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [domainFilters, setDomainFilters] = useState<DomainSearchFilters>({});
-  const [trustFilters, setTrustFilters] = useState<SearchTrustFilters>({
-    verifiedOnly: false,
-    includeSoft: true,
-    hideFailed: true,
-    minScore: 0,
-    requireHardPlayer: false,
-    requireHardFieldZone: false
-  });
+  const [trustFilters, setTrustFilters] = useState<SearchTrustFilters>(TRUST_PRESETS.balanced);
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
   const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
+  const [sportsAnswer, setSportsAnswer] = useState<SportsKnowledgeAnswer | null>(null);
+  const [askResponse, setAskResponse] = useState<AskResponse | null>(null);
+  const [searchConversation, setSearchConversation] = useState<SearchConversationTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -341,7 +391,7 @@ export default function App() {
   const [clipDetailLoading, setClipDetailLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeek] = useState<{ assetId: string; at: number } | null>(null);
-  const [activeTab, setActiveTab] = useState<ConsoleTab>("dashboard");
+  const [activeTab, setActiveTab] = useState<ConsoleTab>("system");
   const [assetDetailTab, setAssetDetailTab] = useState<AssetDetailTab>("overview");
   const [dialogMode, setDialogMode] = useState<DialogMode>(null);
   const [busy, setBusy] = useState(false);
@@ -362,12 +412,32 @@ export default function App() {
   const filterTags = useMemo(() => Array.from(new Set(visibleAssets.flatMap((asset) => asset.tags))).sort(), [visibleAssets]);
   const runningJobCount = jobs.filter((job) => job.status === "running" || job.status === "queued").length;
   const filteredSearchResults = useMemo(() => filterSearchResultsByTrust(searchResults, trustFilters), [searchResults, trustFilters]);
+  const activeSearchFilterCount =
+    Object.values(domainFilters).filter(Boolean).length +
+    (searchTag ? 1 : 0) +
+    (searchModality ? 1 : 0) +
+    (trustPresetFor(trustFilters) === "balanced" ? 0 : 1);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const assetId = params.get("asset");
+    const segmentId = params.get("segment");
+    const at = Number(params.get("t"));
+    const tab = params.get("tab");
+    const detailTab = params.get("assetTab");
+    if (tab === "dashboard") setActiveTab("system");
+    if (isConsoleTab(tab)) setActiveTab(tab);
+    if (isAssetDetailTab(detailTab)) setAssetDetailTab(detailTab);
     if (assetId) setSelectedAssetId(assetId);
+    if (segmentId) setSelectedSegmentId(segmentId);
+    if (assetId && Number.isFinite(at)) setPendingSeek({ assetId, at });
   }, []);
+
+  useEffect(() => {
+    if (!selectedAssetId) return;
+    const asset = assets.find((item) => item.id === selectedAssetId);
+    if (asset && asset.indexId !== selectedIndexId) setSelectedIndexId(asset.indexId);
+  }, [assets, selectedAssetId, selectedIndexId]);
 
   useEffect(() => {
     if (!selectedAssetId) return;
@@ -391,12 +461,11 @@ export default function App() {
         setMessage("Refresh warning: API server is restarting or unavailable.");
         return;
       }
-      const [indexesResult, assetsResult, jobsResult, eventsResult, webhooksResult, metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult] = await Promise.allSettled([
+      const [indexesResult, assetsResult, jobsResult, eventsResult, metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult] = await Promise.allSettled([
         api.get<IndexRecord[]>("/api/indexes"),
         api.get<AssetRecord[]>("/api/assets"),
         api.get<JobRecord[]>("/api/jobs"),
         api.get<EventRecord[]>("/api/events?limit=20"),
-        api.get<WebhookRecord[]>("/api/webhooks"),
         api.get<MetricsSummary>("/api/metrics"),
         api.get<DatabaseStatus>("/api/db/status"),
         api.get<ObservabilitySnapshot>("/api/observability"),
@@ -407,7 +476,6 @@ export default function App() {
       const nextAssets = getArrayResult<AssetRecord>(assetsResult, "assets", failures);
       const nextJobs = getArrayResult<JobRecord>(jobsResult, "jobs", failures);
       const nextEvents = getArrayResult<EventRecord>(eventsResult, "events", failures);
-      const nextWebhooks = getArrayResult<WebhookRecord>(webhooksResult, "webhooks", failures);
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
@@ -423,7 +491,6 @@ export default function App() {
       }
       if (nextJobs) setJobs(nextJobs);
       if (nextEvents) setEvents(nextEvents);
-      if (nextWebhooks) setWebhooks(nextWebhooks);
       if (nextMetrics) setMetrics(nextMetrics);
       if (nextDbStatus) setDbStatus(nextDbStatus);
       if (nextObservability) setObservability(nextObservability);
@@ -505,25 +572,82 @@ export default function App() {
 
   async function runSearch(event: FormEvent) {
     event.preventDefault();
+    const submittedQuery = query.trim();
+    if (!submittedQuery && !Object.values(domainFilters).some(Boolean)) return;
     setSearching(true);
-    const params = new URLSearchParams({ q: query, indexId: selectedIndex?.id ?? "default-index" });
-    if (searchTag) params.set("tag", searchTag);
-    if (searchModality) params.set("modality", searchModality);
-    for (const [key, value] of Object.entries(domainFilters)) {
-      if (value) params.set(key, value);
-    }
+    setMessage("");
+    setSportsAnswer(null);
+    setAskResponse(null);
     try {
-      const [plan, orchestration, results] = await Promise.all([
-        api.get<DomainQueryPlan>(`/api/search/plan?${params.toString()}`),
-        api.get<OrchestrationPlan>(`/api/orchestrate/plan?${params.toString()}`),
-        api.get<SearchResult[]>(`/api/search?${params.toString()}`)
-      ]);
-      setQueryPlan(plan);
-      setOrchestrationPlan(orchestration);
-      setSearchResults(results);
+      const started = await api.post<AskResponse>("/api/ask", {
+        q: submittedQuery,
+        indexId: selectedIndex?.id ?? "default-index",
+        tag: searchTag || undefined,
+        modality: searchModality || undefined,
+        domainFilters
+      });
+      setAskResponse(started);
+      const completed = await pollAskOperation(started.operation.id);
+      setAskResponse(completed);
+      setQueryPlan(completed.queryPlan);
+      setOrchestrationPlan(completed.orchestrationPlan);
+      setSportsAnswer(completed.sportsAnswer?.applicable ? completed.sportsAnswer : null);
+      if (completed.route === "stat_qa" && completed.sportsAnswer) {
+        setSearchResults([]);
+        appendSearchTurn(submittedQuery, completed.answer ?? completed.sportsAnswer.answer, "stat_qa", completed.sportsAnswer, [], completed.queryPlan);
+        return;
+      }
+      setSearchResults(completed.results);
+      appendSearchTurn(
+        submittedQuery,
+        completed.answer ?? (completed.queryPlan ? buildSearchAssistantAnswer(completed.results, completed.queryPlan) : "The ask operation completed without a readable answer."),
+        completed.results.length > 0 ? "moment_retrieval" : completed.route === "error" ? "error" : "empty",
+        null,
+        completed.results,
+        completed.queryPlan
+      );
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Ask request failed";
+      setSearchResults([]);
+      appendSearchTurn(submittedQuery, errorMessage, "error", null, [], null);
+      setMessage(errorMessage);
     } finally {
       setSearching(false);
     }
+  }
+
+  async function pollAskOperation(operationId: string) {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await sleep(400);
+      const next = await api.get<AskResponse>(`/api/ask/${operationId}`);
+      setAskResponse(next);
+      if (next.operation.status === "succeeded" || next.operation.status === "failed") return next;
+    }
+    throw new Error("Ask operation timed out while waiting for server trace.");
+  }
+
+  function appendSearchTurn(
+    submittedQuery: string,
+    answer: string,
+    route: SearchConversationTurn["route"],
+    nextSportsAnswer: SportsKnowledgeAnswer | null,
+    results: SearchResult[],
+    plan: DomainQueryPlan | null
+  ) {
+    setSearchConversation((current) =>
+      [
+        ...current,
+        {
+          id: `${Date.now()}-${current.length}`,
+          query: submittedQuery || "Filtered search",
+          answer,
+          route,
+          sportsAnswer: nextSportsAnswer,
+          results,
+          plan
+        }
+      ].slice(-8)
+    );
   }
 
   function seekTo(assetId: string, at: number) {
@@ -536,6 +660,62 @@ export default function App() {
   function selectSegment(assetId: string, segmentId: string, at: number) {
     setSelectedSegmentId(segmentId);
     seekTo(assetId, at);
+  }
+
+  function applySearchPreset(preset: "haaland-through-ball" | "son-goals" | "strict-evidence" | "clear") {
+    if (preset === "haaland-through-ball") {
+      setQuery("Find Erling Haaland receiving a through ball in the final third");
+      setDomainFilters({
+        competition: "Premier League",
+        player: "Erling Haaland",
+        eventType: "pass_receive",
+        passType: "through_ball",
+        fieldZone: "final_third",
+        role: "receiver"
+      });
+      setTrustFilters(TRUST_PRESETS.balanced);
+      return;
+    }
+    if (preset === "son-goals") {
+      setQuery("Find Son Heung-min scoring goals");
+      setDomainFilters({
+        competition: "Premier League",
+        player: "Son Heung-min",
+        eventType: "shot",
+        role: "shooter"
+      });
+      setTrustFilters(TRUST_PRESETS.balanced);
+      return;
+    }
+    if (preset === "strict-evidence") {
+      setTrustFilters(TRUST_PRESETS.strict);
+      return;
+    }
+    setQuery("");
+    setSearchTag("");
+    setSearchModality("");
+    setDomainFilters({});
+    setTrustFilters(TRUST_PRESETS.balanced);
+    setSportsAnswer(null);
+    setAskResponse(null);
+  }
+
+  function buildAssetMomentUrl(assetId: string, segmentId?: string | null, at?: number | null) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", "data");
+    url.searchParams.set("assetTab", "overview");
+    url.searchParams.set("asset", assetId);
+    if (segmentId) {
+      url.searchParams.set("segment", segmentId);
+    } else {
+      url.searchParams.delete("segment");
+    }
+    if (typeof at === "number" && Number.isFinite(at)) {
+      url.searchParams.set("t", at.toFixed(2));
+    } else {
+      url.searchParams.delete("t");
+    }
+    return url.toString();
   }
 
   async function openClipDetail(clip: SearchResult["clips"][number]) {
@@ -564,19 +744,6 @@ export default function App() {
   async function runGroupAnalysis() {
     if (!selectedIndex) return;
     setAnalysis(await api.post<AnalysisResult>(`/api/indexes/${selectedIndex.id}/analyze`, { question }));
-    await refresh();
-  }
-
-  async function registerWebhook(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    await api.post<WebhookRecord>("/api/webhooks", {
-      name: data.get("name"),
-      url: data.get("url"),
-      events: ["asset.indexing.succeeded", "asset.indexing.failed", "analysis.completed"]
-    });
-    form.reset();
     await refresh();
   }
 
@@ -688,11 +855,6 @@ export default function App() {
     }
   }
 
-  async function retryWebhook(id: string) {
-    await api.post<WebhookRecord>(`/api/webhooks/${id}/retry`, {});
-    await refresh();
-  }
-
   function selectIndex(indexId: string) {
     setSelectedIndexId(indexId);
     const firstAsset = assets.find((asset) => asset.indexId === indexId) ?? null;
@@ -747,16 +909,9 @@ export default function App() {
           </span>
         </a>
         <TabButton
-          active={activeTab === "dashboard"}
-          icon={<Activity size={17} />}
-          label="대시보드"
-          meta={`${metrics.indexedAssets}/${metrics.assets} indexed`}
-          onClick={() => setActiveTab("dashboard")}
-        />
-        <TabButton
           active={activeTab === "data"}
           icon={<FileVideo size={17} />}
-          label="데이터 구성"
+          label="에셋"
           meta={`${visibleIndexedAssets}/${visibleAssets.length} indexed`}
           onClick={() => setActiveTab("data")}
         />
@@ -824,43 +979,20 @@ export default function App() {
         />
         <TabButton
           active={activeTab === "system"}
-          icon={<Database size={17} />}
+          icon={<Activity size={17} />}
           label="시스템"
-          meta={runningJobCount > 0 ? `${runningJobCount} active` : "ready"}
+          meta={runningJobCount > 0 ? `${runningJobCount} active` : `${metrics.indexedAssets}/${metrics.assets} indexed`}
           onClick={() => setActiveTab("system")}
         />
       </nav>
-
-      {activeTab === "dashboard" && (
-      <section className="section-block overview-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-label">Overview</p>
-            <h2>Service snapshot</h2>
-          </div>
-          <p>Current indexing, storage, and delivery health at a glance.</p>
-        </div>
-        <section className="metrics">
-          <Metric icon={<Layers3 size={18} />} label="Indexes" value={metrics.indexes.toString()} />
-          <Metric icon={<FileVideo size={18} />} label="Total Assets" value={metrics.assets.toString()} />
-          <Metric icon={<CheckCircle2 size={18} />} label="Indexed Total" value={metrics.indexedAssets.toString()} />
-          <Metric icon={<Clock3 size={18} />} label="Running Jobs" value={metrics.runningJobs.toString()} />
-          <Metric icon={<Database size={18} />} label="Segments" value={metrics.segments.toString()} />
-          <Metric icon={<Database size={18} />} label="Vectors" value={metrics.vectors.toString()} />
-          <Metric icon={<Bell size={18} />} label="Webhooks" value={metrics.webhooks.toString()} />
-          <Metric icon={<CreditCard size={18} />} label="Billing Units" value={metrics.billingUnits.toString()} />
-        </section>
-      </section>
-      )}
 
       {activeTab === "data" && (
       <section className="section-block workflow-section">
         <div className="section-heading">
           <div>
             <p className="section-label">Data</p>
-            <h2>데이터 구성</h2>
+            <h2>에셋</h2>
           </div>
-          <p>에셋그룹, 영상, 인덱싱 옵션을 구성합니다.</p>
         </div>
         <AssetGroupSummary
           index={selectedIndex}
@@ -983,7 +1115,6 @@ export default function App() {
             <p className="section-label">Knowledge</p>
             <h2>지식 베이스</h2>
           </div>
-          <p>검색 전에 로컬로 저장해 둔 roster, player profile, match activity evidence를 확인하고 갱신합니다.</p>
         </div>
         <SportsKnowledgePanel
           sportsKnowledge={sportsKnowledge}
@@ -1003,45 +1134,63 @@ export default function App() {
             <p className="section-label">Search</p>
             <h2>검색</h2>
           </div>
-          <p>선택한 에셋그룹 전체에서 indexed moments를 찾고, 검색 결과 기반 분석을 실행합니다.</p>
         </div>
       <section className="tools">
         <section className="panel">
           <div className="panel-title">
             <Search size={18} />
-            <h2>Search</h2>
+            <h2>Ask</h2>
           </div>
-          <form onSubmit={runSearch} className="search-row search-form">
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search indexed timeline moments" />
-            <select value={searchTag} onChange={(event) => setSearchTag(event.target.value)}>
-              <option value="">Any tag</option>
-              {filterTags.map((tag) => (
-                <option key={tag} value={tag}>
-                  {tag}
-                </option>
-              ))}
-            </select>
-            <select value={searchModality} onChange={(event) => setSearchModality(event.target.value)}>
-              <option value="">Any modality</option>
-              <option value="visual">Visual</option>
-              <option value="audio">Audio</option>
-              <option value="transcription">Transcription</option>
-              <option value="metadata">Metadata</option>
-            </select>
+          <form onSubmit={runSearch} className="search-row search-form ask-form">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask for stats, moments, clips, or patterns" />
             <button type="submit" disabled={searching}>
               <Search size={16} />
-              {searching ? "Searching..." : "Search"}
+              {searching ? "Thinking..." : "Ask"}
             </button>
           </form>
-          <DomainSearchControls filters={domainFilters} onChange={setDomainFilters} />
-          <TrustSearchControls
-            filters={trustFilters}
-            onChange={setTrustFilters}
+          <div className="ask-toolbar">
+            <SearchPresetChips onPreset={applySearchPreset} />
+            <button type="button" className={`filter-toggle ${filtersOpen ? "active" : ""}`} onClick={() => setFiltersOpen((open) => !open)}>
+              <SlidersHorizontal size={16} />
+              Filters
+              {activeSearchFilterCount > 0 && <span>{activeSearchFilterCount}</span>}
+            </button>
+          </div>
+          <SearchScopeSummary
+            index={selectedIndex}
+            tag={searchTag}
+            modality={searchModality}
+            domainFilters={domainFilters}
+            trustFilters={trustFilters}
+          />
+          <SearchConversation turns={searchConversation} getMomentHref={buildAssetMomentUrl} />
+          {askResponse && <AskOperationTrace operation={askResponse.operation} />}
+          <AdvancedSearchFilters
+            open={filtersOpen}
+            selectedIndex={selectedIndex}
+            filterTags={filterTags}
+            searchTag={searchTag}
+            setSearchTag={setSearchTag}
+            searchModality={searchModality}
+            setSearchModality={setSearchModality}
+            domainFilters={domainFilters}
+            setDomainFilters={setDomainFilters}
+            trustFilters={trustFilters}
+            setTrustFilters={setTrustFilters}
             total={searchResults.length}
             visible={filteredSearchResults.length}
           />
-          {queryPlan && <QueryPlanCard plan={queryPlan} />}
-          {orchestrationPlan && <OrchestrationPlanCard plan={orchestrationPlan} />}
+          {sportsAnswer?.route !== "stat_qa" && (
+            <ResultTrustSummary total={searchResults.length} visible={filteredSearchResults.length} trustFilters={trustFilters} />
+          )}
+          {sportsAnswer && <SportsAnswerCard answer={sportsAnswer} />}
+          {(queryPlan || orchestrationPlan) && (
+            <details className="search-diagnostics">
+              <summary>검색 진단</summary>
+              {queryPlan && <QueryPlanCard plan={queryPlan} />}
+              {orchestrationPlan && <OrchestrationPlanCard plan={orchestrationPlan} />}
+            </details>
+          )}
           <div className="result-list">
             {searching && (
               <article className="result-card search-loading-card" aria-live="polite">
@@ -1075,11 +1224,12 @@ export default function App() {
                 )}
                 {result.knowledgeEvidence.length > 0 && <KnowledgeEvidenceRow evidence={result.knowledgeEvidence} />}
                 {result.segments.slice(0, 3).map((segment) => (
-                  <button
+                  <a
                     key={segment.id}
-                    type="button"
                     className="result-segment"
-                    onClick={() => selectSegment(result.asset.id, segment.id, segment.start)}
+                    href={buildAssetMomentUrl(result.asset.id, segment.id, segment.start)}
+                    target="_blank"
+                    rel="noreferrer"
                   >
                     <SearchSceneEvidence
                       segment={segment}
@@ -1087,12 +1237,12 @@ export default function App() {
                       reasons={result.matchReasons.filter((reason) => reason.segmentId === segment.id)}
                       verification={result.verification.filter((check) => check.segmentId === segment.id)}
                     />
-                  </button>
+                  </a>
                 ))}
-                {result.clips.length > 0 && <ClipStrip clips={result.clips} onOpen={openClipDetail} />}
+                {result.clips.length > 0 && <ClipStrip clips={result.clips} getHref={(clip) => buildAssetMomentUrl(clip.assetId, clip.segmentId, clip.start)} />}
               </article>
             ))}
-            {!searching && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
+            {!searching && !sportsAnswer && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
               <EmptyState text="No indexed moment matched the query." />
             )}
             {!searching && searchResults.length > 0 && filteredSearchResults.length === 0 && (
@@ -1101,89 +1251,6 @@ export default function App() {
           </div>
         </section>
 
-        <section className="panel">
-          <div className="panel-title">
-            <BrainCircuit size={18} />
-            <h2>Analyze</h2>
-          </div>
-          <form onSubmit={runAnalysis} className="search-row analysis-form">
-            <input
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="Ask about the selected asset or asset group"
-              disabled={!selectedAsset || selectedAsset.status !== "indexed"}
-            />
-            <button type="submit" disabled={!selectedAsset || selectedAsset.status !== "indexed"}>
-              <BrainCircuit size={16} />
-              Analyze asset
-            </button>
-            <button type="button" disabled={!selectedIndex || visibleIndexedAssets === 0} onClick={() => void runGroupAnalysis()}>
-              <Layers3 size={16} />
-              Analyze group
-            </button>
-          </form>
-          {analysis ? (
-            <article className="analysis-card">
-              <span className="analysis-scope">
-                {analysis.scope.type === "asset_group" ? "Asset group" : "Asset"} · {analysis.scope.label} · {analysis.scope.assetCount} asset{analysis.scope.assetCount === 1 ? "" : "s"}
-              </span>
-              <strong>{analysis.answer}</strong>
-              <p>{analysis.summary}</p>
-              <div className="chips">
-                {analysis.signals.map((signal) => (
-                  <span key={signal}>{signal}</span>
-                ))}
-              </div>
-              <div className="analysis-patterns">
-                <span>
-                  <b>Moments</b>
-                  {analysis.patterns.totalMoments}
-                </span>
-                <span>
-                  <b>Verified</b>
-                  {analysis.patterns.verifiedConstraints}
-                </span>
-                <span>
-                  <b>Uncertain</b>
-                  {analysis.patterns.uncertainConstraints}
-                </span>
-                <span>
-                  <b>Failed</b>
-                  {analysis.patterns.failedConstraints}
-                </span>
-              </div>
-              {analysis.patterns.topGroups.length > 0 && (
-                <div className="analysis-pattern-list">
-                  {analysis.patterns.topGroups.map((group) => (
-                    <span key={`${group.label}-${group.key}`}>
-                      <b>{group.label}</b>
-                      {group.count} · {Math.round(group.share * 100)}% · {Math.round(group.confidence * 100)}%
-                    </span>
-                  ))}
-                </div>
-              )}
-              {analysis.patterns.gaps.length > 0 && <p className="analysis-gaps">{analysis.patterns.gaps.slice(0, 3).join(" ")}</p>}
-              {analysis.clips.length > 0 && <ClipStrip clips={analysis.clips} onOpen={openClipDetail} />}
-              <div className="analysis-report">
-                <strong>{analysis.report.title}</strong>
-                <span>Confidence {Math.round(analysis.report.confidence * 100)}%</span>
-                {analysis.report.sections.map((section) => (
-                  <section key={section.heading}>
-                    <b>{section.heading}</b>
-                    <p>{section.body}</p>
-                    <ul>
-                      {section.bullets.slice(0, 4).map((bullet) => (
-                        <li key={bullet}>{bullet}</li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
-            </article>
-          ) : (
-            <EmptyState text="Select an indexed asset and ask a question." />
-          )}
-        </section>
       </section>
       </section>
       )}
@@ -1193,18 +1260,27 @@ export default function App() {
         <div className="section-heading">
           <div>
             <p className="section-label">System</p>
-            <h2>Jobs, delivery, storage, traces</h2>
+            <h2>시스템</h2>
           </div>
-          <p>Operational details are grouped here so the main workflow stays focused.</p>
         </div>
+        <section className="metrics ops-metrics" aria-label="Service snapshot">
+          <Metric icon={<Layers3 size={18} />} label="Indexes" value={metrics.indexes.toString()} />
+          <Metric icon={<FileVideo size={18} />} label="Total Assets" value={metrics.assets.toString()} />
+          <Metric icon={<CheckCircle2 size={18} />} label="Indexed Total" value={metrics.indexedAssets.toString()} />
+          <Metric icon={<Clock3 size={18} />} label="Running Jobs" value={metrics.runningJobs.toString()} />
+          <Metric icon={<Database size={18} />} label="Segments" value={metrics.segments.toString()} />
+          <Metric icon={<Database size={18} />} label="Vectors" value={metrics.vectors.toString()} />
+          <Metric icon={<CreditCard size={18} />} label="Billing Units" value={metrics.billingUnits.toString()} />
+        </section>
       <section className="ops-grid">
         <section className="panel jobs-panel">
           <div className="panel-title">
             <Activity size={18} />
             <h2>Jobs</h2>
+            <span className="panel-count">{jobs.length}</span>
           </div>
           <div className="table-list">
-            {jobs.slice(0, 8).map((job) => (
+            {jobs.slice(0, 10).map((job) => (
               <article key={job.id} className={`ops-row ${selectedJob?.id === job.id ? "active" : ""}`}>
                 <button type="button" className="row-button" onClick={() => setSelectedJobId(job.id)}>
                   <strong>{job.type}</strong>
@@ -1218,6 +1294,7 @@ export default function App() {
                 )}
               </article>
             ))}
+            {jobs.length === 0 && <EmptyState text="No jobs have been recorded." />}
           </div>
           {selectedJob && (
             <article className="job-detail">
@@ -1234,42 +1311,11 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel webhooks-panel">
-          <div className="panel-title">
-            <Bell size={18} />
-            <h2>Webhooks</h2>
-          </div>
-          <form className="webhook-row" onSubmit={registerWebhook}>
-            <input name="name" placeholder="Webhook name" />
-            <input name="url" placeholder="log://local or https://example.com/hook" />
-            <button type="submit">
-              <Bell size={16} />
-              Add
-            </button>
-          </form>
-          <div className="table-list">
-            {webhooks.map((webhook) => (
-              <article key={webhook.id} className="ops-row">
-                <strong>{webhook.name}</strong>
-                <span>
-                  {webhook.url} · {webhook.deliveries.length} deliveries
-                  {webhook.deliveries[0] ? ` · last ${webhook.deliveries[0].status}` : ""}
-                </span>
-                {webhook.deliveries.some((delivery) => delivery.status === "failed") && (
-                  <button type="button" className="small-button" onClick={() => void retryWebhook(webhook.id)}>
-                    <RefreshCw size={14} />
-                    Retry failed
-                  </button>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-
         <section className="panel events-panel">
           <div className="panel-title">
             <Activity size={18} />
             <h2>Events</h2>
+            <span className="panel-count">{events.length}</span>
           </div>
           <div className="table-list">
             {events.map((event) => (
@@ -1278,6 +1324,7 @@ export default function App() {
                 <span>{event.message} · {new Date(event.createdAt).toLocaleTimeString()}</span>
               </article>
             ))}
+            {events.length === 0 && <EmptyState text="No operational events have been recorded." />}
           </div>
         </section>
 
@@ -1760,6 +1807,111 @@ function summarizeAssetGroupVlm(assets: AssetRecord[]) {
   return `${counts.refined}/${attempted} refined${counts.invalid ? ` · ${counts.invalid} invalid` : ""}${counts.failed ? ` · ${counts.failed} failed` : ""}`;
 }
 
+function SearchPresetChips({ onPreset }: { onPreset: (preset: "haaland-through-ball" | "son-goals" | "strict-evidence" | "clear") => void }) {
+  return (
+    <div className="search-preset-chips" aria-label="Search presets">
+      <button type="button" onClick={() => onPreset("haaland-through-ball")}>Haaland through ball</button>
+      <button type="button" onClick={() => onPreset("son-goals")}>Son goals</button>
+      <button type="button" onClick={() => onPreset("strict-evidence")}>Strict evidence</button>
+      <button type="button" onClick={() => onPreset("clear")}>Clear</button>
+    </div>
+  );
+}
+
+function SearchScopeSummary({
+  index,
+  tag,
+  modality,
+  domainFilters,
+  trustFilters
+}: {
+  index: IndexRecord | null;
+  tag: string;
+  modality: string;
+  domainFilters: DomainSearchFilters;
+  trustFilters: SearchTrustFilters;
+}) {
+  const entries = Object.entries(domainFilters).filter(([, value]) => Boolean(value));
+  return (
+    <div className="search-scope-summary" aria-label="Current search scope">
+      <span><b>Scope</b>{index?.name ?? "All asset groups"}</span>
+      <span><b>Tag</b>{tag || "Any"}</span>
+      <span><b>Modality</b>{modality || "Any"}</span>
+      <span><b>Evidence</b>{labelForTrustPreset(trustPresetFor(trustFilters))}</span>
+      {entries.slice(0, 4).map(([key, value]) => (
+        <span key={key}><b>{key}</b>{String(value)}</span>
+      ))}
+    </div>
+  );
+}
+
+function AdvancedSearchFilters({
+  open,
+  selectedIndex,
+  filterTags,
+  searchTag,
+  setSearchTag,
+  searchModality,
+  setSearchModality,
+  domainFilters,
+  setDomainFilters,
+  trustFilters,
+  setTrustFilters,
+  total,
+  visible
+}: {
+  open: boolean;
+  selectedIndex: IndexRecord | null;
+  filterTags: string[];
+  searchTag: string;
+  setSearchTag: Dispatch<SetStateAction<string>>;
+  searchModality: string;
+  setSearchModality: Dispatch<SetStateAction<string>>;
+  domainFilters: DomainSearchFilters;
+  setDomainFilters: Dispatch<SetStateAction<DomainSearchFilters>>;
+  trustFilters: SearchTrustFilters;
+  setTrustFilters: Dispatch<SetStateAction<SearchTrustFilters>>;
+  total: number;
+  visible: number;
+}) {
+  if (!open) return null;
+  return (
+    <section className="advanced-search-panel" aria-label="Advanced search filters">
+      <div className="advanced-search-header">
+        <strong>Advanced filters</strong>
+        <span>{selectedIndex?.name ?? "All asset groups"} · showing {visible}/{total} after evidence filters</span>
+      </div>
+      <div className="scope-filter-grid">
+        <label>
+          <span>Tag</span>
+          <select value={searchTag} onChange={(event) => setSearchTag(event.target.value)}>
+            <option value="">Any tag</option>
+            {filterTags.map((tag) => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Modality</span>
+          <select value={searchModality} onChange={(event) => setSearchModality(event.target.value)}>
+            <option value="">Any modality</option>
+            <option value="visual">Visual</option>
+            <option value="audio">Audio</option>
+            <option value="transcription">Transcription</option>
+            <option value="metadata">Metadata</option>
+          </select>
+        </label>
+      </div>
+      <DomainSearchControls filters={domainFilters} onChange={setDomainFilters} />
+      <EvidencePresetControls filters={trustFilters} onChange={setTrustFilters} />
+      <details className="advanced-evidence-details">
+        <summary>Advanced evidence settings</summary>
+        <TrustSearchControls filters={trustFilters} onChange={setTrustFilters} total={total} visible={visible} />
+      </details>
+    </section>
+  );
+}
+
 function DomainSearchControls({
   filters,
   onChange
@@ -1770,21 +1922,11 @@ function DomainSearchControls({
   const updateFilter = (key: keyof DomainSearchFilters, value: string) => {
     onChange((current) => ({ ...current, [key]: value || undefined }));
   };
-  const presetHaaland = () => {
-    onChange({
-      competition: "Premier League",
-      player: "Erling Haaland",
-      eventType: "pass_receive",
-      passType: "through_ball",
-      fieldZone: "final_third"
-    });
-  };
   const clearFilters = () => onChange({});
   return (
     <section className="domain-search-controls" aria-label="Domain event search filters">
       <div className="domain-search-header">
-        <strong>Domain Event Search</strong>
-        <span>Filters match structured domain events when available, with text fallback for competition, season, and player.</span>
+        <strong>Domain filters</strong>
       </div>
       <div className="domain-filter-grid">
         <input value={filters.competition ?? ""} onChange={(event) => updateFilter("competition", event.target.value)} placeholder="Competition e.g. Premier League" />
@@ -1818,8 +1960,36 @@ function DomainSearchControls({
         </select>
       </div>
       <div className="domain-filter-actions">
-        <button type="button" className="small-button" onClick={presetHaaland}>Haaland through ball preset</button>
         <button type="button" className="small-button" onClick={clearFilters}>Clear filters</button>
+      </div>
+    </section>
+  );
+}
+
+function EvidencePresetControls({
+  filters,
+  onChange
+}: {
+  filters: SearchTrustFilters;
+  onChange: Dispatch<SetStateAction<SearchTrustFilters>>;
+}) {
+  const selected = trustPresetFor(filters);
+  return (
+    <section className="evidence-preset-controls" aria-label="Evidence quality preset">
+      <div className="domain-search-header">
+        <strong>Evidence mode</strong>
+      </div>
+      <div className="evidence-mode-control">
+        {(["broad", "balanced", "strict"] as TrustPreset[]).map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            className={selected === preset ? "active" : ""}
+            onClick={() => onChange(TRUST_PRESETS[preset])}
+          >
+            {labelForTrustPreset(preset)}
+          </button>
+        ))}
       </div>
     </section>
   );
@@ -1840,14 +2010,7 @@ function TrustSearchControls({
     onChange((current) => ({ ...current, [key]: value }));
   };
   const reset = () =>
-    onChange({
-      verifiedOnly: false,
-      includeSoft: true,
-      hideFailed: true,
-      minScore: 0,
-      requireHardPlayer: false,
-      requireHardFieldZone: false
-    });
+    onChange(TRUST_PRESETS.balanced);
   return (
     <section className="trust-search-controls" aria-label="Trust filters">
       <div className="domain-search-header">
@@ -1891,6 +2054,28 @@ function TrustSearchControls({
   );
 }
 
+function ResultTrustSummary({ total, visible, trustFilters }: { total: number; visible: number; trustFilters: SearchTrustFilters }) {
+  if (total === 0) return null;
+  return (
+    <div className="result-trust-summary">
+      <span>{visible}/{total} results</span>
+      <span>{labelForTrustPreset(trustPresetFor(trustFilters))} evidence</span>
+    </div>
+  );
+}
+
+function trustPresetFor(filters: SearchTrustFilters): TrustPreset {
+  if (filters.verifiedOnly || filters.minScore >= 70 || filters.requireHardPlayer || (!filters.includeSoft && filters.hideFailed)) return "strict";
+  if (!filters.hideFailed && filters.includeSoft && filters.minScore === 0) return "broad";
+  return "balanced";
+}
+
+function labelForTrustPreset(preset: TrustPreset) {
+  if (preset === "broad") return "Broad";
+  if (preset === "strict") return "Strict";
+  return "Balanced";
+}
+
 function QueryPlanCard({ plan }: { plan: DomainQueryPlan }) {
   const filterEntries = Object.entries(plan.domainFilters).filter(([, value]) => Boolean(value));
   return (
@@ -1917,10 +2102,133 @@ function QueryPlanCard({ plan }: { plan: DomainQueryPlan }) {
           <b>confidence</b>
           {Math.round(plan.confidence * 100)}%
         </span>
+        {plan.planner && (
+          <span>
+            <b>planner</b>
+            {plan.planner.source}{plan.planner.model ? ` · ${plan.planner.model}` : ""}
+          </span>
+        )}
       </div>
       {plan.warnings.length > 0 && (
         <p>{plan.warnings.slice(0, 2).join(" ")}</p>
       )}
+    </section>
+  );
+}
+
+function SportsAnswerCard({ answer }: { answer: SportsKnowledgeAnswer }) {
+  return (
+    <section className={`sports-answer-card ${answer.status}`}>
+      <div>
+        <span>Knowledge answer</span>
+        <strong>{answer.answer}</strong>
+        {answer.fallback && <p>{answer.fallback}</p>}
+      </div>
+      <div className="sports-answer-meta">
+        {answer.subject.player && <span>Player {answer.subject.player}</span>}
+        {answer.subject.competition && <span>Competition {answer.subject.competition}</span>}
+        {answer.subject.season && <span>Season {answer.subject.season}</span>}
+        {answer.subject.metric && <span>Metric {answer.subject.metric}</span>}
+        <span>Confidence {Math.round(answer.confidence * 100)}%</span>
+      </div>
+      {answer.evidence.length > 0 && (
+        <div className="sports-answer-evidence">
+          {answer.evidence.slice(0, 3).map((item) => (
+            <span key={`${item.provider}-${item.season}-${item.team}-${item.sourceText}`}>
+              <b>{item.provider}</b>
+              {item.sourceText}
+            </span>
+          ))}
+        </div>
+      )}
+      {answer.warnings.length > 0 && <p className="sports-answer-warning">{answer.warnings.slice(0, 3).join(" ")}</p>}
+    </section>
+  );
+}
+
+function AskOperationTrace({ operation }: { operation: AskOperation }) {
+  return (
+    <section className={`ask-trace ${operation.status}`} aria-label="Ask execution trace">
+      <div className="ask-trace-header">
+        <div>
+          <span>Execution trace</span>
+          <strong>{operation.route === "pending" ? "Running server workflow" : operation.route.replace(/_/g, " ")}</strong>
+        </div>
+        <em>{operation.id.slice(0, 8)} · {operation.status}</em>
+      </div>
+      <div className="ask-trace-steps">
+        {operation.steps.map((step) => (
+          <article key={step.id} className={step.status}>
+            <span>{step.owner}</span>
+            <strong>{step.label}</strong>
+            <p>{step.output || step.input}</p>
+            <em>
+              {step.status}
+              {typeof step.durationMs === "number" ? ` · ${step.durationMs}ms` : ""}
+            </em>
+          </article>
+        ))}
+        {operation.steps.length === 0 && (
+          <article className="queued">
+            <span>platform</span>
+            <strong>Queued</strong>
+            <p>Waiting for the server to start the ask operation.</p>
+            <em>queued</em>
+          </article>
+        )}
+      </div>
+      {operation.error && <p className="ask-trace-error">{operation.error}</p>}
+    </section>
+  );
+}
+
+function SearchConversation({
+  turns,
+  getMomentHref
+}: {
+  turns: SearchConversationTurn[];
+  getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
+}) {
+  if (turns.length === 0) return null;
+  return (
+    <section className="assistant-thread" aria-label="Search conversation">
+      {turns.map((turn) => (
+        <article key={turn.id} className="assistant-turn">
+          <div className="user-bubble">
+            <span>You</span>
+            <p>{turn.query}</p>
+          </div>
+          <div className={`assistant-bubble ${turn.route}`}>
+            <span>{turn.route === "stat_qa" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
+            <p>{turn.answer}</p>
+            {turn.plan && (
+              <em>
+                {turn.plan.rewrittenQuery} · confidence {Math.round(turn.plan.confidence * 100)}%
+              </em>
+            )}
+            {turn.sportsAnswer?.fallback && <em>{turn.sportsAnswer.fallback}</em>}
+            {turn.results.length > 0 && (
+              <div className="assistant-result-strip">
+                {turn.results.slice(0, 3).map((result) => {
+                  const clip = result.clips[0];
+                  const segment = result.segments[0];
+                  const href = clip
+                    ? getMomentHref(clip.assetId, clip.segmentId, clip.start)
+                    : getMomentHref(result.asset.id, segment?.id ?? null, segment?.start ?? null);
+                  return (
+                    <a key={result.asset.id} href={href} target="_blank" rel="noreferrer">
+                      <b>{result.asset.title}</b>
+                      <span>
+                        {result.segments.length} moments · trust {buildEvidenceLedger(result.verification, result.matchReasons, result.segments).score}%
+                      </span>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </article>
+      ))}
     </section>
   );
 }
@@ -2168,6 +2476,19 @@ function TrustBadge({ ledger, compact = false }: { ledger: EvidenceLedger; compa
   );
 }
 
+function EvidenceColumn({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  return (
+    <section>
+      <b>{title}</b>
+      <ul>
+        {(items.length > 0 ? items.slice(0, 4) : [empty]).map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function EvidenceLedgerCompact({ ledger }: { ledger: EvidenceLedger }) {
   const groups = [
     { key: "hard", label: "Hard", items: ledger.hard },
@@ -2373,17 +2694,19 @@ function SearchSceneEvidence({
 
 function ClipStrip({
   clips,
-  onOpen
+  onOpen,
+  getHref
 }: {
   clips: SearchResult["clips"];
-  onOpen: (clip: SearchResult["clips"][number]) => Promise<void>;
+  onOpen?: (clip: SearchResult["clips"][number]) => Promise<void>;
+  getHref?: (clip: SearchResult["clips"][number]) => string;
 }) {
   return (
     <div className="clip-strip">
       {clips.slice(0, 5).map((clip) => {
         const imagePath = clip.thumbnailPath ? mediaPath(clip.thumbnailPath) : null;
-        return (
-          <button key={clip.id} type="button" onClick={() => void onOpen(clip)}>
+        const content = (
+          <>
             {imagePath ? <img src={imagePath} alt="" /> : <span>No image</span>}
             <b>{clip.title}</b>
             <em>
@@ -2393,6 +2716,16 @@ function ClipStrip({
             <small>
               pass {clip.verificationSummary.pass} · soft {clip.verificationSummary.softPass} · unknown {clip.verificationSummary.unknown} · fail {clip.verificationSummary.fail}
             </small>
+          </>
+        );
+        const href = getHref?.(clip);
+        return href ? (
+          <a key={clip.id} href={href} target="_blank" rel="noreferrer">
+            {content}
+          </a>
+        ) : (
+          <button key={clip.id} type="button" onClick={() => void onOpen?.(clip)}>
+            {content}
           </button>
         );
       })}
@@ -3113,6 +3446,18 @@ function filterSearchResultsByTrust(results: SearchResult[], filters: SearchTrus
 function hasHardConstraint(ledger: EvidenceLedger, label: string) {
   const normalized = label.toLowerCase();
   return ledger.hard.some((item) => item.label.toLowerCase() === normalized);
+}
+
+function buildSearchAssistantAnswer(results: SearchResult[], plan: DomainQueryPlan) {
+  if (results.length === 0) {
+    return "No indexed video moment matched this query. Try adding an event, player, season, or lowering the trust filters.";
+  }
+  const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
+  const top = results[0];
+  const topLedger = buildEvidenceLedger(top.verification, top.matchReasons, top.segments);
+  const player = plan.intent.player ? ` involving ${plan.intent.player}` : "";
+  const event = plan.intent.eventType ? ` for ${plan.intent.eventType.replace(/_/g, " ")}` : "";
+  return `I found ${segmentCount} indexed moments across ${results.length} assets${player}${event}. The top match is "${top.asset.title}" with ${topLedger.label.toLowerCase()} evidence (${topLedger.score}% trust).`;
 }
 
 function calculateTrustScore(ledger: Pick<EvidenceLedger, "hard" | "soft" | "missing" | "failed" | "limitations">) {

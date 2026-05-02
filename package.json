@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:full": "concurrently \"npm:models:vlm:ai\" \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
@@ -13,6 +14,7 @@
     "db:seed": "tsx scripts/postgres_seed.ts",
     "db:reset": "tsx scripts/postgres_reset.ts",
     "knowledge:football-data": "tsx scripts/import_football_data.ts",
+    "knowledge:sync-current": "tsx scripts/sync_current_sports_knowledge.ts",
     "knowledge:statbunker": "tsx scripts/import_statbunker.ts",
     "embeddings:rebuild": "tsx scripts/rebuild_embeddings.ts",
     "domain:vlm:refine": "tsx scripts/refine_vlm_domain.ts",

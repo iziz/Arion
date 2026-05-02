@@ -19,6 +19,7 @@ torch
 transformers>=4.50.0
 accelerate
 qwen-vl-utils
+mlx-vlm; platform_system == "Darwin" and platform_machine == "arm64"
 Pillow
 # Optional: enables YOLO person/sports-ball detector. Without it, the app uses OpenCV fallback.
 ultralytics

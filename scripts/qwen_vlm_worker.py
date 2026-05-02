@@ -9,13 +9,19 @@ import platform
 import re
 import threading
 from functools import lru_cache
+from importlib.util import find_spec
 from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 
-DEFAULT_MODEL = os.environ.get("QWEN_VLM_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct")
+DEFAULT_TRANSFORMERS_MODEL = os.environ.get("QWEN_VLM_TRANSFORMERS_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+DEFAULT_MLX_MODEL = os.environ.get("QWEN_VLM_MLX_MODEL", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
+REQUESTED_BACKEND = os.environ.get("QWEN_VLM_BACKEND", "auto").strip().lower()
+DEFAULT_BACKEND = "mlx" if platform.system() == "Darwin" and find_spec("mlx_vlm") else "transformers"
+BACKEND = DEFAULT_BACKEND if REQUESTED_BACKEND in ("", "auto") else REQUESTED_BACKEND
+DEFAULT_MODEL = os.environ.get("QWEN_VLM_MODEL", DEFAULT_MLX_MODEL if BACKEND == "mlx" else DEFAULT_TRANSFORMERS_MODEL)
 DEFAULT_DEVICE_MAP = "mps" if platform.system() == "Darwin" else "auto"
 DEVICE_MAP = os.environ.get("QWEN_VLM_DEVICE_MAP", DEFAULT_DEVICE_MAP)
 TORCH_DTYPE = os.environ.get("QWEN_VLM_TORCH_DTYPE", "float32" if DEVICE_MAP == "cpu" else "auto")
@@ -38,40 +44,22 @@ app = FastAPI(title="Arion Qwen VLM Worker", version="0.1.0")
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    backend_error = _backend_error()
     return {
-        "ok": True,
-        "backend": "qwen2.5-vl",
+        "ok": backend_error is None,
+        "backend": f"qwen2.5-vl:{BACKEND}",
         "model": DEFAULT_MODEL,
         "loaded": _model_loaded(),
+        "error": backend_error,
     }
 
 
 @app.post("/structure/sports-event")
-def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
+async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
     if request.domain != "sports.football":
         return _empty_response("Unsupported domain.")
 
-    model, processor = _load_model()
-    messages = _build_messages(request)
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = _process_vision_info(messages)
-    inputs = processor(
-        text=[text],
-        images=image_inputs,
-        videos=video_inputs,
-        padding=True,
-        return_tensors="pt",
-    )
-    inputs = inputs.to(model.device)
-    generated_ids = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
-    generated_ids_trimmed = [
-        output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    output_text = processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )[0]
+    output_text = _generate_text(request)
     parsed = _parse_json(output_text)
     if not parsed:
         return _empty_response("Model did not return parseable JSON.", raw=output_text)
@@ -91,6 +79,24 @@ def _load_model():
 
 @lru_cache(maxsize=1)
 def _load_model_once():
+    if BACKEND == "mlx":
+        return _load_mlx_model_once()
+    if BACKEND != "transformers":
+        raise ValueError(f"Unsupported QWEN_VLM_BACKEND: {BACKEND}")
+    return _load_transformers_model_once()
+
+
+def _backend_error() -> str | None:
+    if BACKEND == "mlx" and not find_spec("mlx_vlm"):
+        return "QWEN_VLM_BACKEND=mlx requires mlx-vlm in this Python environment."
+    if BACKEND == "transformers" and not find_spec("transformers"):
+        return "QWEN_VLM_BACKEND=transformers requires transformers in this Python environment."
+    if BACKEND not in ("mlx", "transformers"):
+        return f"Unsupported QWEN_VLM_BACKEND: {BACKEND}"
+    return None
+
+
+def _load_transformers_model_once():
     import torch
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
@@ -108,6 +114,69 @@ def _load_model_once():
     return model, processor
 
 
+def _load_mlx_model_once():
+    from mlx_vlm import load
+
+    model, processor = load(DEFAULT_MODEL)
+    globals()["_cached_model"] = model
+    return model, processor
+
+
+def _generate_text(request: StructureRequest) -> str:
+    if BACKEND == "mlx":
+        return _generate_text_with_mlx(request)
+    return _generate_text_with_transformers(request)
+
+
+def _generate_text_with_transformers(request: StructureRequest) -> str:
+    model, processor = _load_model()
+    messages = _build_messages(request)
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = _process_vision_info(messages)
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    )
+    inputs = inputs.to(model.device)
+    generated_ids = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+    generated_ids_trimmed = [
+        output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
+    ]
+    return processor.batch_decode(
+        generated_ids_trimmed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )[0]
+
+
+def _generate_text_with_mlx(request: StructureRequest) -> str:
+    from mlx_vlm import apply_chat_template, generate
+
+    model, processor = _load_model()
+    messages = _build_messages(request)
+    image_path = _image_path(request)
+    prompt = apply_chat_template(
+        processor,
+        model.config,
+        messages,
+        add_generation_prompt=True,
+        num_images=1 if image_path else 0,
+    )
+    result = generate(
+        model,
+        processor,
+        prompt,
+        image=[image_path] if image_path else None,
+        max_tokens=MAX_NEW_TOKENS,
+        temperature=0.0,
+        verbose=False,
+    )
+    return result.text
+
+
 def _torch_dtype(torch_module):
     if TORCH_DTYPE == "float32":
         return torch_module.float32
@@ -122,6 +191,10 @@ def _process_vision_info(messages):
     from qwen_vl_utils import process_vision_info
 
     return process_vision_info(messages)
+
+
+def _image_path(request: StructureRequest) -> str | None:
+    return request.imagePath if request.imagePath and os.path.exists(request.imagePath) else None
 
 
 def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
@@ -160,7 +233,7 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
         "instruction": "Set player name to null unless supported by visible shirt/name text or indexed text.",
     }
     content: list[dict[str, Any]] = []
-    if request.imagePath and os.path.exists(request.imagePath):
+    if _image_path(request):
         content.append({"type": "image", "image": request.imagePath})
     content.append({"type": "text", "text": json.dumps(prompt, ensure_ascii=False)})
     return [{"role": "user", "content": content}]
@@ -190,7 +263,7 @@ def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
     if isinstance(labels, dict):
         labels = [key for key, value in labels.items() if value]
     return {
-        "provider": "qwen2.5-vl",
+        "provider": f"qwen2.5-vl:{BACKEND}",
         "model": DEFAULT_MODEL,
         "caption": str(parsed.get("caption") or "").strip(),
         "eventType": str(parsed.get("eventType") or "scene").strip(),
@@ -241,7 +314,7 @@ def _confidence(value: Any) -> float:
 
 def _empty_response(reason: str, raw: str = "") -> dict[str, Any]:
     return {
-        "provider": "qwen2.5-vl",
+        "provider": f"qwen2.5-vl:{BACKEND}",
         "model": DEFAULT_MODEL,
         "caption": "",
         "eventType": "scene",

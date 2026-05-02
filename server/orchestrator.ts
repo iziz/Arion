@@ -1,21 +1,23 @@
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, IndexRecord, OrchestrationPlan, PlayerIdentity } from "../shared/types";
+import { getKnowledgePlayer } from "./sportsKnowledge";
 
 export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: AssetRecord[], indexes: IndexRecord[]): OrchestrationPlan {
-  const mode = inferMode(queryPlan.originalQuery);
+  const mode = inferMode(queryPlan);
+  const knowledgePlayer = queryPlan.intent.player ? getKnowledgePlayer(queryPlan.intent.player) : null;
   const identityCandidates = collectIdentityCandidates(queryPlan.intent.player, assets);
   const scopeCoverage = estimateScopeCoverage(queryPlan, assets);
-  const identityDecision = buildIdentityDecision(queryPlan.intent.player, identityCandidates);
+  const identityDecision = buildIdentityDecision(queryPlan.intent.player, identityCandidates, mode, knowledgePlayer);
   const scopeDecision = buildScopeDecision(queryPlan, scopeCoverage);
   const retrievalFallback = [
     scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
     scopeCoverage.season === "missing" ? "Season scope is not indexed for some matching assets; keep it as a soft constraint." : "",
-    queryPlan.intent.player && identityCandidates.length === 0 ? "Player identity is unresolved; use lexical title/ASR fallback." : ""
+    queryPlan.intent.player && identityCandidates.length === 0 && !(mode === "stat_qa" && knowledgePlayer) ? "Player identity is unresolved; use lexical title/ASR fallback." : ""
   ].filter(Boolean);
   const warnings = [
     ...queryPlan.warnings,
     identityDecision.status !== "ready" ? identityDecision.reason : "",
     scopeDecision.status !== "ready" ? scopeDecision.reason : "",
-    mode !== "search" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
+    mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
   ].filter(Boolean);
 
   return {
@@ -66,33 +68,38 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       },
       {
         id: "retrieve",
-        label: "Moment retrieval",
-        owner: "retrieval",
-        action: "Run semantic retrieval and merge it with structured event filters.",
+        label: mode === "stat_qa" ? "Stats retrieval" : "Moment retrieval",
+        owner: mode === "stat_qa" ? "knowledge" : "retrieval",
+        action: mode === "stat_qa" ? "Query imported sports statistics before video moment retrieval." : "Run semantic retrieval and merge it with structured event filters.",
         input: queryPlan.semanticQuery,
-        output: "Ranked timeline segments with match reasons",
+        output: mode === "stat_qa" ? "Player metric answer with source evidence" : "Ranked timeline segments with match reasons",
         status: retrievalFallback.length > 0 ? "fallback" : "ready",
-        trigger: "Need to find all candidate moments before analysis."
+        trigger: mode === "stat_qa" ? "Questions asking for counts or season totals." : "Need to find all candidate moments before analysis."
       },
       {
         id: "generate",
-        label: "Pattern analysis",
+        label: mode === "stat_qa" ? "Direct answer" : "Pattern analysis",
         owner: "analysis",
-        action: mode === "search" ? "Skip generation unless the user asks for summary, comparison, or decision patterns." : "Generate a grounded pattern summary from retrieved segments only.",
-        input: mode === "search" ? "Not required" : "Retrieved moments + domain evidence + scope metadata",
-        output: mode === "search" ? "Search results only" : "Evidence-backed tactical or player pattern report",
+        action:
+          mode === "stat_qa"
+            ? "Return a sourced stats answer without treating video search results as official totals."
+            : mode === "search"
+              ? "Skip generation unless the user asks for summary, comparison, or decision patterns."
+              : "Generate a grounded pattern summary from retrieved segments only.",
+        input: mode === "stat_qa" ? "Imported sports knowledge rows" : mode === "search" ? "Not required" : "Retrieved moments + domain evidence + scope metadata",
+        output: mode === "stat_qa" ? "Sourced statistics answer" : mode === "search" ? "Search results only" : "Evidence-backed tactical or player pattern report",
         status: mode === "search" ? "fallback" : "ready",
-        trigger: "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
+        trigger: mode === "stat_qa" ? "Aggregate stat question." : "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
       }
     ],
     retrieval: {
-      engine: queryPlan.intent.domain ? "hybrid" : "semantic_retrieval",
+      engine: mode === "stat_qa" ? "structured_domain" : queryPlan.intent.domain ? "hybrid" : "semantic_retrieval",
       filters: queryPlan.domainFilters,
       fallback: retrievalFallback
     },
     analysis: {
-      required: mode !== "search",
-      model: mode === "search" ? "none" : "pattern_analysis_generate",
+      required: mode !== "search" && mode !== "stat_qa",
+      model: mode === "search" || mode === "stat_qa" ? "none" : "pattern_analysis_generate",
       prompt: buildAnalysisPrompt(queryPlan),
       inputs: ["retrieved_segments", "domain_events", "knowledge_evidence", "identity_resolution", "scope_metadata"]
     },
@@ -100,8 +107,9 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
   };
 }
 
-function inferMode(query: string): OrchestrationPlan["mode"] {
-  const normalized = query.toLowerCase();
+function inferMode(queryPlan: DomainQueryPlan): OrchestrationPlan["mode"] {
+  if (queryPlan.intent.questionType === "stat_qa") return "stat_qa";
+  const normalized = queryPlan.originalQuery.toLowerCase();
   const asksAnalysis = /분석|요약|비교|패턴|리포트|decision|pattern|analy[sz]e|summari[sz]e|compare/.test(normalized);
   const asksSearch = /찾|검색|find|show|moments|장면|구간/.test(normalized);
   if (asksAnalysis && asksSearch) return "search_and_analysis";
@@ -163,7 +171,7 @@ function coverageFor(field: "competition" | "season", value: string | undefined,
   return scoped > 0 ? "missing" : "missing";
 }
 
-function buildIdentityDecision(player: string | null, candidates: DomainScopeValue[]): OrchestrationPlan["decisions"][number] {
+function buildIdentityDecision(player: string | null, candidates: DomainScopeValue[], mode: OrchestrationPlan["mode"], knowledgePlayer: ReturnType<typeof getKnowledgePlayer>): OrchestrationPlan["decisions"][number] {
   if (!player) {
     return {
       id: "identity",
@@ -172,6 +180,16 @@ function buildIdentityDecision(player: string | null, candidates: DomainScopeVal
       confidence: 1,
       status: "ready",
       reason: "The query does not require player identity grounding."
+    };
+  }
+  if (mode === "stat_qa" && knowledgePlayer) {
+    return {
+      id: "identity",
+      label: "Identity",
+      value: `${knowledgePlayer.canonical} (sports knowledge)`,
+      confidence: 0.94,
+      status: "ready",
+      reason: "The player identity is resolved against imported sports knowledge."
     };
   }
   if (candidates.length === 0) {
@@ -220,6 +238,16 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
 
 function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[]): OrchestrationPlan["decisions"][number] {
   const domainIndexes = indexes.filter((index) => index.domainIndexing?.enabled);
+  if (mode === "stat_qa") {
+    return {
+      id: "route",
+      label: "Route",
+      value: "Knowledge stats QA",
+      confidence: 0.86,
+      status: "ready",
+      reason: "This query asks for an aggregate statistic, so it should be answered from sports knowledge."
+    };
+  }
   return {
     id: "route",
     label: "Route",

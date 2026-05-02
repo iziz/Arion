@@ -829,26 +829,68 @@ function buildKnowledgeSearchProfile(evidence: KnowledgeEvidence[]) {
   };
 }
 
+type AnalysisMoment = {
+  asset: AssetRecord;
+  segment: TimelineSegment;
+  reasons: SearchMatchReason[];
+  verification: VerificationCheck[];
+};
+
+type ScoredAnalysisMoment = AnalysisMoment & {
+  evidenceScore: number;
+  evidenceTier: AnalysisResult["evidence"]["tier"];
+  hardChecks: number;
+  softChecks: number;
+  missingChecks: number;
+  failedChecks: number;
+};
+
 export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<AnalysisResult> {
   const queryPlan = planDomainQuery(question);
   const domainProfile = expandDomainQuery(queryPlan.semanticQuery || question);
   const queryTerms = extractKeywords(domainProfile.expandedText);
-  const candidateChapters = asset.timeline
+  const candidateMoments = asset.timeline
     .filter((segment) => matchesSegmentDomainFilters(asset, segment, queryPlan.domainFilters))
     .map((segment) => {
       const lexicalScore = scoreText(`${segment.transcript} ${segment.tags.join(" ")} ${segmentSearchText(segment)}`, queryTerms);
       const domainScore = scoreDomainMatch(segment, domainProfile);
       const filterScore = scoreDomainFilterMatch(asset, segment, queryPlan.domainFilters);
-      return {
+      const verification = buildVerificationChecks(asset, segment, queryPlan.domainFilters);
+      const reasons = buildSearchMatchReasons(
+        asset,
         segment,
+        {
+          lexicalScore,
+          semanticScore: 0,
+          visualScore: 0,
+          domainScore
+        },
+        queryPlan.domainFilters,
+        queryPlan
+      );
+      return {
+        asset,
+        segment,
+        reasons,
+        verification,
         score: lexicalScore * 2 + domainScore * 5 + filterScore * 6 + segment.confidence
       };
     })
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
-  const chapters = (candidateChapters.length > 0 ? candidateChapters.map((item) => item.segment) : question.trim() ? [] : asset.timeline).slice(0, 6);
-  const verification = chapters.flatMap((segment) => buildVerificationChecks(asset, segment, queryPlan.domainFilters));
-  const features = chapters.map((segment) => featureFromSegment(segment, buildVerificationChecks(asset, segment, queryPlan.domainFilters)));
+  const fallbackMoments = question.trim()
+    ? []
+    : asset.timeline.slice(0, 12).map((segment) => ({
+        asset,
+        segment,
+        reasons: [],
+        verification: buildVerificationChecks(asset, segment, queryPlan.domainFilters)
+      }));
+  const evidencePlan = buildAnalysisEvidencePlan((candidateMoments.length > 0 ? candidateMoments : fallbackMoments).slice(0, 18));
+  const analysisMoments = evidencePlan.included.slice(0, 6);
+  const chapters = analysisMoments.map((moment) => moment.segment);
+  const verification = analysisMoments.flatMap((moment) => moment.verification);
+  const features = analysisMoments.map((moment) => featureFromSegment(moment.segment, moment.verification));
   const patterns = aggregatePatterns(features);
   const domainSignals = chapters.flatMap((segment) => [
     ...(segment.domain?.labels ?? []),
@@ -857,22 +899,7 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
     segment.domain?.scope?.season?.value ?? ""
   ]);
   const signals = unique([...(chapters.length > 0 ? asset.tags.slice(0, 6) : []), ...chapters.flatMap((segment) => segment.tags), ...domainSignals].filter(Boolean)).slice(0, 12);
-  const clips = chapters.map((segment) => {
-    const segmentChecks = buildVerificationChecks(asset, segment, queryPlan.domainFilters);
-    const segmentReasons = buildSearchMatchReasons(
-      asset,
-      segment,
-      {
-        lexicalScore: scoreText(`${segment.transcript} ${segment.tags.join(" ")} ${segmentSearchText(segment)}`, queryTerms),
-        semanticScore: 0,
-        visualScore: 0,
-        domainScore: scoreDomainMatch(segment, domainProfile)
-      },
-      queryPlan.domainFilters,
-      queryPlan
-    );
-    return clipFromSegment(asset, withSceneData(asset, segment), segmentChecks, segmentReasons);
-  });
+  const clips = analysisMoments.map((moment) => clipFromSegment(moment.asset, withSceneData(moment.asset, moment.segment), moment.verification, moment.reasons));
   const generated = await createAnalysisGenerator().generate({
     question,
     asset,
@@ -882,6 +909,7 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
     patterns,
     verification
   });
+  const evidence = summarizeAnalysisEvidence(evidencePlan.scored, analysisMoments);
 
   return {
     assetId: asset.id,
@@ -891,13 +919,14 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
       label: asset.title,
       assetCount: 1
     },
-    summary: generated.summary ?? asset.summary,
+    summary: buildEvidenceAwareSummary(generated.summary ?? asset.summary, evidence),
     answer: generated.answer,
     chapters,
     clips,
     signals,
     patterns,
-    report: generated.report,
+    evidence,
+    report: buildEvidenceAwareReport(generated.report, evidence),
     generator: generated.generator,
     generatedAt: new Date().toISOString()
   };
@@ -912,7 +941,7 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
     queryPlan,
     limit: 12
   });
-  const moments = searchResults
+  const moments: AnalysisMoment[] = searchResults
     .flatMap((result) =>
       result.segments.map((segment) => ({
         asset: result.asset,
@@ -922,11 +951,16 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
       }))
     )
     .slice(0, 18);
-  const chapters = moments.map((moment) => moment.segment);
-  const verification = moments.flatMap((moment) =>
-    moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters)
+  const evidencePlan = buildAnalysisEvidencePlan(
+    moments.map((moment) => ({
+      ...moment,
+      verification: moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters)
+    }))
   );
-  const features = moments.map((moment) => featureFromSegment(moment.segment, moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters)));
+  const analysisMoments = evidencePlan.included.slice(0, 18);
+  const chapters = analysisMoments.map((moment) => moment.segment);
+  const verification = analysisMoments.flatMap((moment) => moment.verification);
+  const features = analysisMoments.map((moment) => featureFromSegment(moment.segment, moment.verification));
   const patterns = aggregatePatterns(features);
   const signals = unique(
     [
@@ -939,11 +973,11 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
       ...chapters.map((segment) => segment.domain?.scope?.season?.value ?? "")
     ].filter(Boolean)
   ).slice(0, 16);
-  const clips = moments.map((moment) =>
+  const clips = analysisMoments.map((moment) =>
     clipFromSegment(
       moment.asset,
       withSceneData(moment.asset, moment.segment),
-      moment.verification.length > 0 ? moment.verification : buildVerificationChecks(moment.asset, moment.segment, queryPlan.domainFilters),
+      moment.verification,
       moment.reasons
     )
   );
@@ -957,6 +991,7 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
     patterns,
     verification
   });
+  const evidence = summarizeAnalysisEvidence(evidencePlan.scored, analysisMoments);
   return {
     assetId: `asset-group:${index.id}`,
     indexId: index.id,
@@ -965,13 +1000,14 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
       label: index.name,
       assetCount: scopedAssets.length
     },
-    summary: generated.summary ?? subject.summary,
+    summary: buildEvidenceAwareSummary(generated.summary ?? subject.summary, evidence),
     answer: generated.answer,
     chapters,
     clips,
     signals,
     patterns,
-    report: generated.report,
+    evidence,
+    report: buildEvidenceAwareReport(generated.report, evidence),
     generator: generated.generator,
     generatedAt: new Date().toISOString()
   };
@@ -1149,6 +1185,192 @@ function aggregatePatterns(features: ReturnType<typeof featureFromSegment>[]): A
   };
 }
 
+function buildAnalysisEvidencePlan(moments: AnalysisMoment[]) {
+  const scored = moments.map(scoreAnalysisMoment).sort((a, b) => b.evidenceScore - a.evidenceScore);
+  const included = scored.filter((moment) => moment.evidenceTier !== "weak" && moment.failedChecks === 0);
+  return {
+    scored,
+    included
+  };
+}
+
+function scoreAnalysisMoment(moment: AnalysisMoment): ScoredAnalysisMoment {
+  const hardChecks = moment.verification.filter((check) => check.status === "pass").length;
+  const softChecks = moment.verification.filter((check) => check.status === "soft_pass").length;
+  const missingChecks = moment.verification.filter((check) => check.status === "unknown").length;
+  const failedChecks = moment.verification.filter((check) => check.status === "fail").length;
+  const hardConfidence = moment.verification
+    .filter((check) => check.status === "pass")
+    .reduce((sum, check) => sum + check.confidence, 0);
+  const softConfidence = moment.verification
+    .filter((check) => check.status === "soft_pass")
+    .reduce((sum, check) => sum + check.confidence, 0);
+  const structuredEventBoost = moment.segment.domain?.events?.length ? 12 : 0;
+  const trackingBoost = moment.segment.sceneData?.vision?.tracking ? 8 : 0;
+  const sourceBoost = Math.min(10, Math.round(scoreSources(moment.segment.sources) * 3));
+  const base = moment.verification.length > 0 ? 35 : Math.round(moment.segment.confidence * 70);
+  const rawEvidenceScore = clampScore(
+    base +
+      hardChecks * 14 +
+      softChecks * 7 +
+      Math.round(hardConfidence * 18) +
+      Math.round(softConfidence * 8) +
+      structuredEventBoost +
+      trackingBoost +
+      sourceBoost -
+      missingChecks * 11 -
+      failedChecks * 28
+  );
+  const evidenceScore = clampScore(Math.min(rawEvidenceScore, failedChecks > 0 ? 44 : missingChecks > 0 ? 60 : softChecks > 0 ? 74 : 100));
+  const evidenceTier: AnalysisResult["evidence"]["tier"] =
+    evidenceScore >= 75 && hardChecks > 0 && softChecks === 0 && missingChecks === 0 && failedChecks === 0 ? "verified" : evidenceScore >= 45 && failedChecks === 0 ? "review" : "weak";
+  return {
+    ...moment,
+    evidenceScore,
+    evidenceTier,
+    hardChecks,
+    softChecks,
+    missingChecks,
+    failedChecks
+  };
+}
+
+function summarizeAnalysisEvidence(scored: ScoredAnalysisMoment[], included: AnalysisMoment[]): AnalysisResult["evidence"] {
+  const includedIds = new Set(included.map((moment) => `${moment.asset.id}:${moment.segment.id}`));
+  const includedScored = scored.filter((moment) => includedIds.has(`${moment.asset.id}:${moment.segment.id}`));
+  const hardChecks = includedScored.reduce((sum, moment) => sum + moment.hardChecks, 0);
+  const softChecks = includedScored.reduce((sum, moment) => sum + moment.softChecks, 0);
+  const missingChecks = includedScored.reduce((sum, moment) => sum + moment.missingChecks, 0);
+  const failedChecks = includedScored.reduce((sum, moment) => sum + moment.failedChecks, 0);
+  const trustScore = includedScored.length > 0 ? Math.round(includedScored.reduce((sum, moment) => sum + moment.evidenceScore, 0) / includedScored.length) : 0;
+  const tier: AnalysisResult["evidence"]["tier"] =
+    trustScore >= 75 && hardChecks > 0 && softChecks === 0 && missingChecks === 0 && failedChecks === 0 ? "verified" : trustScore >= 45 && failedChecks === 0 ? "review" : "weak";
+  const confirmedPatterns = buildEvidencePatternBullets(includedScored.filter((moment) => moment.evidenceTier === "verified")).slice(0, 5);
+  const likelyPatterns = buildEvidencePatternBullets(includedScored.filter((moment) => moment.evidenceTier === "review")).slice(0, 5);
+  const weakMoments = scored.filter((moment) => !includedIds.has(`${moment.asset.id}:${moment.segment.id}`));
+  const needsReview = unique([
+    ...includedScored
+      .filter((moment) => moment.softChecks > 0)
+      .flatMap((moment) => moment.verification.filter((check) => check.status === "soft_pass").map((check) => `${check.constraint} uses soft evidence for ${moment.segment.label}.`)),
+    ...weakMoments
+      .slice(0, 5)
+      .map((moment) => `${moment.segment.label} was excluded from analysis because trust score was ${moment.evidenceScore}%.`)
+  ]).slice(0, 6);
+  const missingEvidence = unique(
+    scored.flatMap((moment) =>
+      moment.verification
+        .filter((check) => check.status === "unknown" || check.status === "fail")
+        .map((check) => `${check.constraint}: expected ${check.expected}, observed ${check.observed}.`)
+    )
+  ).slice(0, 6);
+  const limitations = unique([
+    includedScored.some((moment) => moment.segment.sceneData?.vision?.fieldCalibration?.status !== "calibrated") ? "Field zone findings may rely on estimated calibration, not pitch homography." : "",
+    includedScored.some((moment) => moment.segment.sceneData?.vision?.tracking?.status !== "tracked") ? "Player and ball grounding may use estimated tracking rather than verified track identity." : "",
+    includedScored.some((moment) => moment.segment.domain?.vlm?.status !== "refined") ? "Some scene descriptions still use local heuristics instead of refined VLM evidence." : "",
+    missingEvidence.length > 0 ? "Missing or failed checks are excluded from confirmed claims." : "",
+    includedScored.length === 0 && scored.length > 0 ? "No retrieved moments met the minimum evidence threshold for analysis." : ""
+  ].filter(Boolean)).slice(0, 6);
+  return {
+    trustScore,
+    tier,
+    hardChecks,
+    softChecks,
+    missingChecks,
+    failedChecks,
+    includedMoments: includedScored.length,
+    excludedMoments: Math.max(0, scored.length - includedScored.length),
+    confirmedPatterns,
+    likelyPatterns,
+    needsReview,
+    missingEvidence,
+    limitations
+  };
+}
+
+function buildEvidencePatternBullets(moments: ScoredAnalysisMoment[]) {
+  return unique(
+    moments.map((moment) => {
+      const feature = featureFromSegment(moment.segment, moment.verification);
+      const playerCheck = moment.verification.find((check) => check.constraint === "player");
+      const fieldZoneCheck = moment.verification.find((check) => check.constraint === "fieldZone");
+      const player =
+        playerCheck?.status === "pass"
+          ? playerCheck.observed
+          : playerCheck
+            ? "player identity review"
+            : feature.player !== "unknown_player"
+              ? feature.player
+              : "";
+      const fieldZone =
+        fieldZoneCheck?.status === "pass"
+          ? fieldZoneCheck.observed
+          : fieldZoneCheck?.status === "soft_pass"
+            ? `${fieldZoneCheck.expected.replace(/_/g, " ")} (estimated)`
+            : fieldZoneCheck
+              ? "field zone review"
+              : feature.fieldZone !== "unknown_zone"
+                ? feature.fieldZone.replace(/_/g, " ")
+                : "";
+      const parts = [
+        player,
+        feature.role !== "unknown_role" ? feature.role : "",
+        feature.passType !== "unknown_pass" ? feature.passType.replace(/_/g, " ") : "",
+        feature.eventType !== "unknown_event" ? feature.eventType.replace(/_/g, " ") : "",
+        fieldZone,
+        feature.season !== "unknown_season" ? feature.season : ""
+      ].filter(Boolean);
+      return parts.length > 0 ? `${parts.join(" · ")} (${formatTime(moment.segment.start)}-${formatTime(moment.segment.end)})` : `${moment.segment.label} (${formatTime(moment.segment.start)}-${formatTime(moment.segment.end)})`;
+    })
+  );
+}
+
+function buildEvidenceAwareSummary(summary: string, evidence: AnalysisResult["evidence"]) {
+  const prefix = `Evidence ${evidence.tier} (${evidence.trustScore}%) from ${evidence.includedMoments} included moments`;
+  const excluded = evidence.excludedMoments > 0 ? `; ${evidence.excludedMoments} low-trust moments excluded` : "";
+  return `${prefix}${excluded}. ${summary}`;
+}
+
+function buildEvidenceAwareReport(report: AnalysisResult["report"], evidence: AnalysisResult["evidence"]): AnalysisResult["report"] {
+  const evidenceSections: AnalysisResult["report"]["sections"] = [
+    {
+      heading: "Confirmed Patterns",
+      body: evidence.confirmedPatterns.length > 0 ? "These claims are backed by hard verification checks." : "No pattern currently has enough hard evidence to be treated as confirmed.",
+      bullets: evidence.confirmedPatterns.length > 0 ? evidence.confirmedPatterns : ["No confirmed pattern available."]
+    },
+    {
+      heading: "Likely Patterns",
+      body: evidence.likelyPatterns.length > 0 ? "These claims are useful but rely on soft or partial evidence." : "No likely pattern was separated from the retrieved moments.",
+      bullets: evidence.likelyPatterns.length > 0 ? evidence.likelyPatterns : ["No likely pattern available."]
+    },
+    {
+      heading: "Needs Review",
+      body: evidence.needsReview.length > 0 ? "These moments or constraints should be checked before editorial use." : "No review-only warnings were produced.",
+      bullets: evidence.needsReview.length > 0 ? evidence.needsReview : ["No review-only warning available."]
+    },
+    {
+      heading: "Missing Evidence",
+      body: evidence.missingEvidence.length > 0 ? "The index could not ground these constraints with current data." : "No missing or failed constraint evidence was found in included moments.",
+      bullets: evidence.missingEvidence.length > 0 ? evidence.missingEvidence : ["No missing evidence item available."]
+    },
+    {
+      heading: "Data Limitations",
+      body: "Analysis is bounded by the indexed evidence and current sports-domain extraction quality.",
+      bullets: evidence.limitations.length > 0 ? evidence.limitations : ["No major indexed limitation was detected."]
+    }
+  ];
+  const generatorSections = report.sections.filter((section) => !evidenceSections.some((item) => item.heading === section.heading));
+  return {
+    ...report,
+    confidence: Number(Math.min(report.confidence, evidence.trustScore > 0 ? evidence.trustScore / 100 : 0).toFixed(2)),
+    sections: [...evidenceSections, ...generatorSections],
+    limitations: unique([...evidence.limitations, ...report.limitations])
+  };
+}
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function topFeatureGroups(
   features: ReturnType<typeof featureFromSegment>[],
   key: "player" | "competition" | "season" | "eventType" | "passType" | "fieldZone" | "role" | "roleGrounding" | "ballDirection",
@@ -1168,8 +1390,9 @@ function topFeatureGroups(
     label: `${label}: ${value.replace(/_/g, " ")}`,
     count: group.count,
     share: features.length > 0 ? Number((group.count / features.length).toFixed(2)) : 0,
-    confidence: Number((group.confidence / Math.max(1, group.count)).toFixed(2))
-  }));
+    confidence: Number((group.confidence / Math.max(1, group.count)).toFixed(2)),
+    tier: group.confidence / Math.max(1, group.count) >= 0.75 ? "confirmed" : group.confidence / Math.max(1, group.count) >= 0.45 ? "likely" : "review"
+  })) satisfies AnalysisResult["patterns"]["topGroups"];
 }
 
 function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, verification: VerificationCheck[], reasons: SearchMatchReason[]): ClipResult {
@@ -1307,7 +1530,7 @@ function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegmen
   };
   const needsEventMatch = Object.values(eventFilters).some(Boolean);
   if (!needsEventMatch) return true;
-  return (segment.domain?.events ?? []).some((event) => {
+  const structuredMatch = (segment.domain?.events ?? []).some((event) => {
     if (eventFilters.eventType && event.eventType !== eventFilters.eventType) return false;
     if (eventFilters.passType && event.football?.passType !== eventFilters.passType) return false;
     if (eventFilters.fieldZone && event.football?.fieldZone !== eventFilters.fieldZone) return false;
@@ -1316,11 +1539,28 @@ function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegmen
     if (filters.role === "shooter" && event.eventType !== "shot") return false;
     return true;
   });
+  if (structuredMatch) return true;
+  if (eventFilters.passType || eventFilters.fieldZone) return false;
+  if (eventFilters.eventType && textAllowsEventFilter(fullSegmentText, eventFilters.eventType)) return true;
+  return false;
 }
 
 function textAllowsFilter(haystack: string, value?: string) {
   const normalized = normalizeSearchValue(value ?? "");
   return Boolean(normalized && haystack.includes(normalized));
+}
+
+function textAllowsEventFilter(haystack: string, eventType: string) {
+  const aliases: Record<string, string[]> = {
+    shot: ["shot", "shoot", "scoring", "scored", "score", "goal", "goals", "finish", "득점", "골", "슈팅", "슛"],
+    dribble: ["dribble", "dribbling", "carry", "take on", "드리블", "돌파"],
+    pass_receive: ["receive", "receiving", "through ball", "pass", "받는", "스루패스", "패스"],
+    pressure: ["pressure", "pressured", "under pressure", "압박"],
+    scramble: ["scramble", "스크램블"],
+    pocket_escape: ["pocket escape", "out of the pocket", "포켓 탈출"],
+    throw_on_run: ["throw on the run", "rolling", "이동 중 패스"]
+  };
+  return (aliases[eventType] ?? [eventType]).some((alias) => textAllowsFilter(haystack, alias));
 }
 
 function scoreDomainFilterMatch(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
@@ -1418,14 +1658,15 @@ function buildVerificationChecks(asset: AssetRecord, segment: TimelineSegment, f
   const firstMatchingEvent = events[0];
   if (filters.eventType) {
     const match = events.find((event) => event.eventType === filters.eventType);
+    const textMatch = !match && textAllowsEventFilter(segmentText, filters.eventType);
     checks.push({
       segmentId: segment.id,
       constraint: "eventType",
       expected: filters.eventType,
-      observed: match?.eventType ?? firstMatchingEvent?.eventType ?? "missing",
-      status: match ? "pass" : "fail",
-      confidence: match?.confidence ?? 0,
-      evidence: match ? [match.caption] : ["No matching structured event type."]
+      observed: match?.eventType ?? (textMatch ? "text fallback" : firstMatchingEvent?.eventType ?? "missing"),
+      status: match ? "pass" : textMatch ? "soft_pass" : "fail",
+      confidence: match?.confidence ?? (textMatch ? 0.45 : 0),
+      evidence: match ? [match.caption] : textMatch ? ["Matched unstructured event text fallback."] : ["No matching structured event type."]
     });
   }
   if (filters.passType) {
@@ -1473,14 +1714,15 @@ function buildVerificationChecks(asset: AssetRecord, segment: TimelineSegment, f
       if (filters.role === "shooter") return event.eventType === "shot";
       return false;
     });
+    const textMatch = !match && filters.role === "shooter" && textAllowsEventFilter(segmentText, "shot");
     checks.push({
       segmentId: segment.id,
       constraint: "role",
       expected: filters.role,
-      observed: match ? filters.role : "missing",
-      status: match ? "pass" : "fail",
-      confidence: match?.confidence ?? 0,
-      evidence: match ? [match.caption] : ["No matching structured player role."]
+      observed: match ? filters.role : textMatch ? "text fallback" : "missing",
+      status: match ? "pass" : textMatch ? "soft_pass" : "fail",
+      confidence: match?.confidence ?? (textMatch ? 0.4 : 0),
+      evidence: match ? [match.caption] : textMatch ? ["Matched unstructured goal/shot text fallback."] : ["No matching structured player role."]
     });
   }
   return checks;

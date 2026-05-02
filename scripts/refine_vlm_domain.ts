@@ -29,7 +29,10 @@ async function main() {
       error: null,
       intelligence: {
         ...asset.intelligence,
-        modelTrace: [...asset.intelligence.modelTrace, `domain-vlm-refine:${refined.model}:${refined.refinedSegments}/${refined.attemptedSegments}`]
+        modelTrace: [
+          ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:")),
+          `domain-vlm-refine:${refined.model}:${refined.refinedSegments}/${refined.attemptedSegments}:invalid=${refined.invalidSegments}:failed=${refined.failedSegments}`
+        ]
       },
       updatedAt: new Date().toISOString()
     };

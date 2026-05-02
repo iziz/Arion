@@ -77,6 +77,33 @@ type FootballDataMatchesResponse = {
   matches?: FootballDataMatch[];
 };
 
+type FootballDataScorer = {
+  player?: {
+    id?: number;
+    name?: string;
+    firstName?: string | null;
+    lastName?: string | null;
+    nationality?: string | null;
+    section?: string | null;
+    position?: string | null;
+    shirtNumber?: number | null;
+  };
+  team?: {
+    id?: number;
+    name?: string;
+    shortName?: string;
+    tla?: string;
+  };
+  playedMatches?: number | null;
+  goals?: number | null;
+  assists?: number | null;
+  penalties?: number | null;
+};
+
+type FootballDataScorersResponse = {
+  scorers?: FootballDataScorer[];
+};
+
 export async function importFootballDataKnowledge(options: ImportOptions = {}): Promise<{
   competitionCode: string;
   season: number;
@@ -98,6 +125,15 @@ export async function importFootballDataKnowledge(options: ImportOptions = {}): 
     aliases: [team.name, team.shortName, team.tla].filter((value): value is string => Boolean(value))
   }));
   const warnings: string[] = [];
+  let scorerPlayers: SportsKnowledgePlayer[] = [];
+  let scorerActivities: SportsKnowledgeMatchActivity[] = [];
+  try {
+    const scorers = await importScorerActivities(competitionCode, season, league, seasonLabel, 500);
+    scorerPlayers = scorers.players;
+    scorerActivities = scorers.matchActivities;
+  } catch (error) {
+    warnings.push(error instanceof Error ? error.message : "football-data scorers import failed");
+  }
   let matchActivities: SportsKnowledgeMatchActivity[] = [];
   if (options.includeMatches) {
     try {
@@ -108,18 +144,77 @@ export async function importFootballDataKnowledge(options: ImportOptions = {}): 
   }
   const snapshot = mergeSportsKnowledge({
     teams: teamRecords,
-    players,
-    matchActivities
+    players: [...players, ...scorerPlayers],
+    matchActivities: [...scorerActivities, ...matchActivities]
   });
   return {
     competitionCode,
     season,
     teams: teamRecords.length,
-    players: players.length,
-    matchActivities: matchActivities.length,
+    players: players.length + scorerPlayers.length,
+    matchActivities: scorerActivities.length + matchActivities.length,
     warnings,
     snapshot
   };
+}
+
+async function importScorerActivities(
+  competitionCode: string,
+  season: number,
+  league: SportsLeague,
+  seasonLabel: string,
+  limit: number
+): Promise<{ players: SportsKnowledgePlayer[]; matchActivities: SportsKnowledgeMatchActivity[] }> {
+  const response = await footballDataGet<FootballDataScorersResponse>(`/competitions/${competitionCode}/scorers`, {
+    season: String(season),
+    limit: String(Math.max(1, Math.min(500, limit)))
+  });
+  const players: SportsKnowledgePlayer[] = [];
+  const matchActivities: SportsKnowledgeMatchActivity[] = [];
+  for (const scorer of response.scorers ?? []) {
+    const player = scorer.player;
+    const team = scorer.team;
+    if (!player?.name || !team?.name) continue;
+    players.push({
+      id: `football-data-${player.id ?? slug(player.name)}`,
+      canonical: player.name,
+      aliases: unique([player.name, [player.firstName, player.lastName].filter(Boolean).join(" ")]),
+      sport: "football",
+      league,
+      activeSeasons: [seasonLabel],
+      teamsBySeason: { [seasonLabel]: team.name },
+      provider: "football-data",
+      externalIds: { footballData: player.id ?? slug(player.name), team: team.id ?? slug(team.name) },
+      position: player.section ?? player.position ?? null,
+      shirtNumber: player.shirtNumber ?? null
+    });
+    const stats = [
+      numberOrNull(scorer.playedMatches) !== null ? `${numberOrNull(scorer.playedMatches)} appearances` : "",
+      numberOrNull(scorer.goals) !== null ? `${numberOrNull(scorer.goals)} goals` : "",
+      numberOrNull(scorer.assists) !== null ? `${numberOrNull(scorer.assists)} assists` : "",
+      numberOrNull(scorer.penalties) !== null ? `${numberOrNull(scorer.penalties)} penalties` : ""
+    ].filter(Boolean);
+    if (stats.length === 0) continue;
+    matchActivities.push({
+      id: `football-data:scorers:${slug(league)}:${slug(seasonLabel)}:${slug(team.name)}:${player.id ?? slug(player.name)}`,
+      provider: "football-data",
+      competition: league,
+      season: seasonLabel,
+      matchId: 0,
+      utcDate: null,
+      matchday: null,
+      homeTeam: team.name,
+      awayTeam: "Season aggregate",
+      team: team.name,
+      player: player.name,
+      playerId: player.id ?? null,
+      role: "STAT",
+      minute: null,
+      event: "season aggregate",
+      sourceText: `${player.name} season aggregate for ${team.name}: ${stats.join(", ")}.`
+    });
+  }
+  return { players, matchActivities };
 }
 
 async function importMatchActivities(
@@ -278,6 +373,10 @@ function seasonLabelFromYear(year: number) {
 
 function unique(items: string[]) {
   return Array.from(new Set(items.filter(Boolean)));
+}
+
+function numberOrNull(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function slug(value: string) {

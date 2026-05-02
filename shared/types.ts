@@ -450,6 +450,8 @@ export type DomainQueryPlan = {
   domainFilters: DomainSearchFilters;
   intent: {
     domain: string | null;
+    questionType?: "moment_retrieval" | "stat_qa";
+    metric?: "goals" | "assists" | "appearances" | "minutes" | "cards" | null;
     eventType: string | null;
     passType: string | null;
     fieldZone: string | null;
@@ -458,11 +460,79 @@ export type DomainQueryPlan = {
   };
   confidence: number;
   warnings: string[];
+  planner?: {
+    source: "rules" | "openai";
+    model: string | null;
+    fallbackReason?: string;
+  };
+};
+
+export type SportsKnowledgeAnswer = {
+  applicable: boolean;
+  route: "stat_qa" | "unsupported";
+  answer: string;
+  confidence: number;
+  subject: {
+    player: string | null;
+    competition: string | null;
+    season: string | null;
+    metric: "goals" | "assists" | "appearances" | "minutes" | "cards" | null;
+  };
+  value: number | null;
+  status: "answered" | "missing_stat" | "unsupported" | "needs_clarification";
+  evidence: Array<{
+    provider: string;
+    season: string;
+    competition: string;
+    team: string;
+    sourceText: string;
+  }>;
+  fallback: string | null;
+  warnings: string[];
+};
+
+export type AskRoute = "pending" | "stat_qa" | "moment_retrieval" | "empty" | "error";
+
+export type AskOperationStep = {
+  id: string;
+  label: string;
+  owner: "router" | "knowledge" | "retrieval" | "analysis" | "platform";
+  input: string;
+  output: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "skipped" | "fallback";
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
+};
+
+export type AskOperation = {
+  id: string;
+  query: string;
+  indexId: string | null;
+  status: "queued" | "running" | "succeeded" | "failed";
+  route: AskRoute;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  error: string | null;
+  steps: AskOperationStep[];
+};
+
+export type AskResponse = {
+  operation: AskOperation;
+  route: AskRoute;
+  answer: string | null;
+  queryPlan: DomainQueryPlan | null;
+  orchestrationPlan: OrchestrationPlan | null;
+  sportsAnswer: SportsKnowledgeAnswer | null;
+  results: SearchResult[];
+  warnings: string[];
 };
 
 export type OrchestrationPlan = {
   query: string;
-  mode: "search" | "analysis" | "search_and_analysis";
+  mode: "search" | "analysis" | "search_and_analysis" | "stat_qa";
   confidence: number;
   decisions: Array<{
     id: string;
@@ -652,8 +722,24 @@ export type AnalysisResult = {
       count: number;
       share: number;
       confidence: number;
+      tier?: "confirmed" | "likely" | "review";
     }>;
     gaps: string[];
+  };
+  evidence: {
+    trustScore: number;
+    tier: "verified" | "review" | "weak";
+    hardChecks: number;
+    softChecks: number;
+    missingChecks: number;
+    failedChecks: number;
+    includedMoments: number;
+    excludedMoments: number;
+    confirmedPatterns: string[];
+    likelyPatterns: string[];
+    needsReview: string[];
+    missingEvidence: string[];
+    limitations: string[];
   };
   report: {
     title: string;
