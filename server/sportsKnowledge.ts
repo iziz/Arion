@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { SportsKnowledgeSnapshot } from "../shared/types";
 
 export type SportsLeague = "Premier League" | "NFL" | "Champions League" | "Bundesliga";
 
@@ -143,19 +144,42 @@ export function getSportsKnowledgeSnapshot() {
   };
 }
 
+export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer> & { canonical: string }): SportsKnowledgeSnapshot {
+  const external = loadExternalKnowledge();
+  const players = external.players ?? [];
+  const canonical = input.canonical.trim();
+  const id = input.id?.trim() || normalize(canonical).replace(/\s+/g, "-");
+  const activeSeasons = input.activeSeasons?.filter(Boolean) ?? [];
+  const player: SportsKnowledgePlayer = {
+    id,
+    canonical,
+    aliases: Array.from(new Set([canonical, ...(input.aliases ?? [])].map((alias) => alias.trim()).filter(Boolean))),
+    sport: input.sport === "american_football" ? "american_football" : "football",
+    league: isSportsLeague(input.league) ? input.league : "Premier League",
+    activeSeasons,
+    teamsBySeason: input.teamsBySeason ?? Object.fromEntries(activeSeasons.map((season) => [season, ""]))
+  };
+  const next = {
+    ...external,
+    players: [...players.filter((item) => item.id !== id && normalize(item.canonical) !== normalize(canonical)), player]
+  };
+  writeExternalKnowledge(next);
+  return getSportsKnowledgeSnapshot();
+}
+
 function getSportsCompetitions() {
   const external = loadExternalKnowledge();
-  return dedupeByValue([...sportsCompetitions, ...(external.competitions ?? [])], (item) => item.value);
+  return dedupeByValue([...(external.competitions ?? []), ...sportsCompetitions], (item) => item.value);
 }
 
 function getSportsTeams() {
   const external = loadExternalKnowledge();
-  return dedupeByValue([...sportsTeams, ...(external.teams ?? [])], (item) => item.value);
+  return dedupeByValue([...(external.teams ?? []), ...sportsTeams], (item) => item.value);
 }
 
 function getSportsPlayers() {
   const external = loadExternalKnowledge();
-  return dedupeByValue([...sportsPlayers, ...(external.players ?? [])], (player) => player.canonical);
+  return dedupeByValue([...(external.players ?? []), ...sportsPlayers], (player) => player.canonical);
 }
 
 function loadExternalKnowledge(): {
@@ -175,6 +199,20 @@ function loadExternalKnowledge(): {
   } catch {
     return {};
   }
+}
+
+function writeExternalKnowledge(value: {
+  competitions?: SportsCompetitionRecord[];
+  teams?: SportsTeamRecord[];
+  players?: SportsKnowledgePlayer[];
+}) {
+  const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
+  mkdirSync(resolve(process.cwd(), ".data"), { recursive: true });
+  writeFileSync(knowledgePath, JSON.stringify(value, null, 2));
+}
+
+function isSportsLeague(value: unknown): value is SportsLeague {
+  return value === "Premier League" || value === "NFL" || value === "Champions League" || value === "Bundesliga";
 }
 
 function dedupeByValue<T>(items: T[], keyFn: (item: T) => string) {

@@ -29,6 +29,7 @@ import type {
   OcrBox,
   OrchestrationPlan,
   SearchResult,
+  SportsKnowledgeSnapshot,
   VerificationCheck,
   WebhookRecord
 } from "../shared/types";
@@ -206,6 +207,10 @@ function isObservabilitySnapshot(value: unknown): value is ObservabilitySnapshot
   );
 }
 
+function isSportsKnowledgeSnapshot(value: unknown): value is SportsKnowledgeSnapshot {
+  return isRecord(value) && Array.isArray(value.competitions) && Array.isArray(value.teams) && Array.isArray(value.players);
+}
+
 function isAssetUploadPayload(value: unknown): value is { asset: AssetRecord } {
   return isRecord(value) && isRecord(value.asset) && typeof value.asset.id === "string";
 }
@@ -235,6 +240,7 @@ export default function App() {
   const [metrics, setMetrics] = useState<MetricsSummary>(emptyMetrics);
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
+  const [sportsKnowledge, setSportsKnowledge] = useState<SportsKnowledgeSnapshot | null>(null);
   const [selectedIndexId, setSelectedIndexId] = useState("default-index");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
@@ -299,7 +305,7 @@ export default function App() {
         setMessage("Refresh warning: API server is restarting or unavailable.");
         return;
       }
-      const [indexesResult, assetsResult, jobsResult, eventsResult, webhooksResult, metricsResult, dbStatusResult, observabilityResult] = await Promise.allSettled([
+      const [indexesResult, assetsResult, jobsResult, eventsResult, webhooksResult, metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult] = await Promise.allSettled([
         api.get<IndexRecord[]>("/api/indexes"),
         api.get<AssetRecord[]>("/api/assets"),
         api.get<JobRecord[]>("/api/jobs"),
@@ -307,7 +313,8 @@ export default function App() {
         api.get<WebhookRecord[]>("/api/webhooks"),
         api.get<MetricsSummary>("/api/metrics"),
         api.get<DatabaseStatus>("/api/db/status"),
-        api.get<ObservabilitySnapshot>("/api/observability")
+        api.get<ObservabilitySnapshot>("/api/observability"),
+        api.get<SportsKnowledgeSnapshot>("/api/knowledge/sports")
       ]);
       const failures: string[] = [];
       const nextIndexes = getArrayResult<IndexRecord>(indexesResult, "indexes", failures);
@@ -318,6 +325,7 @@ export default function App() {
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
+      const nextSportsKnowledge = getGuardedResult(sportsKnowledgeResult, "sports knowledge", isSportsKnowledgeSnapshot, failures);
 
       if (nextIndexes) {
         setIndexes(nextIndexes);
@@ -333,6 +341,7 @@ export default function App() {
       if (nextMetrics) setMetrics(nextMetrics);
       if (nextDbStatus) setDbStatus(nextDbStatus);
       if (nextObservability) setObservability(nextObservability);
+      if (nextSportsKnowledge) setSportsKnowledge(nextSportsKnowledge);
 
       if (failures.length > 0) {
         setMessage(`Refresh warning: ${failures.slice(0, 2).join("; ")}`);
@@ -461,6 +470,23 @@ export default function App() {
     });
     form.reset();
     await refresh();
+  }
+
+  async function registerKnowledgePlayer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const snapshot = await api.post<SportsKnowledgeSnapshot>("/api/knowledge/sports/players", {
+      canonical: data.get("canonical"),
+      aliases: data.get("aliases"),
+      sport: data.get("sport"),
+      league: data.get("league"),
+      activeSeasons: data.get("activeSeasons"),
+      team: data.get("team")
+    });
+    setSportsKnowledge(snapshot);
+    form.reset();
+    setMessage("Knowledge registry updated.");
   }
 
   async function retryJob(id: string) {
@@ -1018,6 +1044,51 @@ export default function App() {
             </article>
           ) : (
             <EmptyState text="Database status is loading." />
+          )}
+        </section>
+
+        <section className="panel knowledge-panel">
+          <div className="panel-title">
+            <Layers3 size={18} />
+            <h2>Sports Knowledge</h2>
+          </div>
+          {sportsKnowledge ? (
+            <>
+              <div className="obs-summary">
+                <span>{sportsKnowledge.players.length} players</span>
+                <span>{sportsKnowledge.teams.length} teams</span>
+                <span>{sportsKnowledge.competitions.length} competitions</span>
+              </div>
+              <form className="knowledge-form" onSubmit={registerKnowledgePlayer}>
+                <input name="canonical" placeholder="Player canonical name" required />
+                <input name="aliases" placeholder="Aliases, comma separated" />
+                <select name="sport" defaultValue="football">
+                  <option value="football">football</option>
+                  <option value="american_football">american football</option>
+                </select>
+                <select name="league" defaultValue="Premier League">
+                  {sportsKnowledge.competitions.map((competition) => (
+                    <option key={competition.value} value={competition.value}>{competition.value}</option>
+                  ))}
+                </select>
+                <input name="activeSeasons" placeholder="Seasons, comma separated" />
+                <input name="team" placeholder="Team for listed seasons" />
+                <button type="submit">
+                  <Plus size={16} />
+                  Add player
+                </button>
+              </form>
+              <div className="table-list">
+                {sportsKnowledge.players.slice(0, 8).map((player) => (
+                  <article key={player.id} className="ops-row">
+                    <strong>{player.canonical}</strong>
+                    <span>{player.league} · {player.sport} · {player.aliases.slice(0, 4).join(", ")}</span>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : (
+            <EmptyState text="Sports knowledge registry is loading." />
           )}
         </section>
 

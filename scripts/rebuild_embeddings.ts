@@ -11,12 +11,14 @@ import { upsertAssetVisualVectors } from "../server/localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
 import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } from "../server/visionDetectionRuntime";
 import { applyEventClassification } from "../server/eventClassifier";
+import { rebuildTrackingStore } from "../server/trackingStore";
 
 const indexedAssets = (await listAssets()).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
 const indexes = await listIndexes();
 let segments = 0;
 let visualVectors = 0;
 let generatedKeyframes = 0;
+const refreshedAssets = [];
 
 for (const index of indexes) {
   if (index.models.embedding !== getEmbeddingModelName()) {
@@ -82,7 +84,7 @@ for (const asset of indexedAssets) {
     modelTrace.push(`visual-embedding:${getVisualEmbeddingModelName()}`);
   }
 
-  await saveAsset({
+  const nextAsset = {
     ...asset,
     timeline,
     keyframes,
@@ -92,12 +94,16 @@ for (const asset of indexedAssets) {
       modelTrace
     },
     updatedAt: new Date().toISOString()
-  });
+  };
+  await saveAsset(nextAsset);
+  refreshedAssets.push(nextAsset);
   await upsertAssetVectors(asset.indexId, asset.id, timeline);
   const records = await embedKeyframes(asset.indexId, asset.id, timeline, keyframes);
   visualVectors += records.length;
   await upsertAssetVisualVectors(asset.indexId, asset.id, records);
 }
+
+await rebuildTrackingStore(refreshedAssets);
 
 console.log(
   JSON.stringify(

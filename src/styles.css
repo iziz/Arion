@@ -3998,6 +3998,30 @@ textarea:focus {
   color: #2b8b70;
 }
 
+.knowledge-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.knowledge-form input,
+.knowledge-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #25352f;
+  padding: 10px 11px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.knowledge-form button {
+  grid-column: 1 / -1;
+}
+
 .result-segment,
 .result-segment:hover,
 .result-segment:active,

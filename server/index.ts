@@ -5,7 +5,7 @@ import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { analyzeAsset, buildLocalIndex, probeVideo, searchAssets, withSceneData } from "./intelligence";
+import { analyzeAsset, buildClipDetail, buildLocalIndex, listAssetClips, probeVideo, searchAssets, withSceneData } from "./intelligence";
 import { buildDomainSegmentIndex, expandDomainQuery } from "./domainIndex";
 import { buildOrchestrationPlan } from "./orchestrator";
 import { parseDomainFilters, planDomainQuery } from "./queryPlanner";
@@ -21,7 +21,8 @@ import { rebuildVisualVectorStore, searchVisualVectors, upsertAssetVisualVectors
 import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } from "./visionDetectionRuntime";
 import { detectSceneBoundaries } from "./sceneDetection";
 import { getPostgresStatus, isPostgresEnabled } from "./postgresStore";
-import { getSportsKnowledgeSnapshot } from "./sportsKnowledge";
+import { getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "./sportsKnowledge";
+import { getTrackingSummary, listTrackingRecords, rebuildTrackingStore, upsertAssetTracking } from "./trackingStore";
 import { getObservabilitySnapshot, logJson, observabilityMiddleware, traceAsync, traceJobAsync } from "./observability";
 import { normalizeUploadedText } from "./textEncoding";
 import {
@@ -184,6 +185,49 @@ app.get("/api/assets/:id", async (req, res) => {
   res.json(asset);
 });
 
+app.get("/api/assets/:id/clips", async (req, res) => {
+  const asset = await getAsset(String(req.params.id));
+  if (!asset) return sendNotFound(res, "Asset not found");
+  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  const clips = listAssetClips(asset, queryPlan.domainFilters, queryPlan);
+  res.json(clips);
+});
+
+app.get("/api/assets/:id/clips/:segmentId", async (req, res) => {
+  const asset = await getAsset(String(req.params.id));
+  if (!asset) return sendNotFound(res, "Asset not found");
+  const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
+  const detail = await buildClipDetail(asset, String(req.params.segmentId), queryPlan.domainFilters, queryPlan);
+  if (!detail) return sendNotFound(res, "Clip segment not found");
+  res.json(detail);
+});
+
+app.get("/api/assets/:id/tracking", async (req, res) => {
+  const assetId = String(req.params.id);
+  const asset = await getAsset(assetId);
+  if (!asset) return sendNotFound(res, "Asset not found");
+  res.json({
+    summary: await getTrackingSummary(assetId),
+    records: await listTrackingRecords({
+      assetId,
+      segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+      trackId: req.query.trackId ? String(req.query.trackId) : undefined
+    })
+  });
+});
+
+app.get("/api/tracking", async (req, res) => {
+  const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
+  res.json({
+    summary: await getTrackingSummary(assetId),
+    records: await listTrackingRecords({
+      assetId,
+      segmentId: req.query.segmentId ? String(req.query.segmentId) : undefined,
+      trackId: req.query.trackId ? String(req.query.trackId) : undefined
+    })
+  });
+});
+
 app.post("/api/assets", upload.single("video"), async (req, res) => {
   const result = await createAssetFromUpload(req, res, String(req.body.indexId || "default-index"));
   if (result) res.status(202).json(result);
@@ -337,6 +381,35 @@ app.get("/api/knowledge/sports", async (_req, res) => {
   res.json(getSportsKnowledgeSnapshot());
 });
 
+app.post("/api/knowledge/sports/players", async (req, res) => {
+  const canonical = String(req.body.canonical ?? "").trim();
+  if (!canonical) {
+    res.status(400).json({ error: "Player canonical name is required" });
+    return;
+  }
+  const aliases = String(req.body.aliases ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const activeSeasons = String(req.body.activeSeasons ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const team = String(req.body.team ?? "").trim();
+  const league = String(req.body.league ?? "");
+  const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
+  res.status(201).json(
+    upsertSportsKnowledgePlayer({
+      canonical,
+      aliases,
+      activeSeasons,
+      teamsBySeason,
+      sport: req.body.sport === "american_football" ? "american_football" : "football",
+      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined
+    })
+  );
+});
+
 app.get("/api/orchestrate/plan", async (req, res) => {
   const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
   const scopedAssets = assets
@@ -437,11 +510,13 @@ app.post("/api/vector-store/rebuild", async (_req, res) => {
       updatedAt: new Date().toISOString()
     };
     await saveAsset(next);
+    await upsertAssetTracking(next);
     refreshed.push(next);
     visualRecords.push(...(await embedKeyframes(asset.indexId, asset.id, timeline, keyframes)));
   }
   await rebuildVectorStore(refreshed);
   await rebuildVisualVectorStore(visualRecords);
+  await rebuildTrackingStore(refreshed);
   await recordEvent("system.info", "Vector store rebuilt", {
     payload: { assets: refreshed.length, model: getEmbeddingModelName(), visualModel: getVisualEmbeddingModelName() }
   });
@@ -799,7 +874,7 @@ async function runIndexingJob(jobId: string, assetId: string, filePath: string) 
     );
     await updateJob(jobId, { stage: "finalize", progress: 98 }, "Saving indexed asset record");
     await updateAsset(assetId, { status: "embedding", progress: 98 });
-    await saveAsset({
+    const indexedAsset: AssetRecord = {
       ...refreshed,
       intelligence: {
         ...refreshed.intelligence,
@@ -816,7 +891,9 @@ async function runIndexingJob(jobId: string, assetId: string, filePath: string) 
       progress: 100,
       error: null,
       updatedAt: new Date().toISOString()
-    });
+    };
+    await saveAsset(indexedAsset);
+    await traceAsync("stage.tracking_upsert", { jobId, assetId, segments: timeline.length }, () => upsertAssetTracking(indexedAsset), "stage.tracking_upsert");
     await updateJob(
       jobId,
       { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },

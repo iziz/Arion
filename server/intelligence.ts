@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AnalysisResult, AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
+import type { AnalysisResult, AssetRecord, ClipDetailResult, ClipResult, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
 import { createAnalysisGenerator } from "./analysisGenerator";
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
 import { planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
 import { playerTeamForSeason } from "./sportsKnowledge";
+import { listTrackingRecords } from "./trackingStore";
 
 const execFileAsync = promisify(execFile);
 
@@ -657,6 +658,59 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
     report: generated.report,
     generator: generated.generator,
     generatedAt: new Date().toISOString()
+  };
+}
+
+export function listAssetClips(asset: AssetRecord, filters?: DomainSearchFilters, queryPlan?: DomainQueryPlan): ClipResult[] {
+  return asset.timeline.map((segment) => {
+    const sceneSegment = withSceneData(asset, segment);
+    const verification = buildVerificationChecks(asset, segment, filters);
+    const reasons = buildSearchMatchReasons(
+      asset,
+      segment,
+      {
+        lexicalScore: 0,
+        semanticScore: 0,
+        visualScore: 0,
+        domainScore: 0
+      },
+      filters,
+      queryPlan
+    );
+    return clipFromSegment(asset, sceneSegment, verification, reasons);
+  });
+}
+
+export async function buildClipDetail(asset: AssetRecord, segmentId: string, filters?: DomainSearchFilters, queryPlan?: DomainQueryPlan): Promise<ClipDetailResult | null> {
+  const segment = asset.timeline.find((item) => item.id === segmentId);
+  if (!segment) return null;
+  const sceneSegment = withSceneData(asset, segment);
+  const verification = buildVerificationChecks(asset, segment, filters);
+  const reasons = buildSearchMatchReasons(
+    asset,
+    segment,
+    {
+      lexicalScore: 0,
+      semanticScore: 0,
+      visualScore: 0,
+      domainScore: scoreDomainMatch(segment, expandDomainQuery(queryPlan?.semanticQuery ?? ""))
+    },
+    filters,
+    queryPlan
+  );
+  return {
+    clip: clipFromSegment(asset, sceneSegment, verification, reasons),
+    asset: {
+      id: asset.id,
+      indexId: asset.indexId,
+      title: asset.title,
+      duration: asset.duration
+    },
+    segment: sceneSegment,
+    verification,
+    reasons,
+    tracking: await listTrackingRecords({ assetId: asset.id, segmentId }),
+    domainEvents: segment.domain?.events ?? []
   };
 }
 

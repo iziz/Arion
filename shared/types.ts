@@ -489,6 +489,64 @@ export type ClipResult = {
   reasons: string[];
 };
 
+export type TrackingRecord = {
+  id: string;
+  indexId: string;
+  assetId: string;
+  segmentId: string;
+  trackType: "player" | "ball" | "link";
+  trackId: string;
+  linkedTrackId: string | null;
+  start: number;
+  end: number;
+  frameAt: number | null;
+  status: "not_configured" | "estimated" | "tracked";
+  confidence: number;
+  fieldZone: VisionEvidence["fieldZone"]["zone"];
+  direction: NonNullable<NonNullable<VisionEvidence["tracking"]>["ballMovement"]>["direction"];
+  speedPerSecond: number | null;
+  normalizedDistance: number | null;
+  player: string | null;
+  event: string | null;
+  evidence: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TrackingSummary = {
+  assetId?: string;
+  records: number;
+  players: number;
+  balls: number;
+  links: number;
+  trackedSegments: number;
+  updatedAt: string | null;
+};
+
+export type ClipDetailResult = {
+  clip: ClipResult;
+  asset: Pick<AssetRecord, "id" | "indexId" | "title" | "duration">;
+  segment: TimelineSegment;
+  verification: VerificationCheck[];
+  reasons: SearchMatchReason[];
+  tracking: TrackingRecord[];
+  domainEvents: DomainEvent[];
+};
+
+export type SportsKnowledgeSnapshot = {
+  competitions: Array<{ value: string; aliases: string[] }>;
+  teams: Array<{ value: string; aliases: string[] }>;
+  players: Array<{
+    id: string;
+    canonical: string;
+    aliases: string[];
+    sport: "football" | "american_football";
+    league: string;
+    activeSeasons: string[];
+    teamsBySeason: Record<string, string>;
+  }>;
+};
+
 export type AnalysisResult = {
   assetId: string;
   indexId: string;
