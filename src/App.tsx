@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertTriangle,
   Bell,
   BrainCircuit,
   CheckCircle2,
@@ -13,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   UploadCloud,
   X
 } from "lucide-react";
@@ -87,6 +89,27 @@ type FlowStep = {
     progress: number;
   };
   helpText?: string;
+};
+
+type EvidenceLedgerItem = {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+  confidence: number | null;
+  status: "hard" | "soft" | "missing" | "failed" | "limitation";
+};
+
+type EvidenceLedger = {
+  score: number;
+  label: "Verified" | "Review" | "Weak";
+  tone: "verified" | "review" | "weak";
+  summary: string;
+  hard: EvidenceLedgerItem[];
+  soft: EvidenceLedgerItem[];
+  missing: EvidenceLedgerItem[];
+  failed: EvidenceLedgerItem[];
+  limitations: EvidenceLedgerItem[];
 };
 
 type FootballDataImportResult = {
@@ -1007,12 +1030,15 @@ export default function App() {
             )}
             {searchResults.map((result) => (
               <article key={result.asset.id} className="result-card">
-                <div>
-                  <strong>{result.asset.title}</strong>
-                  <span>
-                    Relevance {Math.round(result.score)} · {Math.min(result.segments.length, 3)} key moments ·{" "}
-                    {result.index?.name ?? "Unknown index"}
-                  </span>
+                <div className="result-card-header">
+                  <div>
+                    <strong>{result.asset.title}</strong>
+                    <span>
+                      Relevance {Math.round(result.score)} · {Math.min(result.segments.length, 3)} key moments ·{" "}
+                      {result.index?.name ?? "Unknown index"}
+                    </span>
+                  </div>
+                  <TrustBadge ledger={buildEvidenceLedger(result.verification, result.matchReasons, result.segments)} />
                 </div>
                 {result.explain.some((item) => item.includes("mentioned players:")) && (
                   <span className="result-summary-row">
@@ -2038,6 +2064,76 @@ function KnowledgeEvidenceRow({ evidence }: { evidence: SearchResult["knowledgeE
   );
 }
 
+function TrustBadge({ ledger, compact = false }: { ledger: EvidenceLedger; compact?: boolean }) {
+  const Icon = ledger.tone === "verified" ? ShieldCheck : ledger.tone === "review" ? CircleHelp : AlertTriangle;
+  return (
+    <span className={`trust-badge ${ledger.tone} ${compact ? "compact" : ""}`} title={ledger.summary}>
+      <Icon size={compact ? 13 : 15} />
+      <b>{ledger.label}</b>
+      <em>{ledger.score}%</em>
+    </span>
+  );
+}
+
+function EvidenceLedgerCompact({ ledger }: { ledger: EvidenceLedger }) {
+  const groups = [
+    { key: "hard", label: "Hard", items: ledger.hard },
+    { key: "soft", label: "Soft", items: ledger.soft },
+    { key: "missing", label: "Missing", items: ledger.missing },
+    { key: "failed", label: "Failed", items: ledger.failed }
+  ];
+  return (
+    <span className="evidence-ledger-compact">
+      {groups
+        .filter((group) => group.items.length > 0)
+        .map((group) => (
+          <em key={group.key} className={group.key}>
+            <b>{group.label}</b>
+            {group.items.length}
+          </em>
+        ))}
+      {ledger.limitations.length > 0 && (
+        <em className="limitation">
+          <b>Limits</b>
+          {ledger.limitations.length}
+        </em>
+      )}
+    </span>
+  );
+}
+
+function EvidenceLedgerPanel({ ledger }: { ledger: EvidenceLedger }) {
+  const sections = [
+    { key: "hard", title: "Hard Evidence", empty: "No hard evidence.", items: ledger.hard },
+    { key: "soft", title: "Soft Evidence", empty: "No soft evidence.", items: ledger.soft },
+    { key: "missing", title: "Missing Evidence", empty: "No missing evidence.", items: ledger.missing },
+    { key: "failed", title: "Failed Checks", empty: "No failed checks.", items: ledger.failed },
+    { key: "limitation", title: "Limitations", empty: "No stored limitations.", items: ledger.limitations }
+  ];
+  return (
+    <div className="evidence-ledger-panel">
+      <p>{ledger.summary}</p>
+      {sections.map((section) => (
+        <article key={section.key} className={section.key}>
+          <strong>{section.title}</strong>
+          {section.items.length > 0 ? (
+            section.items.slice(0, 8).map((item) => (
+              <span key={item.id}>
+                <b>{item.label}</b>
+                {item.value}
+                {item.confidence !== null ? <em>{Math.round(item.confidence * 100)}%</em> : null}
+                <small>{item.detail}</small>
+              </span>
+            ))
+          ) : (
+            <small>{section.empty}</small>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function SearchSceneEvidence({
   segment,
   query,
@@ -2059,6 +2155,7 @@ function SearchSceneEvidence({
     { label: "Overlay", value: scene.text.overlays.join(" ") }
   ].filter((row) => row.value.trim().length > 0);
   const review = scene.text.comparisons?.find((item) => item.status !== "match");
+  const ledger = buildEvidenceLedger(verification, reasons, [segment]);
   return (
     <>
       {imagePath ? <img src={mediaPath(imagePath) ?? ""} alt="" /> : <span className="result-image-placeholder">No image</span>}
@@ -2066,6 +2163,7 @@ function SearchSceneEvidence({
         <strong>
           {formatDuration(segment.start)}-{formatDuration(segment.end)} · shot {segment.scene?.shotIndex ?? "-"}
         </strong>
+        <TrustBadge ledger={ledger} compact />
         <span className="scene-evidence-grid">
           <span className="scene-evidence-block">
             <em>Image</em>
@@ -2125,14 +2223,7 @@ function SearchSceneEvidence({
             </span>
           )}
           {verification.length > 0 && (
-            <span className="scene-verification-row">
-              {verification.slice(0, 7).map((check) => (
-                <em key={`${check.constraint}-${check.expected}`} className={check.status}>
-                  <b>{check.constraint}</b>
-                  {check.status} · {check.observed}
-                </em>
-              ))}
-            </span>
+            <EvidenceLedgerCompact ledger={ledger} />
           )}
         </span>
       </span>
@@ -2182,6 +2273,7 @@ function ClipDetailDrawer({
 }) {
   const imagePath = detail?.clip.thumbnailPath ? mediaPath(detail.clip.thumbnailPath) : null;
   const scene = detail ? getSearchSceneData(detail.segment, "") : null;
+  const ledger = detail ? buildEvidenceLedger(detail.verification, detail.reasons, [detail.segment]) : null;
   return (
     <aside className="clip-detail-drawer" aria-label="Clip detail">
       <div className="clip-detail-header">
@@ -2210,16 +2302,11 @@ function ClipDetailDrawer({
           </button>
 
           <section className="clip-detail-section">
-            <h3>Verification</h3>
-            <div className="clip-detail-grid">
-              {detail.verification.length > 0 ? detail.verification.map((check) => (
-                <span key={`${check.constraint}-${check.expected}-${check.observed}`} className={check.status}>
-                  <b>{check.constraint}</b>
-                  {check.status} · {check.observed}
-                  <em>{Math.round(check.confidence * 100)}%</em>
-                </span>
-              )) : <p>No structured verification checks for this clip.</p>}
+            <div className="clip-section-title-row">
+              <h3>Verification</h3>
+              {ledger && <TrustBadge ledger={ledger} />}
             </div>
+            {ledger ? <EvidenceLedgerPanel ledger={ledger} /> : <p>No structured verification checks for this clip.</p>}
           </section>
 
           <section className="clip-detail-section">
@@ -2737,6 +2824,157 @@ function getDomainSummary(segment: AssetRecord["timeline"][number]) {
     football?.ball.trackingStatus === "not_configured" ? "tracking pending" : ""
   ].filter(Boolean);
   return parts.join(" · ");
+}
+
+function buildEvidenceLedger(
+  verification: VerificationCheck[],
+  reasons: SearchResult["matchReasons"],
+  segments: Array<AssetRecord["timeline"][number]>
+): EvidenceLedger {
+  const hard: EvidenceLedgerItem[] = [];
+  const soft: EvidenceLedgerItem[] = [];
+  const missing: EvidenceLedgerItem[] = [];
+  const failed: EvidenceLedgerItem[] = [];
+  const limitations: EvidenceLedgerItem[] = [];
+
+  for (const check of verification) {
+    const item: EvidenceLedgerItem = {
+      id: `check-${check.segmentId}-${check.constraint}-${check.expected}-${check.observed}`,
+      label: readableConstraint(check.constraint),
+      value: `${check.expected} -> ${check.observed}`,
+      detail: check.evidence.filter(Boolean).slice(0, 2).join(" · ") || "No direct evidence text stored.",
+      confidence: check.confidence,
+      status: check.status === "pass" ? "hard" : check.status === "soft_pass" ? "soft" : check.status === "unknown" ? "missing" : "failed"
+    };
+    if (item.status === "hard") hard.push(item);
+    if (item.status === "soft") soft.push(item);
+    if (item.status === "missing") missing.push(item);
+    if (item.status === "failed") failed.push(item);
+  }
+
+  for (const reason of reasons) {
+    if (reason.kind === "limitation") {
+      limitations.push({
+        id: `reason-limit-${reason.segmentId}-${reason.label}-${reason.value}`,
+        label: reason.label,
+        value: reason.value,
+        detail: "Model or pipeline limitation.",
+        confidence: reason.confidence ?? null,
+        status: "limitation"
+      });
+      continue;
+    }
+    if (!reason.confidence || reason.confidence < 0.7) continue;
+    const item: EvidenceLedgerItem = {
+      id: `reason-${reason.segmentId}-${reason.kind}-${reason.label}-${reason.value}`,
+      label: reason.label,
+      value: reason.value,
+      detail: reason.kind.replace(/_/g, " "),
+      confidence: reason.confidence,
+      status: reason.kind === "visual" && reason.value.includes("estimated") ? "soft" : "hard"
+    };
+    if (item.status === "hard") hard.push(item);
+    else soft.push(item);
+  }
+
+  for (const segment of segments) {
+    const vision = segment.sceneData?.vision;
+    const field = vision?.fieldCalibration;
+    if (field && field.status !== "calibrated" && field.zone !== "unknown") {
+      soft.push({
+        id: `field-${segment.id}`,
+        label: "Field calibration",
+        value: `${field.zone} · ${field.status}/${field.method}`,
+        detail: field.evidence.slice(0, 2).join(" · ") || "Estimated field zone.",
+        confidence: field.zoneConfidence,
+        status: "soft"
+      });
+      for (const limitation of field.limitations.slice(0, 2)) {
+        limitations.push({
+          id: `field-limit-${segment.id}-${limitation}`,
+          label: "Field",
+          value: limitation,
+          detail: "Zone verification remains soft until calibrated.",
+          confidence: null,
+          status: "limitation"
+        });
+      }
+    }
+
+    const vlm = segment.domain?.vlm;
+    if (vlm?.status === "refined") {
+      soft.push({
+        id: `vlm-${segment.id}`,
+        label: "VLM",
+        value: `${vlm.model} refined`,
+        detail: vlm.message,
+        confidence: vlm.confidence,
+        status: "soft"
+      });
+    } else if (vlm?.status === "invalid" || vlm?.status === "failed") {
+      failed.push({
+        id: `vlm-${segment.id}`,
+        label: "VLM",
+        value: vlm.status,
+        detail: vlm.error ?? vlm.message,
+        confidence: vlm.confidence,
+        status: "failed"
+      });
+    }
+
+    for (const event of segment.domain?.events ?? []) {
+      for (const limitation of event.football?.limitations.slice(0, 2) ?? []) {
+        limitations.push({
+          id: `domain-limit-${event.id}-${limitation}`,
+          label: "Domain",
+          value: limitation,
+          detail: event.caption,
+          confidence: event.confidence,
+          status: "limitation"
+        });
+      }
+    }
+  }
+
+  const deduped = {
+    hard: dedupeLedgerItems(hard).slice(0, 12),
+    soft: dedupeLedgerItems(soft).slice(0, 12),
+    missing: dedupeLedgerItems(missing).slice(0, 12),
+    failed: dedupeLedgerItems(failed).slice(0, 12),
+    limitations: dedupeLedgerItems(limitations).slice(0, 12)
+  };
+  const score = calculateTrustScore(deduped);
+  const label: EvidenceLedger["label"] = score >= 75 && deduped.failed.length === 0 ? "Verified" : score >= 45 ? "Review" : "Weak";
+  const tone: EvidenceLedger["tone"] = label === "Verified" ? "verified" : label === "Review" ? "review" : "weak";
+  return {
+    ...deduped,
+    score,
+    label,
+    tone,
+    summary: `${deduped.hard.length} hard, ${deduped.soft.length} soft, ${deduped.missing.length} missing, ${deduped.failed.length} failed checks.`
+  };
+}
+
+function calculateTrustScore(ledger: Pick<EvidenceLedger, "hard" | "soft" | "missing" | "failed" | "limitations">) {
+  const hard = ledger.hard.reduce((sum, item) => sum + (item.confidence ?? 0.75), 0);
+  const soft = ledger.soft.reduce((sum, item) => sum + (item.confidence ?? 0.45) * 0.55, 0);
+  const denominator = Math.max(1, ledger.hard.length + ledger.soft.length + ledger.missing.length + ledger.failed.length);
+  const penalty = ledger.failed.length * 0.45 + ledger.missing.length * 0.16 + Math.min(0.18, ledger.limitations.length * 0.025);
+  return Math.round(Math.max(0, Math.min(1, (hard + soft) / denominator - penalty)) * 100);
+}
+
+function dedupeLedgerItems(items: EvidenceLedgerItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.status}:${item.label}:${item.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function readableConstraint(value: VerificationCheck["constraint"]) {
+  return value.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
 }
 
 function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job: JobRecord | null): FlowStep[] {
