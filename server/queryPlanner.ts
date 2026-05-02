@@ -1,18 +1,5 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
-
-const knownPlayers = [
-  { canonical: "Erling Haaland", patterns: [/erling\s+haaland/i, /\bhaaland\b/i] },
-  { canonical: "Kylian Mbappé", patterns: [/kylian\s+mbapp[eé]/i, /\bmbapp[eé]\b/i] },
-  { canonical: "Son Heung-min", patterns: [/son\s+heung-?min/i, /\bheung-?min\s+son\b/i, /\bsonny\b/i] },
-  { canonical: "Patrick Mahomes", patterns: [/patrick\s+mahomes/i, /\bmahomes\b/i] }
-];
-
-const competitionRules = [
-  { value: "Premier League", patterns: [/premier\s+league/i, /epl\b/i, /프리미어\s*리그/i] },
-  { value: "NFL", patterns: [/\bnfl\b/i, /national\s+football\s+league/i] },
-  { value: "Champions League", patterns: [/champions\s+league/i, /ucl\b/i, /챔피언스\s*리그/i] },
-  { value: "Bundesliga", patterns: [/bundesliga/i, /분데스리가/i] }
-];
+import { matchCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./sportsKnowledge";
 
 export function planDomainQuery(query: string, explicitFilters: DomainSearchFilters = {}): DomainQueryPlan {
   const originalQuery = query.trim();
@@ -27,7 +14,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.08;
   }
 
-  const season = inferSeason(originalQuery);
+  const season = inferSeason(originalQuery, competition);
   if (season) {
     inferred.season = season;
     confidence += 0.06;
@@ -115,15 +102,12 @@ export function parseDomainFilters(value: Record<string, unknown>): DomainSearch
 }
 
 function inferCompetition(query: string) {
-  for (const rule of competitionRules) {
-    if (rule.patterns.some((pattern) => pattern.test(query))) return rule.value;
-  }
-  return undefined;
+  return matchCompetition(query)?.value;
 }
 
-function inferSeason(query: string) {
+function inferSeason(query: string, competition?: string) {
   const recent = query.match(/최근\s*(\d+)\s*시즌|last\s*(\d+)\s*seasons?|recent\s*(\d+)\s*seasons?/i);
-  if (recent) return `last_${recent[1] ?? recent[2] ?? recent[3]}_seasons`;
+  if (recent) return resolveRecentSeasons(competition === "NFL" ? "NFL" : competition === "Premier League" ? "Premier League" : undefined, Number(recent[1] ?? recent[2] ?? recent[3]));
   const range = query.match(/\b(20\d{2})\s*[-/]\s*(\d{2}|20\d{2})\b/);
   if (range) return `${range[1]}-${range[2]}`;
   const year = query.match(/\b(20\d{2})\b/);
@@ -131,10 +115,7 @@ function inferSeason(query: string) {
 }
 
 function inferPlayer(query: string) {
-  for (const player of knownPlayers) {
-    if (player.patterns.some((pattern) => pattern.test(query))) return player.canonical;
-  }
-  return undefined;
+  return matchKnowledgePlayer(query)?.value.canonical;
 }
 
 function buildSemanticQuery(query: string, filters: DomainSearchFilters) {

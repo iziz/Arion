@@ -5,6 +5,7 @@ import type { AnalysisResult, AssetRecord, DomainQueryPlan, DomainSearchFilters,
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
 import { planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
+import { playerTeamForSeason } from "./sportsKnowledge";
 
 const execFileAsync = promisify(execFile);
 
@@ -872,6 +873,21 @@ function buildVerificationChecks(asset: AssetRecord, segment: TimelineSegment, f
     const confidence = player?.confidence ?? 0;
     const evidence = player?.evidence ?? [];
     pushTextBackedCheck("player", filters.player, observed, confidence, evidence);
+    const team = playerTeamForSeason(filters.player, filters.season);
+    if (team) {
+      const observedTeams = segment.domain?.scope?.teams.map((item) => item.value) ?? [];
+      const normalizedTeam = normalizeSearchValue(team);
+      const teamMatch = observedTeams.find((item) => normalizeSearchValue(item).includes(normalizedTeam) || normalizedTeam.includes(normalizeSearchValue(item)));
+      checks.push({
+        segmentId: segment.id,
+        constraint: "player",
+        expected: `${filters.player} roster team ${team}`,
+        observed: teamMatch ?? (observedTeams.join(", ") || "missing"),
+        status: teamMatch ? "pass" : observedTeams.length === 0 ? "unknown" : "fail",
+        confidence: teamMatch ? 0.82 : 0,
+        evidence: teamMatch ? [`Knowledge roster team for ${filters.player}: ${team}`] : ["No matching team scope for roster verification."]
+      });
+    }
   }
 
   const firstMatchingEvent = events[0];

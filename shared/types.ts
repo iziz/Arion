@@ -73,14 +73,14 @@ export type DomainEvent = {
 export type PlayerIdentity = {
   name: string;
   confidence: number;
-  source: "query" | "title" | "asr" | "ocr" | "metadata";
+  source: "query" | "title" | "asr" | "ocr" | "metadata" | "knowledge";
   evidence: string[];
 };
 
 export type DomainScopeValue = {
   value: string;
   confidence: number;
-  source: "title" | "asr" | "ocr" | "metadata";
+  source: "title" | "asr" | "ocr" | "metadata" | "knowledge";
   evidence: string[];
 };
 

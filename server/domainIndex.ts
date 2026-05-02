@@ -1,4 +1,5 @@
 import type { AssetRecord, DomainEvent, DomainScope, DomainScopeValue, IndexRecord, PlayerIdentity, TimelineSegment } from "../shared/types";
+import { matchCompetition, matchKnowledgePlayers, matchTeams } from "./sportsKnowledge";
 
 const ONTOLOGY_VERSION = "sports-domain-v1";
 
@@ -148,47 +149,6 @@ const footballRules = {
     setPiece: ["corner", "free kick", "set piece", "코너킥", "프리킥"]
   }
 };
-
-const knownFootballPlayers = [
-  { name: "Erling Haaland", patterns: [/erling\s+haaland/i, /\bhaaland\b/i] },
-  { name: "Kylian Mbappé", patterns: [/kylian\s+mbapp[eé]/i, /\bmbapp[eé]\b/i] },
-  { name: "Lionel Messi", patterns: [/lionel\s+messi/i, /\bmessi\b/i] },
-  { name: "Cristiano Ronaldo", patterns: [/cristiano\s+ronaldo/i, /\bronaldo\b/i] },
-  { name: "Mohamed Salah", patterns: [/mohamed\s+salah/i, /\bsalah\b/i] },
-  { name: "Kevin De Bruyne", patterns: [/kevin\s+de\s+bruyne/i, /\bde\s+bruyne\b/i] },
-  { name: "Son Heung-min", patterns: [/son\s+heung-?min/i, /\bheung-?min\s+son\b/i, /\bsonny\b/i] },
-  { name: "Harry Kane", patterns: [/harry\s+kane/i, /\bkane\b/i] },
-  { name: "Bukayo Saka", patterns: [/bukayo\s+saka/i, /\bsaka\b/i] },
-  { name: "Phil Foden", patterns: [/phil\s+foden/i, /\bfoden\b/i] },
-  { name: "Cole Palmer", patterns: [/cole\s+palmer/i, /\bpalmer\b/i] },
-  { name: "Alexander Isak", patterns: [/alexander\s+isak/i, /\bisak\b/i] }
-];
-
-const footballCompetitions = [
-  { value: "Premier League", patterns: [/premier\s+league/i, /\bepl\b/i, /프리미어\s*리그/i] },
-  { value: "Champions League", patterns: [/champions\s+league/i, /\bucl\b/i, /챔피언스\s*리그/i] },
-  { value: "Bundesliga", patterns: [/bundesliga/i, /분데스리가/i] },
-  { value: "FA Cup", patterns: [/\bfa\s+cup\b/i] },
-  { value: "LaLiga", patterns: [/la\s*liga/i, /라리가/i] },
-  { value: "Serie A", patterns: [/serie\s+a/i, /세리에\s*a/i] },
-  { value: "Ligue 1", patterns: [/ligue\s+1/i, /리그\s*1/i] }
-];
-
-const footballTeams = [
-  { value: "Manchester City", patterns: [/manchester\s+city/i, /\bman\s+city\b/i] },
-  { value: "Manchester United", patterns: [/manchester\s+united/i, /\bman\s+united\b/i] },
-  { value: "Arsenal", patterns: [/\barsenal\b/i] },
-  { value: "Liverpool", patterns: [/\bliverpool\b/i] },
-  { value: "Chelsea", patterns: [/\bchelsea\b/i] },
-  { value: "Tottenham Hotspur", patterns: [/tottenham/i, /\bspurs\b/i] },
-  { value: "Newcastle United", patterns: [/newcastle/i] },
-  { value: "Brighton", patterns: [/brighton/i] },
-  { value: "Nottingham Forest", patterns: [/nottingham\s+forest/i, /nottingham\s+forrester/i] },
-  { value: "Borussia Dortmund", patterns: [/borussia\s+dortmund/i, /\bdortmund\b/i] },
-  { value: "Paris Saint-Germain", patterns: [/paris\s+saint-germain/i, /\bpsg\b/i] },
-  { value: "Real Madrid", patterns: [/real\s+madrid/i] },
-  { value: "Barcelona", patterns: [/\bbarcelona\b/i] }
-];
 
 export function buildDomainSegmentIndex(asset: AssetRecord, index: IndexRecord, segment: TimelineSegment): TimelineSegment["domain"] | undefined {
   if (!isSportsDomainIndexingEnabled(index)) return undefined;
@@ -504,10 +464,10 @@ function collectSegmentText(asset: AssetRecord, index: IndexRecord, segment: Tim
 
 function inferFootballScope(asset: AssetRecord, segment: TimelineSegment): DomainScope {
   const sources = scopeSources(asset, segment);
-  const competition = inferSingleScopeValue(footballCompetitions, sources);
+  const competition = inferCompetitionScopeValue(sources);
   const season = inferSeasonScopeValue(sources);
-  const teams = inferMultipleScopeValues(footballTeams, sources).slice(0, 4);
-  const knownPlayers = inferMultipleScopeValues(knownFootballPlayers.map((player) => ({ value: player.name, patterns: player.patterns })), sources).slice(0, 5);
+  const teams = inferTeamScopeValues(sources).slice(0, 4);
+  const knownPlayers = inferPlayerScopeValues(sources).slice(0, 5);
   const identity = inferPlayerIdentity(asset, segment);
   const players = mergeScopeValues(
     knownPlayers,
@@ -541,32 +501,44 @@ function scopeSources(asset: AssetRecord, segment: TimelineSegment): Array<{ sou
   ];
 }
 
-function inferSingleScopeValue(
-  rules: Array<{ value: string; patterns: RegExp[] }>,
-  sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>
-): DomainScopeValue | null {
-  return inferMultipleScopeValues(rules, sources)[0] ?? null;
+function inferCompetitionScopeValue(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue | null {
+  for (const source of sources) {
+    const match = matchCompetition(source.text);
+    if (!match) continue;
+    return {
+      value: match.value,
+      confidence: Math.max(source.confidence, match.confidence),
+      source: "knowledge",
+      evidence: match.evidence
+    };
+  }
+  return null;
 }
 
-function inferMultipleScopeValues(
-  rules: Array<{ value: string; patterns: RegExp[] }>,
-  sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>
-): DomainScopeValue[] {
-  const matches: DomainScopeValue[] = [];
-  for (const rule of rules) {
-    for (const source of sources) {
-      if (!source.text.trim()) continue;
-      if (!rule.patterns.some((pattern) => pattern.test(source.text))) continue;
-      matches.push({
-        value: rule.value,
-        confidence: source.confidence,
-        source: source.source,
-        evidence: snippets(source.text).slice(0, 2)
-      });
-      break;
-    }
-  }
-  return mergeScopeValues(matches).sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
+function inferTeamScopeValues(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue[] {
+  return mergeScopeValues(
+    ...sources.map((source) =>
+      matchTeams(source.text).map((match) => ({
+        value: match.value,
+        confidence: Math.max(source.confidence, match.confidence),
+        source: "knowledge" as const,
+        evidence: match.evidence
+      }))
+    )
+  ).sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
+}
+
+function inferPlayerScopeValues(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue[] {
+  return mergeScopeValues(
+    ...sources.map((source) =>
+      matchKnowledgePlayers(source.text).map((match) => ({
+        value: match.value.canonical,
+        confidence: Math.max(source.confidence, match.confidence),
+        source: "knowledge" as const,
+        evidence: match.evidence
+      }))
+    )
+  ).sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
 }
 
 function inferSeasonScopeValue(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue | null {
@@ -756,13 +728,13 @@ function inferPlayerIdentity(asset: AssetRecord, segment: TimelineSegment): Play
 
   for (const source of sources) {
     if (!source.text.trim()) continue;
-    const player = knownFootballPlayers.find((candidate) => candidate.patterns.some((pattern) => pattern.test(source.text)));
+    const player = matchKnowledgePlayers(source.text)[0];
     if (!player) continue;
     return {
-      name: player.name,
-      confidence: source.confidence,
-      source: source.source,
-      evidence: snippets(source.text).slice(0, 2)
+      name: player.value.canonical,
+      confidence: Math.max(source.confidence, player.confidence),
+      source: "knowledge",
+      evidence: player.evidence
     };
   }
 
