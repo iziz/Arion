@@ -29,6 +29,7 @@ import type {
   OcrBox,
   OrchestrationPlan,
   SearchResult,
+  VerificationCheck,
   WebhookRecord
 } from "../shared/types";
 
@@ -810,6 +811,7 @@ export default function App() {
                       segment={segment}
                       query={queryPlan?.semanticQuery ?? query}
                       reasons={result.matchReasons.filter((reason) => reason.segmentId === segment.id)}
+                      verification={result.verification.filter((check) => check.segmentId === segment.id)}
                     />
                   </button>
                 ))}
@@ -1466,11 +1468,13 @@ function FlowConnector({ label }: { label?: string }) {
 function SearchSceneEvidence({
   segment,
   query,
-  reasons
+  reasons,
+  verification
 }: {
   segment: AssetRecord["timeline"][number];
   query: string;
   reasons: SearchResult["matchReasons"];
+  verification: VerificationCheck[];
 }) {
   const scene = getSearchSceneData(segment, query);
   const imagePath = scene.image.thumbnailPath ?? segment.thumbnailPath ?? scene.image.framePath;
@@ -1542,6 +1546,16 @@ function SearchSceneEvidence({
                   <b>{reason.label}</b>
                   {reason.value}
                   {typeof reason.confidence === "number" ? ` · ${Math.round(reason.confidence * 100)}%` : ""}
+                </em>
+              ))}
+            </span>
+          )}
+          {verification.length > 0 && (
+            <span className="scene-verification-row">
+              {verification.slice(0, 7).map((check) => (
+                <em key={`${check.constraint}-${check.expected}`} className={check.status}>
+                  <b>{check.constraint}</b>
+                  {check.status} · {check.observed}
                 </em>
               ))}
             </span>

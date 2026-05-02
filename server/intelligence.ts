@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AnalysisResult, AssetRecord, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VisionEvidence } from "../shared/types";
+import type { AnalysisResult, AssetRecord, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
+import { planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
 
 const execFileAsync = promisify(execFile);
@@ -496,6 +497,7 @@ export function searchAssets(
         .map((segment) => {
           const lexicalScore = scoreText(segmentSearchText(segment), queryTerms);
           const domainScore = scoreDomainMatch(segment, domainProfile);
+          const filterScore = scoreDomainFilterMatch(asset, segment, options.domainFilters);
           const semanticScore = Math.max(
             queryVector.length === segment.embedding.length ? cosineSimilarity(queryVector, segment.embedding) : 0,
             options.vectorHitsBySegment?.get(segment.id) ?? 0
@@ -511,10 +513,11 @@ export function searchAssets(
             sourceScore,
             confidenceScore,
             domainScore,
-            score: lexicalScore * 3 + domainScore * 5 + semanticScore * 8 + visualScore * 6 + sourceScore + confidenceScore * 1.5
+            filterScore,
+            score: lexicalScore * 3 + domainScore * 5 + filterScore * 6 + semanticScore * 8 + visualScore * 6 + sourceScore + confidenceScore * 1.5
           };
         })
-        .filter((item) => hasDomainFilters || item.lexicalScore > 0 || item.domainScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25);
+        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : item.lexicalScore > 0 || item.domainScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
       const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
       const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore > 0.72 || item.visualScore > 0.25);
@@ -528,12 +531,13 @@ export function searchAssets(
 
       const lexical = assetLexicalScore * 0.5 + matchingSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * 3;
       const domain = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.domainScore, 0) * 5;
+      const filters = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.filterScore, 0) * 6;
       const semantic = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.semanticScore, 0) * 8;
       const visual = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.visualScore, 0) * 6;
       const source = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.sourceScore, 0);
       const confidence = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.confidenceScore, 0) * 1.5;
       const recency = recencyBoost(asset.createdAt);
-      const totalScore = Number((lexical + domain + semantic + visual + source + confidence + recency).toFixed(3));
+      const totalScore = Number((lexical + domain + filters + semantic + visual + source + confidence + recency).toFixed(3));
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;
       const selectedSegments = matchingSegments.slice(0, 5);
       return {
@@ -553,6 +557,7 @@ export function searchAssets(
         explain: [
           `${assetLexicalScore} lexical asset matches`,
           `${Number(domain.toFixed(3))} sports domain rank score`,
+          `${Number(filters.toFixed(3))} structured filter score`,
           `${Number(semantic.toFixed(3))} semantic rank score`,
           `${Number(visual.toFixed(3))} visual rank score`,
           `${Number(source.toFixed(3))} source quality boost`,
@@ -565,7 +570,8 @@ export function searchAssets(
         queryPlan: options.queryPlan ?? null,
         matchReasons: selectedSegments.flatMap((item) =>
           buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan)
-        )
+        ),
+        verification: selectedSegments.flatMap((item) => buildVerificationChecks(asset, item.segment, options.domainFilters))
       };
     })
     .filter((result) => result.score > 0 && result.segments.length > 0)
@@ -574,18 +580,41 @@ export function searchAssets(
 }
 
 export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult {
-  const queryTerms = extractKeywords(question);
-  const matchingChapters =
-    queryTerms.length > 0
-      ? asset.timeline.filter((segment) => scoreText(`${segment.transcript} ${segment.tags.join(" ")}`, queryTerms))
-      : asset.timeline;
-  const chapters = (matchingChapters.length > 0 ? matchingChapters : asset.timeline).slice(0, 6);
-  const signals = unique([...asset.tags.slice(0, 6), ...chapters.flatMap((segment) => segment.tags)]).slice(0, 10);
+  const queryPlan = planDomainQuery(question);
+  const domainProfile = expandDomainQuery(queryPlan.semanticQuery || question);
+  const queryTerms = extractKeywords(domainProfile.expandedText);
+  const candidateChapters = asset.timeline
+    .filter((segment) => matchesSegmentDomainFilters(asset, segment, queryPlan.domainFilters))
+    .map((segment) => {
+      const lexicalScore = scoreText(`${segment.transcript} ${segment.tags.join(" ")} ${segmentSearchText(segment)}`, queryTerms);
+      const domainScore = scoreDomainMatch(segment, domainProfile);
+      const filterScore = scoreDomainFilterMatch(asset, segment, queryPlan.domainFilters);
+      return {
+        segment,
+        score: lexicalScore * 2 + domainScore * 5 + filterScore * 6 + segment.confidence
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  const chapters = (candidateChapters.length > 0 ? candidateChapters.map((item) => item.segment) : question.trim() ? [] : asset.timeline).slice(0, 6);
+  const verification = chapters.flatMap((segment) => buildVerificationChecks(asset, segment, queryPlan.domainFilters));
+  const verified = verification.filter((check) => check.status === "pass").length;
+  const uncertain = verification.filter((check) => check.status === "soft_pass" || check.status === "unknown").length;
+  const failed = verification.filter((check) => check.status === "fail").length;
+  const domainSignals = chapters.flatMap((segment) => [
+    ...(segment.domain?.labels ?? []),
+    ...(segment.domain?.scope?.players.map((player) => player.value) ?? []),
+    segment.domain?.scope?.competition?.value ?? "",
+    segment.domain?.scope?.season?.value ?? ""
+  ]);
+  const signals = unique([...(chapters.length > 0 ? asset.tags.slice(0, 6) : []), ...chapters.flatMap((segment) => segment.tags), ...domainSignals].filter(Boolean)).slice(0, 12);
   const answer =
     question.trim().length > 0
-      ? `The strongest local signals for "${question}" are ${signals.slice(0, 5).join(", ")}. Review ${chapters
+      ? `Grounded analysis for "${question}" used ${chapters.length} retrieved moments with ${verified} verified constraints, ${uncertain} soft or missing constraints, and ${failed} failed constraints. ${
+          signals.length > 0 ? `Strongest signals are ${signals.slice(0, 6).join(", ")}.` : "No grounded signals were available."
+        } Review ${chapters
           .map((chapter) => `${formatTime(chapter.start)}-${formatTime(chapter.end)}`)
-          .join(", ")}.`
+          .join(", ") || "no grounded moments"}.`
       : `The asset is indexed with ${asset.timeline.length} segments and emphasizes ${signals.slice(0, 5).join(", ")}.`;
 
   return {
@@ -699,12 +728,138 @@ function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegmen
   });
 }
 
+function scoreDomainFilterMatch(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
+  if (!filters || !hasActiveDomainFilters(filters)) return 0;
+  const checks = buildVerificationChecks(asset, segment, filters);
+  return Number(
+    checks
+      .reduce((score, check) => {
+        if (check.status === "pass") return score + 1;
+        if (check.status === "soft_pass") return score + 0.45;
+        return score;
+      }, 0)
+      .toFixed(3)
+  );
+}
+
 function scopeFilterAllows(segment: TimelineSegment, field: "competition" | "season", filterValue?: string) {
   const normalizedFilter = normalizeSearchValue(filterValue ?? "");
   if (!normalizedFilter) return true;
   const scopeValue = field === "competition" ? segment.domain?.scope?.competition : segment.domain?.scope?.season;
   if (!scopeValue) return true;
   return normalizeSearchValue(scopeValue.value).includes(normalizedFilter) || normalizedFilter.includes(normalizeSearchValue(scopeValue.value));
+}
+
+function buildVerificationChecks(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters): VerificationCheck[] {
+  if (!filters || !hasActiveDomainFilters(filters)) return [];
+  const checks: VerificationCheck[] = [];
+  const events = segment.domain?.events ?? [];
+  const segmentText = normalizeSearchValue(
+    [
+      asset.title,
+      asset.description,
+      asset.originalName,
+      asset.tags.join(" "),
+      segment.label,
+      segment.transcript,
+      segmentSearchText(segment),
+      segment.domain?.searchText
+    ].join(" ")
+  );
+  const pushTextBackedCheck = (constraint: VerificationCheck["constraint"], expected: string | undefined, observed: string | null, confidence: number, evidence: string[]) => {
+    if (!expected) return;
+    const normalizedExpected = normalizeSearchValue(expected);
+    const normalizedObserved = normalizeSearchValue(observed ?? "");
+    if (normalizedObserved && (normalizedObserved.includes(normalizedExpected) || normalizedExpected.includes(normalizedObserved))) {
+      checks.push({ segmentId: segment.id, constraint, expected, observed: observed ?? "", status: "pass", confidence, evidence });
+    } else if (segmentText.includes(normalizedExpected)) {
+      checks.push({ segmentId: segment.id, constraint, expected, observed: "text fallback", status: "soft_pass", confidence: 0.45, evidence: ["Matched unstructured text fallback."] });
+    } else {
+      checks.push({ segmentId: segment.id, constraint, expected, observed: observed ?? "missing", status: "unknown", confidence: 0, evidence: ["No indexed evidence for this constraint."] });
+    }
+  };
+
+  pushTextBackedCheck(
+    "competition",
+    filters.competition,
+    segment.domain?.scope?.competition?.value ?? null,
+    segment.domain?.scope?.competition?.confidence ?? 0,
+    segment.domain?.scope?.competition?.evidence ?? []
+  );
+  pushTextBackedCheck("season", filters.season, segment.domain?.scope?.season?.value ?? null, segment.domain?.scope?.season?.confidence ?? 0, segment.domain?.scope?.season?.evidence ?? []);
+
+  if (filters.player) {
+    const identities = events
+      .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity])
+      .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity));
+    const scopedPlayers = segment.domain?.scope?.players ?? [];
+    const player = [...identities, ...scopedPlayers].find((candidate) => {
+      const value = "name" in candidate ? candidate.name : candidate.value;
+      const normalized = normalizeSearchValue(value);
+      const expected = normalizeSearchValue(filters.player ?? "");
+      return normalized.includes(expected) || expected.includes(normalized);
+    });
+    const observed = player ? ("name" in player ? player.name : player.value) : null;
+    const confidence = player?.confidence ?? 0;
+    const evidence = player?.evidence ?? [];
+    pushTextBackedCheck("player", filters.player, observed, confidence, evidence);
+  }
+
+  const firstMatchingEvent = events[0];
+  if (filters.eventType) {
+    const match = events.find((event) => event.eventType === filters.eventType);
+    checks.push({
+      segmentId: segment.id,
+      constraint: "eventType",
+      expected: filters.eventType,
+      observed: match?.eventType ?? firstMatchingEvent?.eventType ?? "missing",
+      status: match ? "pass" : "fail",
+      confidence: match?.confidence ?? 0,
+      evidence: match ? [match.caption] : ["No matching structured event type."]
+    });
+  }
+  if (filters.passType) {
+    const match = events.find((event) => event.football?.passType === filters.passType);
+    checks.push({
+      segmentId: segment.id,
+      constraint: "passType",
+      expected: filters.passType,
+      observed: match?.football?.passType ?? firstMatchingEvent?.football?.passType ?? "missing",
+      status: match ? "pass" : "fail",
+      confidence: match?.football?.ball.confidence ?? 0,
+      evidence: match ? [match.caption] : ["No matching structured pass type."]
+    });
+  }
+  if (filters.fieldZone) {
+    const match = events.find((event) => event.football?.fieldZone === filters.fieldZone);
+    checks.push({
+      segmentId: segment.id,
+      constraint: "fieldZone",
+      expected: filters.fieldZone,
+      observed: match?.football?.fieldZone ?? firstMatchingEvent?.football?.fieldZone ?? "missing",
+      status: match ? "pass" : "fail",
+      confidence: match?.football?.field.zoneConfidence ?? 0,
+      evidence: match ? [match.caption] : ["No matching structured field zone."]
+    });
+  }
+  if (filters.role && filters.role !== "any") {
+    const match = events.find((event) => {
+      if (filters.role === "receiver") return event.football?.receivingPlayer.present;
+      if (filters.role === "passer") return event.football?.passingPlayer.present;
+      if (filters.role === "shooter") return event.eventType === "shot";
+      return false;
+    });
+    checks.push({
+      segmentId: segment.id,
+      constraint: "role",
+      expected: filters.role,
+      observed: match ? filters.role : "missing",
+      status: match ? "pass" : "fail",
+      confidence: match?.confidence ?? 0,
+      evidence: match ? [match.caption] : ["No matching structured player role."]
+    });
+  }
+  return checks;
 }
 
 function buildSearchMatchReasons(

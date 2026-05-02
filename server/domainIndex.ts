@@ -766,20 +766,7 @@ function inferPlayerIdentity(asset: AssetRecord, segment: TimelineSegment): Play
     };
   }
 
-  const generic = sources
-    .map((source) => ({ source, match: source.text.match(/\b([A-Z][a-z]+(?:\s+(?:de\s+)?[A-Z][a-zé-]+){1,2})\b/) }))
-    .find((item) => item.match && !isNonPlayerName(item.match[1]));
-  if (!generic?.match) return null;
-  return {
-    name: generic.match[1],
-    confidence: Number(Math.max(0.36, generic.source.confidence - 0.18).toFixed(2)),
-    source: generic.source.source,
-    evidence: snippets(generic.source.text).slice(0, 2)
-  };
-}
-
-function isNonPlayerName(value: string) {
-  return /premier league|champions league|bundesliga|best premier|video intelligence|youtube|arion|nottingham forest|nottingham forrester|etihad stadium|white hart|old trafford/i.test(value);
+  return null;
 }
 
 function extractLightKeywords(value: string) {

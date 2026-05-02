@@ -134,8 +134,7 @@ function inferPlayer(query: string) {
   for (const player of knownPlayers) {
     if (player.patterns.some((pattern) => pattern.test(query))) return player.canonical;
   }
-  const capitalizedName = query.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-zé]+){1,2})\b/);
-  return capitalizedName?.[1];
+  return undefined;
 }
 
 function buildSemanticQuery(query: string, filters: DomainSearchFilters) {

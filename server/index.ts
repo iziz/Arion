@@ -334,8 +334,19 @@ app.get("/api/search/plan", async (req, res) => {
 
 app.get("/api/orchestrate/plan", async (req, res) => {
   const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
+  const scopedAssets = assets
+    .filter((asset) => !req.query.indexId || asset.indexId === String(req.query.indexId))
+    .filter((asset) => !req.query.tag || asset.tags.includes(String(req.query.tag)))
+    .map((asset) =>
+      req.query.modality
+        ? {
+            ...asset,
+            timeline: asset.timeline.filter((segment) => segment.modalities.includes(String(req.query.modality) as TimelineSegment["modalities"][number]))
+          }
+        : asset
+    );
   const queryPlan = planDomainQuery(String(req.query.q ?? ""), parseDomainFilters(req.query));
-  res.json(buildOrchestrationPlan(queryPlan, assets, indexes));
+  res.json(buildOrchestrationPlan(queryPlan, scopedAssets, indexes));
 });
 
 app.get("/api/vector-search", async (req, res) => {

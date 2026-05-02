@@ -370,6 +370,7 @@ export type SearchResult = {
   explain: string[];
   queryPlan: DomainQueryPlan | null;
   matchReasons: SearchMatchReason[];
+  verification: VerificationCheck[];
 };
 
 export type DomainSearchFilters = {
@@ -441,6 +442,16 @@ export type SearchMatchReason = {
   label: string;
   value: string;
   confidence?: number;
+};
+
+export type VerificationCheck = {
+  segmentId: string;
+  constraint: "competition" | "season" | "player" | "eventType" | "passType" | "fieldZone" | "role";
+  expected: string;
+  observed: string;
+  status: "pass" | "soft_pass" | "fail" | "unknown";
+  confidence: number;
+  evidence: string[];
 };
 
 export type AnalysisResult = {

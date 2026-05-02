@@ -4036,6 +4036,47 @@ textarea:focus {
   font-weight: 950;
 }
 
+.scene-verification-row {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scene-verification-row em {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 5px;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef7f3;
+  color: #526660;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-verification-row em.soft_pass,
+.scene-verification-row em.unknown {
+  background: #fff7e8;
+  color: #8b651f;
+}
+
+.scene-verification-row em.fail {
+  background: #fdece7;
+  color: #9d4937;
+}
+
+.scene-verification-row b {
+  color: #2b8b70;
+  font-weight: 950;
+}
+
 .timeline-scene-data {
   display: grid;
   gap: 6px;
