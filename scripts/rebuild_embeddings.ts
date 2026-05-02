@@ -19,6 +19,9 @@ let segments = 0;
 let visualVectors = 0;
 let generatedKeyframes = 0;
 const refreshedAssets = [];
+const startedAt = Date.now();
+
+console.error(`[rebuild] starting ${indexedAssets.length} indexed assets`);
 
 for (const index of indexes) {
   if (index.models.embedding !== getEmbeddingModelName()) {
@@ -30,7 +33,9 @@ for (const index of indexes) {
   }
 }
 
-for (const asset of indexedAssets) {
+for (const [assetIndex, asset] of indexedAssets.entries()) {
+  const assetStartedAt = Date.now();
+  console.error(`[rebuild] ${assetIndex + 1}/${indexedAssets.length} ${asset.id} ${asset.title}`);
   const index = indexes.find((item) => item.id === asset.indexId);
   const sceneTimeline = asset.timeline.map((segment) => withSceneData(asset, segment));
   const existingKeyframes = asset.keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId);
@@ -44,6 +49,7 @@ for (const asset of indexedAssets) {
           asset.duration
         );
   generatedKeyframes += Math.max(0, keyframes.filter((keyframe) => keyframe.path).length - existingKeyframes.length);
+  console.error(`[rebuild] ${asset.id} keyframes ready (${keyframes.length})`);
   const thumbnailTimeline = sceneTimeline.map((segment) => {
     const keyframe = keyframes.find((item) => item.segmentId === segment.id);
     if (!keyframe?.path) return segment;
@@ -63,6 +69,7 @@ for (const asset of indexedAssets) {
     };
   });
   const detections = await detectTimelineObjects(thumbnailTimeline, keyframes);
+  console.error(`[rebuild] ${asset.id} detections ${detections.available ? "ready" : "fallback"} (${detections.frames.length} frames)`);
   const detectedTimeline = applyEventClassification(applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections)));
   const sceneAsset = { ...asset, timeline: detectedTimeline };
   const domainTimeline = index
@@ -76,7 +83,9 @@ for (const asset of indexedAssets) {
         };
       })
     : detectedTimeline;
+  console.error(`[rebuild] ${asset.id} domain timeline ready (${domainTimeline.length} segments)`);
   const timeline = await embedTimelineSegments(domainTimeline);
+  console.error(`[rebuild] ${asset.id} text embeddings ready`);
   segments += timeline.length;
   const modelTrace = [...asset.intelligence.modelTrace];
   if (!modelTrace.includes(`embedding:${getEmbeddingModelName()}`)) modelTrace.push(`embedding:${getEmbeddingModelName()}`);
@@ -101,6 +110,7 @@ for (const asset of indexedAssets) {
   const records = await embedKeyframes(asset.indexId, asset.id, timeline, keyframes);
   visualVectors += records.length;
   await upsertAssetVisualVectors(asset.indexId, asset.id, records);
+  console.error(`[rebuild] ${asset.id} saved in ${Math.round((Date.now() - assetStartedAt) / 1000)}s`);
 }
 
 await rebuildTrackingStore(refreshedAssets);
@@ -114,7 +124,8 @@ console.log(
       assets: indexedAssets.length,
       segments,
       visualVectors,
-      generatedKeyframes
+      generatedKeyframes,
+      durationSeconds: Math.round((Date.now() - startedAt) / 1000)
     },
     null,
     2

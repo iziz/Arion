@@ -30,6 +30,16 @@ export type KnowledgeMatch<T> = {
 
 type SportsCompetitionRecord = { value: SportsLeague; aliases: string[] };
 type SportsTeamRecord = { value: string; aliases: string[] };
+type ExternalSportsKnowledge = {
+  competitions?: SportsCompetitionRecord[];
+  teams?: SportsTeamRecord[];
+  players?: SportsKnowledgePlayer[];
+  matchActivities?: SportsKnowledgeMatchActivity[];
+  facts?: SportsKnowledgeFact[];
+  deletedPlayerIds?: string[];
+};
+
+let externalKnowledgeCache: ExternalSportsKnowledge | null = null;
 
 export const sportsCompetitions: SportsCompetitionRecord[] = [
   { value: "Premier League" as const, aliases: ["Premier League", "EPL", "프리미어 리그", "프리미어리그"] },
@@ -239,19 +249,16 @@ function getFacts() {
   return external.facts ?? [];
 }
 
-function loadExternalKnowledge(): {
-  competitions?: SportsCompetitionRecord[];
-  teams?: SportsTeamRecord[];
-  players?: SportsKnowledgePlayer[];
-  matchActivities?: SportsKnowledgeMatchActivity[];
-  facts?: SportsKnowledgeFact[];
-  deletedPlayerIds?: string[];
-} {
+function loadExternalKnowledge(): ExternalSportsKnowledge {
+  if (externalKnowledgeCache) return externalKnowledgeCache;
   const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
-  if (!existsSync(knowledgePath)) return {};
+  if (!existsSync(knowledgePath)) {
+    externalKnowledgeCache = {};
+    return externalKnowledgeCache;
+  }
   try {
     const parsed = JSON.parse(readFileSync(knowledgePath, "utf8"));
-    return {
+    externalKnowledgeCache = {
       competitions: Array.isArray(parsed.competitions) ? parsed.competitions : undefined,
       teams: Array.isArray(parsed.teams) ? parsed.teams : undefined,
       players: Array.isArray(parsed.players) ? parsed.players : undefined,
@@ -259,21 +266,17 @@ function loadExternalKnowledge(): {
       facts: Array.isArray(parsed.facts) ? parsed.facts : undefined,
       deletedPlayerIds: Array.isArray(parsed.deletedPlayerIds) ? parsed.deletedPlayerIds.filter((item: unknown): item is string => typeof item === "string") : undefined
     };
+    return externalKnowledgeCache;
   } catch {
-    return {};
+    externalKnowledgeCache = {};
+    return externalKnowledgeCache;
   }
 }
 
-function writeExternalKnowledge(value: {
-  competitions?: SportsCompetitionRecord[];
-  teams?: SportsTeamRecord[];
-  players?: SportsKnowledgePlayer[];
-  matchActivities?: SportsKnowledgeMatchActivity[];
-  facts?: SportsKnowledgeFact[];
-  deletedPlayerIds?: string[];
-}) {
+function writeExternalKnowledge(value: ExternalSportsKnowledge) {
   const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
   mkdirSync(resolve(process.cwd(), ".data"), { recursive: true });
+  externalKnowledgeCache = value;
   writeFileSync(knowledgePath, JSON.stringify(value, null, 2));
 }
 
