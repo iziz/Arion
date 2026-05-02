@@ -68,7 +68,7 @@ type ObservabilitySnapshot = {
   recentLogs: Array<{ timestamp: string; level: string; event: string; message: string; requestId: string | null; traceId: string | null }>;
 };
 
-type ConsoleTab = "dashboard" | "assets" | "search" | "system";
+type ConsoleTab = "dashboard" | "data" | "search" | "system";
 type AssetDetailTab = "overview" | "workflow" | "evidence" | "timeline";
 type DialogMode = "index" | "edit-index" | "asset" | null;
 type FlowStepState = "done" | "active" | "waiting" | "skipped" | "error";
@@ -407,7 +407,7 @@ export default function App() {
       const payload = await readJson<unknown>(response);
       if (!isAssetUploadPayload(payload)) throw new Error("Upload returned an invalid asset payload");
       setSelectedAssetId(payload.asset.id);
-      setActiveTab("assets");
+      setActiveTab("data");
       setAssetDetailTab("overview");
       form.reset();
       setDialogMode(null);
@@ -441,7 +441,7 @@ export default function App() {
   }
 
   function seekTo(assetId: string, at: number) {
-    setActiveTab("assets");
+    setActiveTab("data");
     setAssetDetailTab("overview");
     setSelectedAssetId(assetId);
     setPendingSeek({ assetId, at });
@@ -571,14 +571,14 @@ export default function App() {
           onClick={() => setActiveTab("dashboard")}
         />
         <TabButton
-          active={activeTab === "assets"}
+          active={activeTab === "data"}
           icon={<FileVideo size={17} />}
-          label="에셋"
+          label="데이터 구성"
           meta={`${visibleIndexedAssets}/${visibleAssets.length} indexed`}
-          onClick={() => setActiveTab("assets")}
+          onClick={() => setActiveTab("data")}
         />
-        {activeTab === "assets" && (
-          <section className="asset-nav" aria-label="Asset navigation">
+        {activeTab === "data" && (
+          <section className="asset-nav" aria-label="Data navigation">
             <div className="asset-nav-header">
               <span>에셋그룹</span>
               <button type="button" className="nav-add-button" aria-label="에셋그룹 만들기" onClick={() => setDialogMode("index")}>
@@ -663,8 +663,15 @@ export default function App() {
       </section>
       )}
 
-      {activeTab === "assets" && (
+      {activeTab === "data" && (
       <section className="section-block workflow-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-label">Data</p>
+            <h2>데이터 구성</h2>
+          </div>
+          <p>에셋그룹, 영상, 인덱싱 옵션, knowledge registry를 구성합니다.</p>
+        </div>
         <AssetGroupSummary index={selectedIndex} assets={visibleAssets} onEdit={() => setDialogMode("edit-index")} />
       <section className="asset-workbench asset-detail-workbench">
         <section className="panel detail-panel">
@@ -770,6 +777,9 @@ export default function App() {
           )}
         </section>
       </section>
+      <section className="data-config-grid">
+        <SportsKnowledgePanel sportsKnowledge={sportsKnowledge} onSubmit={registerKnowledgePlayer} />
+      </section>
       </section>
       )}
 
@@ -777,10 +787,10 @@ export default function App() {
       <section className="section-block discovery-section">
         <div className="section-heading">
           <div>
-            <p className="section-label">Discover</p>
-            <h2>Search and analyze</h2>
+            <p className="section-label">Search</p>
+            <h2>검색</h2>
           </div>
-          <p>Search indexed moments and ask focused questions without leaving the asset workspace.</p>
+          <p>선택한 에셋그룹 전체에서 indexed moments를 찾고, 검색 결과 기반 분석을 실행합니다.</p>
         </div>
       <section className="tools">
         <section className="panel">
@@ -1060,51 +1070,6 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel knowledge-panel">
-          <div className="panel-title">
-            <Layers3 size={18} />
-            <h2>Sports Knowledge</h2>
-          </div>
-          {sportsKnowledge ? (
-            <>
-              <div className="obs-summary">
-                <span>{sportsKnowledge.players.length} players</span>
-                <span>{sportsKnowledge.teams.length} teams</span>
-                <span>{sportsKnowledge.competitions.length} competitions</span>
-              </div>
-              <form className="knowledge-form" onSubmit={registerKnowledgePlayer}>
-                <input name="canonical" placeholder="Player canonical name" required />
-                <input name="aliases" placeholder="Aliases, comma separated" />
-                <select name="sport" defaultValue="football">
-                  <option value="football">football</option>
-                  <option value="american_football">american football</option>
-                </select>
-                <select name="league" defaultValue="Premier League">
-                  {sportsKnowledge.competitions.map((competition) => (
-                    <option key={competition.value} value={competition.value}>{competition.value}</option>
-                  ))}
-                </select>
-                <input name="activeSeasons" placeholder="Seasons, comma separated" />
-                <input name="team" placeholder="Team for listed seasons" />
-                <button type="submit">
-                  <Plus size={16} />
-                  Add player
-                </button>
-              </form>
-              <div className="table-list">
-                {sportsKnowledge.players.slice(0, 8).map((player) => (
-                  <article key={player.id} className="ops-row">
-                    <strong>{player.canonical}</strong>
-                    <span>{player.league} · {player.sport} · {player.aliases.slice(0, 4).join(", ")}</span>
-                  </article>
-                ))}
-              </div>
-            </>
-          ) : (
-            <EmptyState text="Sports knowledge registry is loading." />
-          )}
-        </section>
-
         <section className="panel observability-panel">
           <div className="panel-title">
             <Activity size={18} />
@@ -1202,6 +1167,61 @@ function InfoTile({ label, value }: { label: string; value: string }) {
       <em>{label}</em>
       <strong>{value}</strong>
     </span>
+  );
+}
+
+function SportsKnowledgePanel({
+  sportsKnowledge,
+  onSubmit
+}: {
+  sportsKnowledge: SportsKnowledgeSnapshot | null;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+  return (
+    <section className="panel knowledge-panel">
+      <div className="panel-title">
+        <Layers3 size={18} />
+        <h2>Sports Knowledge</h2>
+      </div>
+      {sportsKnowledge ? (
+        <>
+          <div className="obs-summary">
+            <span>{sportsKnowledge.players.length} players</span>
+            <span>{sportsKnowledge.teams.length} teams</span>
+            <span>{sportsKnowledge.competitions.length} competitions</span>
+          </div>
+          <form className="knowledge-form" onSubmit={(event) => void onSubmit(event)}>
+            <input name="canonical" placeholder="Player canonical name" required />
+            <input name="aliases" placeholder="Aliases, comma separated" />
+            <select name="sport" defaultValue="football">
+              <option value="football">football</option>
+              <option value="american_football">american football</option>
+            </select>
+            <select name="league" defaultValue="Premier League">
+              {sportsKnowledge.competitions.map((competition) => (
+                <option key={competition.value} value={competition.value}>{competition.value}</option>
+              ))}
+            </select>
+            <input name="activeSeasons" placeholder="Seasons, comma separated" />
+            <input name="team" placeholder="Team for listed seasons" />
+            <button type="submit">
+              <Plus size={16} />
+              Add player
+            </button>
+          </form>
+          <div className="table-list">
+            {sportsKnowledge.players.slice(0, 8).map((player) => (
+              <article key={player.id} className="ops-row">
+                <strong>{player.canonical}</strong>
+                <span>{player.league} · {player.sport} · {player.aliases.slice(0, 4).join(", ")}</span>
+              </article>
+            ))}
+          </div>
+        </>
+      ) : (
+        <EmptyState text="Sports knowledge registry is loading." />
+      )}
+    </section>
   );
 }
 
