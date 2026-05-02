@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AnalysisResult, AssetRecord, ClipDetailResult, ClipResult, DomainQueryPlan, DomainSearchFilters, IndexRecord, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
+import type { AnalysisResult, AssetRecord, ClipDetailResult, ClipResult, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, SearchMatchReason, SearchResult, TimelineSegment, VerificationCheck, VisionEvidence } from "../shared/types";
 import { createAnalysisGenerator } from "./analysisGenerator";
 import { domainSearchText, expandDomainQuery, scoreDomainMatch, withDomainSegment } from "./domainIndex";
-import { planDomainQuery } from "./queryPlanner";
+import { knowledgeEvidenceForNames } from "./knowledgeGrounding";
+import { isPlayerInventoryQuery, planDomainQuery } from "./queryPlanner";
 import { createShotWindows, type SceneBoundary } from "./sceneDetection";
-import { playerTeamForSeason } from "./sportsKnowledge";
+import { matchKnowledgePlayers, playerTeamForSeason } from "./sportsKnowledge";
 import { listTrackingRecords } from "./trackingStore";
 
 const execFileAsync = promisify(execFile);
@@ -244,6 +245,7 @@ function buildVisionEvidence(asset: AssetRecord, start: number, end: number): Vi
   const playersLikely = pitchPresent && (labels.includes("active-motion") || labels.includes("stable-shot"));
   const ballLikely = pitchPresent && motion >= 0.08;
   const zone = estimateVisualFieldZone(asset, pitchPresent, motion);
+  const zoneConfidence = zone === "unknown" ? 0 : Number(Math.min(0.54, confidenceBase - 0.05).toFixed(2));
   const candidates: VisionEvidence["eventCandidates"] = [];
   if (pitchPresent && motion >= 0.1) {
     candidates.push({
@@ -282,8 +284,21 @@ function buildVisionEvidence(asset: AssetRecord, start: number, end: number): Vi
     },
     fieldZone: {
       zone,
-      confidence: zone === "unknown" ? 0 : Number(Math.min(0.54, confidenceBase - 0.05).toFixed(2)),
+      confidence: zoneConfidence,
       method: zone === "unknown" ? "none" : "color_motion_heuristic"
+    },
+    fieldCalibration: {
+      status: zone === "unknown" ? "not_configured" : "estimated",
+      method: zone === "unknown" ? "none" : "text_context",
+      zone,
+      zoneConfidence,
+      attackingDirection: "unknown",
+      attackingDirectionConfidence: 0,
+      evidence: zone === "unknown" ? ["No pitch-zone cue was available."] : ["Zone estimated from text, color, and motion context."],
+      limitations: [
+        "No pitch homography is configured.",
+        "Zone is not derived from calibrated field coordinates."
+      ]
     },
     eventCandidates: candidates,
     limitations: [
@@ -477,13 +492,21 @@ export function searchAssets(
     visualHitsBySegment?: Map<string, number>;
     domainFilters?: DomainSearchFilters;
     queryPlan?: DomainQueryPlan;
+    knowledgeEvidence?: KnowledgeEvidence[];
   } = {}
 ): SearchResult[] {
+  if (isPlayerInventoryQuery(query)) {
+    return searchPlayerInventoryResults(assets, indexes, options);
+  }
+
   const domainProfile = expandDomainQuery(options.queryPlan?.semanticQuery ?? query);
   const queryTerms = extractKeywords(domainProfile.expandedText);
+  const knowledgeProfile = buildKnowledgeSearchProfile(options.knowledgeEvidence ?? []);
+  const knowledgeTerms = extractKeywords(knowledgeProfile.searchText);
   const hasVectorHits = (options.vectorHitsBySegment?.size ?? 0) > 0 || (options.visualHitsBySegment?.size ?? 0) > 0;
   const hasDomainFilters = hasActiveDomainFilters(options.domainFilters);
-  if (query.trim().length === 0 && queryTerms.length === 0 && !hasVectorHits && !hasDomainFilters) return [];
+  const hasKnowledgeEvidence = knowledgeTerms.length > 0;
+  if (query.trim().length === 0 && queryTerms.length === 0 && !hasVectorHits && !hasDomainFilters && !hasKnowledgeEvidence) return [];
   const queryVector = options.queryVector ?? vectorize(domainProfile.expandedText);
   const limit = options.limit ?? 10;
 
@@ -493,12 +516,16 @@ export function searchAssets(
     .filter((asset) => !options.tag || asset.tags.includes(options.tag))
     .filter((asset) => matchesAssetDomainText(asset, options.domainFilters))
     .map((asset) => {
-      const assetLexicalScore = scoreText(`${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`, queryTerms);
+      const assetText = `${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`;
+      const assetLexicalScore = scoreText(assetText, queryTerms);
+      const assetKnowledgeScore = scoreText(assetText, knowledgeTerms);
       const segmentCandidates = asset.timeline
         .filter((segment) => !options.modality || segment.modalities.includes(options.modality as TimelineSegment["modalities"][number]))
         .filter((segment) => matchesSegmentDomainFilters(asset, segment, options.domainFilters))
         .map((segment) => {
-          const lexicalScore = scoreText(segmentSearchText(segment), queryTerms);
+          const segmentText = segmentSearchText(segment);
+          const lexicalScore = scoreText(segmentText, queryTerms);
+          const knowledgeScore = scoreText([assetText, segmentText, segment.domain?.searchText].filter(Boolean).join(" "), knowledgeTerms);
           const domainScore = scoreDomainMatch(segment, domainProfile);
           const filterScore = scoreDomainFilterMatch(asset, segment, options.domainFilters);
           const semanticScore = Math.max(
@@ -508,6 +535,7 @@ export function searchAssets(
           const visualScore = options.visualHitsBySegment?.get(segment.id) ?? 0;
           const sourceScore = scoreSources(segment.sources);
           const confidenceScore = segment.confidence;
+          const vlmQualityScore = scoreVlmQuality(segment);
           return {
             segment,
             lexicalScore,
@@ -515,19 +543,31 @@ export function searchAssets(
             visualScore,
             sourceScore,
             confidenceScore,
+            vlmQualityScore,
             domainScore,
             filterScore,
-            score: lexicalScore * 3 + domainScore * 5 + filterScore * 6 + semanticScore * 8 + visualScore * 6 + sourceScore + confidenceScore * 1.5
+            knowledgeScore,
+            score:
+              lexicalScore * 3 +
+              domainScore * 5 +
+              filterScore * 6 +
+              knowledgeScore * 4.5 +
+              semanticScore * 8 +
+              visualScore * 6 +
+              sourceScore +
+              confidenceScore * 1.5 +
+              vlmQualityScore
           };
         })
-        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : item.lexicalScore > 0 || item.domainScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
+        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : item.lexicalScore > 0 || item.domainScore > 0 || item.knowledgeScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
       const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
+      const knowledgeSegmentMatches = segmentCandidates.filter((item) => item.knowledgeScore > 0);
       const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore > 0.72 || item.visualScore > 0.25);
       const matchingSegments = (hasDomainFilters
         ? segmentCandidates
-        : lexicalSegmentMatches.length > 0 || domainSegmentMatches.length > 0
-          ? [...lexicalSegmentMatches, ...domainSegmentMatches]
+        : lexicalSegmentMatches.length > 0 || domainSegmentMatches.length > 0 || knowledgeSegmentMatches.length > 0
+          ? [...lexicalSegmentMatches, ...domainSegmentMatches, ...knowledgeSegmentMatches]
           : semanticSegmentMatches)
         .filter((item, index, items) => items.findIndex((candidate) => candidate.segment.id === item.segment.id) === index)
         .sort((a, b) => b.score - a.score);
@@ -535,14 +575,24 @@ export function searchAssets(
       const lexical = assetLexicalScore * 0.5 + matchingSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * 3;
       const domain = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.domainScore, 0) * 5;
       const filters = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.filterScore, 0) * 6;
+      const knowledge = assetKnowledgeScore * 0.5 + matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.knowledgeScore, 0) * 4.5;
       const semantic = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.semanticScore, 0) * 8;
       const visual = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.visualScore, 0) * 6;
       const source = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.sourceScore, 0);
       const confidence = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.confidenceScore, 0) * 1.5;
+      const vlmQuality = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.vlmQualityScore, 0);
       const recency = recencyBoost(asset.createdAt);
-      const totalScore = Number((lexical + domain + filters + semantic + visual + source + confidence + recency).toFixed(3));
+      const totalScore = Number((lexical + domain + filters + knowledge + semantic + visual + source + confidence + vlmQuality + recency).toFixed(3));
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;
       const selectedSegments = matchingSegments.slice(0, 5);
+      const selectedSegmentIds = selectedSegments.map((item) => item.segment.id);
+      const selectedPlayerNames = unique(
+        selectedSegments.flatMap((item) => [
+          ...(item.segment.domain?.scope?.players.map((player) => player.value) ?? []),
+          item.segment.domain?.events[0]?.football?.receivingPlayer.identity?.name ?? "",
+          item.segment.domain?.events[0]?.football?.passingPlayer.identity?.name ?? ""
+        ].filter(Boolean))
+      );
       const selectedDetails = selectedSegments.map((item) => {
         const segment = withSceneData(asset, item.segment);
         const matchReasons = buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan);
@@ -573,16 +623,19 @@ export function searchAssets(
           `${assetLexicalScore} lexical asset matches`,
           `${Number(domain.toFixed(3))} sports domain rank score`,
           `${Number(filters.toFixed(3))} structured filter score`,
+          `${Number(knowledge.toFixed(3))} knowledge grounding score`,
           `${Number(semantic.toFixed(3))} semantic rank score`,
           `${Number(visual.toFixed(3))} visual rank score`,
           `${Number(source.toFixed(3))} source quality boost`,
           `${Number(confidence.toFixed(3))} confidence boost`,
+          `${Number(vlmQuality.toFixed(3))} VLM quality adjustment`,
           `${matchingSegments.length} matching timeline segments`,
           hasDomainFilters ? `domain filters=${formatDomainFilters(options.domainFilters)}` : "",
           options.queryPlan ? `query plan=${options.queryPlan.rewrittenQuery}` : "",
           index ? `index=${index.name}` : "index=unknown"
         ].filter(Boolean),
         queryPlan: options.queryPlan ?? null,
+        knowledgeEvidence: selectKnowledgeEvidence(options.knowledgeEvidence ?? [], asset.id, selectedSegmentIds, selectedPlayerNames),
         matchReasons: selectedDetails.flatMap((item) => item.matchReasons),
         verification: selectedDetails.flatMap((item) => item.verification)
       };
@@ -590,6 +643,190 @@ export function searchAssets(
     .filter((result) => result.score > 0 && result.segments.length > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+function searchPlayerInventoryResults(
+  assets: AssetRecord[],
+  indexes: IndexRecord[],
+  options: Parameters<typeof searchAssets>[3]
+): SearchResult[] {
+  const searchOptions = options ?? {};
+  const limit = searchOptions.limit ?? 10;
+  return assets
+    .filter((asset) => asset.status === "indexed" || asset.timeline.length > 0)
+    .filter((asset) => !searchOptions.indexId || asset.indexId === searchOptions.indexId)
+    .filter((asset) => !searchOptions.tag || asset.tags.includes(searchOptions.tag))
+    .filter((asset) => matchesAssetDomainText(asset, searchOptions.domainFilters))
+    .map((asset) => {
+      const assetPlayers = collectAssetPlayerMentions(asset);
+      const segmentCandidates = asset.timeline
+        .filter((segment) => !searchOptions.modality || segment.modalities.includes(searchOptions.modality as TimelineSegment["modalities"][number]))
+        .filter((segment) => matchesSegmentDomainFilters(asset, segment, searchOptions.domainFilters))
+        .map((segment) => ({ segment, players: collectPlayerMentions(asset, segment) }))
+        .filter((item) => item.players.length > 0)
+        .sort((a, b) => averageConfidence(b.players) - averageConfidence(a.players) || b.players.length - a.players.length);
+      const segmentPlayerNames = new Set(segmentCandidates.flatMap((item) => item.players.map((player) => player.value)));
+      const assetOnlyPlayers = assetPlayers.filter((player) => !segmentPlayerNames.has(player.value));
+      const firstSegment = asset.timeline.find(
+        (segment) =>
+          (!searchOptions.modality || segment.modalities.includes(searchOptions.modality as TimelineSegment["modalities"][number])) &&
+          matchesSegmentDomainFilters(asset, segment, searchOptions.domainFilters)
+      );
+      if (firstSegment && assetOnlyPlayers.length > 0) {
+        segmentCandidates.push({ segment: firstSegment, players: assetOnlyPlayers });
+      }
+      const playerNames = unique(segmentCandidates.flatMap((item) => item.players.map((player) => player.value))).sort((a, b) => a.localeCompare(b));
+      const selectedSegments = selectPlayerInventorySegments(segmentCandidates, playerNames).slice(0, 5);
+      const selectedSegmentIds = selectedSegments.map((item) => item.segment.id);
+      const selectedDetails = selectedSegments.map((item) => {
+        const segment = withSceneData(asset, item.segment);
+        const matchReasons = buildPlayerInventoryReasons(segment.id, item.players);
+        const verification = buildVerificationChecks(asset, item.segment, searchOptions.domainFilters);
+        return {
+          segment,
+          matchReasons,
+          verification,
+          clip: clipFromSegment(asset, segment, verification, matchReasons)
+        };
+      });
+      const index = indexes.find((item) => item.id === asset.indexId) ?? null;
+      const source = selectedSegments.reduce((sum, item) => sum + scoreSources(item.segment.sources), 0);
+      const confidence = selectedSegments.reduce((sum, item) => sum + averageConfidence(item.players), 0);
+      const recency = recencyBoost(asset.createdAt);
+      const totalScore = Number((playerNames.length * 20 + segmentCandidates.length * 0.5 + source + confidence + recency).toFixed(3));
+      return {
+        asset,
+        index,
+        segments: selectedDetails.map((item) => item.segment),
+        clips: selectedDetails.map((item) => item.clip),
+        score: totalScore,
+        ranking: {
+          lexical: 0,
+          semantic: 0,
+          visual: 0,
+          source: Number(source.toFixed(3)),
+          confidence: Number(confidence.toFixed(3)),
+          recency: Number(recency.toFixed(3)),
+          total: totalScore
+        },
+        explain: [
+          `${playerNames.length} mentioned players: ${playerNames.join(", ")}`,
+          `${segmentCandidates.length} timeline segments with player evidence`,
+          searchOptions.queryPlan ? `query plan=${searchOptions.queryPlan.rewrittenQuery}` : "",
+          index ? `index=${index.name}` : "index=unknown"
+        ].filter(Boolean),
+        queryPlan: searchOptions.queryPlan ?? null,
+        knowledgeEvidence: selectKnowledgeEvidence(
+          knowledgeEvidenceForNames(searchOptions.knowledgeEvidence ?? [], playerNames),
+          asset.id,
+          selectedSegmentIds,
+          playerNames
+        ),
+        matchReasons: selectedDetails.flatMap((item) => item.matchReasons),
+        verification: selectedDetails.flatMap((item) => item.verification)
+      };
+    })
+    .filter((result) => result.score > 0 && result.segments.length > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+function collectPlayerMentions(_asset: AssetRecord, segment: TimelineSegment): DomainScopeValue[] {
+  const mentions = new Map<string, DomainScopeValue>();
+  const text = [
+    segment.transcript,
+    segment.sceneData?.text.speech,
+    ...(segment.sceneData?.text.subtitles ?? []),
+    ...(segment.sceneData?.text.screenText ?? []),
+    ...(segment.sceneData?.text.overlays ?? [])
+  ]
+    .filter(Boolean)
+    .join(" ");
+  for (const match of matchKnowledgePlayers(text)) {
+    const value: DomainScopeValue = {
+      value: match.value.canonical,
+      confidence: match.confidence,
+      source: match.source,
+      evidence: match.evidence
+    };
+    const existing = mentions.get(value.value);
+    if (!existing || value.confidence > existing.confidence) mentions.set(value.value, value);
+  }
+
+  return Array.from(mentions.values()).sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
+}
+
+function collectAssetPlayerMentions(asset: AssetRecord): DomainScopeValue[] {
+  const text = [asset.title, asset.originalName, asset.description, asset.tags.join(" ")].filter(Boolean).join(" ");
+  return matchKnowledgePlayers(text)
+    .map((match) => ({
+      value: match.value.canonical,
+      confidence: match.confidence,
+      source: match.source,
+      evidence: match.evidence
+    }))
+    .sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
+}
+
+function selectPlayerInventorySegments(
+  candidates: Array<{ segment: TimelineSegment; players: DomainScopeValue[] }>,
+  playerNames: string[]
+) {
+  const selected: Array<{ segment: TimelineSegment; players: DomainScopeValue[] }> = [];
+  const selectedIds = new Set<string>();
+  for (const playerName of playerNames) {
+    const match = candidates.find((item) => item.players.some((player) => player.value === playerName));
+    if (match && !selectedIds.has(match.segment.id)) {
+      selected.push(match);
+      selectedIds.add(match.segment.id);
+    }
+  }
+  for (const candidate of candidates) {
+    if (selectedIds.has(candidate.segment.id)) continue;
+    selected.push(candidate);
+    selectedIds.add(candidate.segment.id);
+  }
+  return selected;
+}
+
+function buildPlayerInventoryReasons(segmentId: string, players: DomainScopeValue[]): SearchMatchReason[] {
+  return players.map((player) => ({
+    segmentId,
+    kind: "evidence",
+    label: "Player",
+    value: `${player.value} (${player.source})`,
+    confidence: player.confidence
+  }));
+}
+
+function averageConfidence(players: DomainScopeValue[]) {
+  if (players.length === 0) return 0;
+  return players.reduce((sum, player) => sum + player.confidence, 0) / players.length;
+}
+
+function selectKnowledgeEvidence(evidence: KnowledgeEvidence[], assetId: string, segmentIds: string[], playerNames: string[]) {
+  const segmentIdSet = new Set(segmentIds);
+  const playerNameSet = new Set(playerNames.map(normalizeSearchValue));
+  return evidence
+    .filter((item) => {
+      if (item.assetId && item.assetId !== assetId) return false;
+      if (item.segmentId && !segmentIdSet.has(item.segmentId)) return false;
+      if (item.entityType === "player" && playerNameSet.size > 0) return playerNameSet.has(normalizeSearchValue(item.entityName));
+      return item.source !== "video_index" || item.assetId === assetId;
+    })
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 8);
+}
+
+function buildKnowledgeSearchProfile(evidence: KnowledgeEvidence[]) {
+  const selected = evidence.slice(0, 40);
+  return {
+    searchText: selected
+      .flatMap((item) => [item.entityName, item.team, item.competition, item.season, item.matchTime, item.evidenceText])
+      .filter(Boolean)
+      .join(" "),
+    sourceCount: selected.length
+  };
 }
 
 export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<AnalysisResult> {
@@ -1000,6 +1237,15 @@ function scoreSources(sources: TimelineSegment["sources"]) {
   return score;
 }
 
+function scoreVlmQuality(segment: TimelineSegment) {
+  const quality = segment.domain?.vlm;
+  if (!quality) return 0;
+  if (quality.status === "refined") return 0.8 + quality.confidence;
+  if (quality.status === "invalid") return -0.8;
+  if (quality.status === "failed") return -1.2;
+  return 0;
+}
+
 function hasActiveDomainFilters(filters?: DomainSearchFilters) {
   return Boolean(filters && Object.values(filters).some((value) => typeof value === "string" && value.trim().length > 0));
 }
@@ -1025,30 +1271,32 @@ function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearchFilter
 
 function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
   if (!filters || !hasActiveDomainFilters(filters)) return true;
-  if (!scopeFilterAllows(segment, "competition", filters.competition)) return false;
-  if (!scopeFilterAllows(segment, "season", filters.season)) return false;
+  const fullSegmentText = normalizeSearchValue(
+    [
+      asset.title,
+      asset.description,
+      asset.originalName,
+      asset.tags.join(" "),
+      segment.label,
+      segment.transcript,
+      segment.tags.join(" "),
+      segmentSearchText(segment),
+      segment.domain?.searchText,
+      ...(segment.domain?.events.flatMap((event) => [
+        event.caption,
+        ...event.labels,
+        ...event.evidence.asr,
+        ...event.evidence.ocr,
+        ...event.evidence.metadata,
+        ...event.evidence.heuristics
+      ]) ?? [])
+    ].join(" ")
+  );
+  if (!scopeFilterAllows(segment, "competition", filters.competition) && !textAllowsFilter(fullSegmentText, filters.competition)) return false;
+  if (!scopeFilterAllows(segment, "season", filters.season) && !textAllowsFilter(fullSegmentText, filters.season)) return false;
   const textTerms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
   if (textTerms.length > 0) {
-    const segmentText = normalizeSearchValue(
-      [
-        asset.title,
-        asset.description,
-        segment.label,
-        segment.transcript,
-        segment.tags.join(" "),
-        segmentSearchText(segment),
-        segment.domain?.searchText,
-        ...(segment.domain?.events.flatMap((event) => [
-          event.caption,
-          ...event.labels,
-          ...event.evidence.asr,
-          ...event.evidence.ocr,
-          ...event.evidence.metadata,
-          ...event.evidence.heuristics
-        ]) ?? [])
-      ].join(" ")
-    );
-    if (!textTerms.every((term) => segmentText.includes(normalizeSearchValue(term)))) return false;
+    if (!textTerms.every((term) => fullSegmentText.includes(normalizeSearchValue(term)))) return false;
   }
 
   const eventFilters = {
@@ -1070,6 +1318,11 @@ function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegmen
   });
 }
 
+function textAllowsFilter(haystack: string, value?: string) {
+  const normalized = normalizeSearchValue(value ?? "");
+  return Boolean(normalized && haystack.includes(normalized));
+}
+
 function scoreDomainFilterMatch(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
   if (!filters || !hasActiveDomainFilters(filters)) return 0;
   const checks = buildVerificationChecks(asset, segment, filters);
@@ -1088,7 +1341,7 @@ function scopeFilterAllows(segment: TimelineSegment, field: "competition" | "sea
   const normalizedFilter = normalizeSearchValue(filterValue ?? "");
   if (!normalizedFilter) return true;
   const scopeValue = field === "competition" ? segment.domain?.scope?.competition : segment.domain?.scope?.season;
-  if (!scopeValue) return true;
+  if (!scopeValue) return false;
   return normalizeSearchValue(scopeValue.value).includes(normalizedFilter) || normalizedFilter.includes(normalizeSearchValue(scopeValue.value));
 }
 
@@ -1189,14 +1442,28 @@ function buildVerificationChecks(asset: AssetRecord, segment: TimelineSegment, f
   }
   if (filters.fieldZone) {
     const match = events.find((event) => event.football?.fieldZone === filters.fieldZone);
+    const calibration = match?.football?.field;
+    const status = match
+      ? calibration?.calibrationStatus === "calibrated"
+        ? "pass"
+        : calibration?.calibrationStatus === "estimated"
+          ? "soft_pass"
+          : "unknown"
+      : "fail";
     checks.push({
       segmentId: segment.id,
       constraint: "fieldZone",
       expected: filters.fieldZone,
       observed: match?.football?.fieldZone ?? firstMatchingEvent?.football?.fieldZone ?? "missing",
-      status: match ? "pass" : "fail",
+      status,
       confidence: match?.football?.field.zoneConfidence ?? 0,
-      evidence: match ? [match.caption] : ["No matching structured field zone."]
+      evidence: match
+        ? [
+            match.caption,
+            `Field calibration: ${calibration?.calibrationStatus ?? "not_configured"}`,
+            ...(segment.sceneData?.vision?.fieldCalibration?.evidence ?? [])
+          ].filter(Boolean)
+        : ["No matching structured field zone."]
     });
   }
   if (filters.role && filters.role !== "any") {
@@ -1227,6 +1494,7 @@ function buildSearchMatchReasons(
     semanticScore: number;
     visualScore: number;
     domainScore: number;
+    knowledgeScore?: number;
   },
   filters?: DomainSearchFilters,
   queryPlan?: DomainQueryPlan
@@ -1307,6 +1575,9 @@ function buildSearchMatchReasons(
   if (scores.domainScore > 0) {
     reasons.push({ segmentId: segment.id, kind: "semantic", label: "Domain rank", value: `${scores.domainScore} sports score` });
   }
+  if ((scores.knowledgeScore ?? 0) > 0) {
+    reasons.push({ segmentId: segment.id, kind: "evidence", label: "Knowledge", value: `${scores.knowledgeScore} grounded terms matched` });
+  }
   if (scores.semanticScore > 0.72) {
     reasons.push({ segmentId: segment.id, kind: "semantic", label: "Vector", value: `${Math.round(scores.semanticScore * 100)}% text similarity` });
   }
@@ -1334,8 +1605,19 @@ function buildSearchMatchReasons(
       segmentId: segment.id,
       kind: "visual",
       label: "Visual zone",
-      value: vision.fieldZone.zone,
+      value: vision.fieldCalibration
+        ? `${vision.fieldZone.zone} · ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}`
+        : vision.fieldZone.zone,
       confidence: vision.fieldZone.confidence
+    });
+  }
+  if (vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown") {
+    reasons.push({
+      segmentId: segment.id,
+      kind: "visual",
+      label: "Direction",
+      value: vision.fieldCalibration.attackingDirection,
+      confidence: vision.fieldCalibration.attackingDirectionConfidence
     });
   }
   if (vision?.tracking?.status === "tracked") {

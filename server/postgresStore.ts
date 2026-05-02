@@ -623,8 +623,8 @@ function createDefaultIndex(now = new Date().toISOString()): IndexRecord {
     name: "Default video intelligence index",
     description: "Local index for uploaded assets, timeline metadata, search, and analysis.",
     models: {
-      search: "local-marengo-simulator",
-      analysis: "local-pegasus-simulator",
+      search: "local-semantic-retrieval",
+      analysis: "local-pattern-analysis",
       embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small"
     },
     modalities: ["visual", "audio", "transcription", "metadata"],
@@ -689,6 +689,8 @@ function vectorRecordText(segment: TimelineSegment) {
     vision?.objects.players.status === "estimated" || vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
     vision?.objects.ball.status === "estimated" || vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
     vision?.fieldZone.zone !== "unknown" ? `zone ${vision?.fieldZone.zone}` : "",
+    vision?.fieldCalibration ? `field calibration ${vision.fieldCalibration.status} ${vision.fieldCalibration.method}` : "",
+    vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown" ? `attacking direction ${vision.fieldCalibration.attackingDirection}` : "",
     vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
     vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
     vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""

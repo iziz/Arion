@@ -12,7 +12,14 @@ export type SportsKnowledgePlayer = {
   league: SportsLeague;
   activeSeasons: string[];
   teamsBySeason: Record<string, string>;
+  provider?: "local" | "football-data" | "kaggle" | "statbunker";
+  externalIds?: Record<string, string | number>;
+  position?: string | null;
+  shirtNumber?: number | null;
 };
+
+export type SportsKnowledgeMatchActivity = NonNullable<SportsKnowledgeSnapshot["matchActivities"]>[number];
+export type SportsKnowledgeFact = NonNullable<SportsKnowledgeSnapshot["facts"]>[number];
 
 export type KnowledgeMatch<T> = {
   value: T;
@@ -140,7 +147,9 @@ export function getSportsKnowledgeSnapshot() {
   return {
     competitions: getSportsCompetitions(),
     teams: getSportsTeams(),
-    players: getSportsPlayers()
+    players: getSportsPlayers(),
+    matchActivities: getMatchActivities(),
+    facts: getFacts()
   };
 }
 
@@ -157,11 +166,48 @@ export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer
     sport: input.sport === "american_football" ? "american_football" : "football",
     league: isSportsLeague(input.league) ? input.league : "Premier League",
     activeSeasons,
-    teamsBySeason: input.teamsBySeason ?? Object.fromEntries(activeSeasons.map((season) => [season, ""]))
+    teamsBySeason: input.teamsBySeason ?? Object.fromEntries(activeSeasons.map((season) => [season, ""])),
+    provider: input.provider ?? "local",
+    externalIds: input.externalIds,
+    position: input.position ?? null,
+    shirtNumber: typeof input.shirtNumber === "number" && Number.isFinite(input.shirtNumber) ? input.shirtNumber : null
   };
   const next = {
     ...external,
+    deletedPlayerIds: (external.deletedPlayerIds ?? []).filter((item) => item !== id),
     players: [...players.filter((item) => item.id !== id && normalize(item.canonical) !== normalize(canonical)), player]
+  };
+  writeExternalKnowledge(next);
+  return getSportsKnowledgeSnapshot();
+}
+
+export function deleteSportsKnowledgePlayer(id: string): SportsKnowledgeSnapshot {
+  const external = loadExternalKnowledge();
+  const deletedPlayerIds = Array.from(new Set([...(external.deletedPlayerIds ?? []), id].filter(Boolean)));
+  const next = {
+    ...external,
+    deletedPlayerIds,
+    players: (external.players ?? []).filter((player) => player.id !== id)
+  };
+  writeExternalKnowledge(next);
+  return getSportsKnowledgeSnapshot();
+}
+
+export function mergeSportsKnowledge(input: {
+  competitions?: SportsCompetitionRecord[];
+  teams?: SportsTeamRecord[];
+  players?: SportsKnowledgePlayer[];
+  matchActivities?: SportsKnowledgeMatchActivity[];
+  facts?: SportsKnowledgeFact[];
+}): SportsKnowledgeSnapshot {
+  const external = loadExternalKnowledge();
+  const next = {
+    competitions: dedupeByValue([...(input.competitions ?? []), ...(external.competitions ?? [])], (item) => item.value),
+    teams: dedupeByValue([...(input.teams ?? []), ...(external.teams ?? [])], (item) => item.value),
+    players: mergePlayers([...(input.players ?? []), ...(external.players ?? [])]),
+    matchActivities: dedupeByValue([...(input.matchActivities ?? []), ...(external.matchActivities ?? [])], (item) => item.id),
+    facts: dedupeByValue([...(input.facts ?? []), ...(external.facts ?? [])], (item) => item.id),
+    deletedPlayerIds: external.deletedPlayerIds
   };
   writeExternalKnowledge(next);
   return getSportsKnowledgeSnapshot();
@@ -179,13 +225,27 @@ function getSportsTeams() {
 
 function getSportsPlayers() {
   const external = loadExternalKnowledge();
-  return dedupeByValue([...(external.players ?? []), ...sportsPlayers], (player) => player.canonical);
+  const deleted = new Set(external.deletedPlayerIds ?? []);
+  return mergePlayers([...(external.players ?? []), ...sportsPlayers]).filter((player) => !deleted.has(player.id));
+}
+
+function getMatchActivities() {
+  const external = loadExternalKnowledge();
+  return external.matchActivities ?? [];
+}
+
+function getFacts() {
+  const external = loadExternalKnowledge();
+  return external.facts ?? [];
 }
 
 function loadExternalKnowledge(): {
   competitions?: SportsCompetitionRecord[];
   teams?: SportsTeamRecord[];
   players?: SportsKnowledgePlayer[];
+  matchActivities?: SportsKnowledgeMatchActivity[];
+  facts?: SportsKnowledgeFact[];
+  deletedPlayerIds?: string[];
 } {
   const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
   if (!existsSync(knowledgePath)) return {};
@@ -194,7 +254,10 @@ function loadExternalKnowledge(): {
     return {
       competitions: Array.isArray(parsed.competitions) ? parsed.competitions : undefined,
       teams: Array.isArray(parsed.teams) ? parsed.teams : undefined,
-      players: Array.isArray(parsed.players) ? parsed.players : undefined
+      players: Array.isArray(parsed.players) ? parsed.players : undefined,
+      matchActivities: Array.isArray(parsed.matchActivities) ? parsed.matchActivities : undefined,
+      facts: Array.isArray(parsed.facts) ? parsed.facts : undefined,
+      deletedPlayerIds: Array.isArray(parsed.deletedPlayerIds) ? parsed.deletedPlayerIds.filter((item: unknown): item is string => typeof item === "string") : undefined
     };
   } catch {
     return {};
@@ -205,6 +268,9 @@ function writeExternalKnowledge(value: {
   competitions?: SportsCompetitionRecord[];
   teams?: SportsTeamRecord[];
   players?: SportsKnowledgePlayer[];
+  matchActivities?: SportsKnowledgeMatchActivity[];
+  facts?: SportsKnowledgeFact[];
+  deletedPlayerIds?: string[];
 }) {
   const knowledgePath = resolve(process.cwd(), ".data", "sports-knowledge.json");
   mkdirSync(resolve(process.cwd(), ".data"), { recursive: true });
@@ -223,6 +289,30 @@ function dedupeByValue<T>(items: T[], keyFn: (item: T) => string) {
     seen.add(key);
     return true;
   });
+}
+
+function mergePlayers(players: SportsKnowledgePlayer[]) {
+  const byCanonical = new Map<string, SportsKnowledgePlayer>();
+  for (const player of players) {
+    const key = normalize(player.canonical);
+    const existing = byCanonical.get(key);
+    if (!existing) {
+      byCanonical.set(key, player);
+      continue;
+    }
+    const activeSeasons = Array.from(new Set([...existing.activeSeasons, ...player.activeSeasons]));
+    byCanonical.set(key, {
+      ...existing,
+      aliases: Array.from(new Set([...existing.aliases, ...player.aliases])),
+      activeSeasons,
+      teamsBySeason: { ...player.teamsBySeason, ...existing.teamsBySeason },
+      provider: existing.provider ?? player.provider,
+      externalIds: { ...(player.externalIds ?? {}), ...(existing.externalIds ?? {}) },
+      position: existing.position ?? player.position,
+      shirtNumber: existing.shirtNumber ?? player.shirtNumber
+    });
+  }
+  return Array.from(byCanonical.values());
 }
 
 function player(

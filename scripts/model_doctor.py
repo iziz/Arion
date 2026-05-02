@@ -26,6 +26,11 @@ result = {
     "sentence_transformers": present("sentence_transformers"),
     "open_clip": present("open_clip"),
     "torchvision": present("torchvision"),
+    "fastapi": present("fastapi"),
+    "uvicorn": present("uvicorn"),
+    "transformers": present("transformers"),
+    "accelerate": present("accelerate"),
+    "qwen_vl_utils": present("qwen_vl_utils"),
 }
 
 print(json.dumps(result, indent=2))

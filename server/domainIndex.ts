@@ -376,6 +376,10 @@ function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment, normal
     visual && isObjectEvidenceReady(visual.objects.players.status) ? `players ${visual.objects.players.status} ${visual.objects.players.countEstimate}` : "",
     visual && isObjectEvidenceReady(visual.objects.ball.status) ? `ball ${visual.objects.ball.status} ${Math.round(visual.objects.ball.confidence * 100)}%` : "",
     visual && visual.fieldZone.zone !== "unknown" ? `visual zone ${visual.fieldZone.zone}` : "",
+    visual?.fieldCalibration ? `field calibration ${visual.fieldCalibration.status} ${visual.fieldCalibration.method} zone=${visual.fieldCalibration.zone} ${Math.round(visual.fieldCalibration.zoneConfidence * 100)}%` : "",
+    visual?.fieldCalibration && visual.fieldCalibration.attackingDirection !== "unknown"
+      ? `attacking direction ${visual.fieldCalibration.attackingDirection} ${Math.round(visual.fieldCalibration.attackingDirectionConfidence * 100)}%`
+      : "",
     visual?.tracking?.ballTrackId ? `ball track ${visual.tracking.ballTrackId}` : "",
     visual?.tracking?.nearestPlayerTrackId ? `nearest player track ${visual.tracking.nearestPlayerTrackId}` : "",
     classifier && classifier.label !== "unknown" ? `event classifier ${classifier.label} ${Math.round(classifier.confidence * 100)}%` : ""
@@ -387,7 +391,8 @@ function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment, normal
     classifier && classifier.label !== "unknown" ? `Event classifier v1 selected ${classifier.label} with rules: ${classifier.rules.join("; ")}` : "",
     playerIdentity ? `Player identity v0 inferred ${playerIdentity.name} from ${playerIdentity.source}` : "",
     !explicitZoneRule && textFieldZone !== "unknown" ? `Inferred field zone from attacking/pass context: ${fieldZone}` : "",
-    textFieldZone === "unknown" && visual?.fieldZone.zone !== "unknown" ? `Estimated field zone from vision evidence v0: ${visual?.fieldZone.zone}` : "",
+    textFieldZone === "unknown" && visual?.fieldZone.zone !== "unknown" ? `Estimated field zone from vision evidence: ${visual?.fieldZone.zone}` : "",
+    visual?.fieldCalibration ? `Field calibration v1: ${visual.fieldCalibration.status}/${visual.fieldCalibration.method}, zone confidence ${Math.round(visual.fieldCalibration.zoneConfidence * 100)}%` : "",
     visual?.pitch.present ? `Vision evidence v0 estimated pitch presence: ${Math.round(visual.pitch.confidence * 100)}%` : "",
     visual?.eventCandidates[0]?.reason ?? "",
     visual?.tracking?.status === "tracked" ? `Tracking v0 linked ${visual.tracking.ballTrackId ?? "ball"} to ${visual.tracking.nearestPlayerTrackId ?? "no player"} with continuity ${visual.tracking.continuity}` : "",
@@ -455,15 +460,23 @@ function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment, normal
         trackingStatus: ballState !== "unknown" && visual?.tracking?.ballTrackId ? "detected" : ballState !== "unknown" && visual?.objects.ball.status === "detected" ? "detected" : ballState !== "unknown" && visual?.objects.ball.status === "estimated" ? "estimated" : "not_configured"
       },
       field: {
-        calibrationStatus: visual?.fieldZone.method === "detector" ? "estimated" : visual?.fieldZone.method === "color_motion_heuristic" ? "estimated" : "not_configured",
-        attackingDirection: "unknown",
-        zoneConfidence: fieldZone === "unknown" ? 0 : confidenceFromSignals(confidence, explicitZoneRule ? 0.05 : visual?.fieldZone.confidence ? -0.02 : -0.18)
+        calibrationStatus: visual?.fieldCalibration?.status ?? (visual?.fieldZone.method === "detector_x_position" ? "estimated" : visual?.fieldZone.method === "color_motion_heuristic" ? "estimated" : "not_configured"),
+        attackingDirection: visual?.fieldCalibration?.attackingDirection ?? "unknown",
+        zoneConfidence:
+          fieldZone === "unknown"
+            ? 0
+            : confidenceFromSignals(
+                confidence,
+                explicitZoneRule ? 0.05 : typeof visual?.fieldCalibration?.zoneConfidence === "number" ? visual.fieldCalibration.zoneConfidence - 0.55 : visual?.fieldZone.confidence ? -0.02 : -0.18
+              )
       },
       limitations: [
         "Vision evidence v0 estimates pitch/player/ball cues from detector boxes and fallback heuristics.",
         "Tracking v0 links boxes by nearest centers; it is not stable player identity re-id.",
         "Player identity v0 is text-derived from title/ASR/OCR/metadata, not visual face or jersey recognition.",
-        "Field zone is ontology/ASR/vision-heuristic derived unless a future calibration stage writes homography."
+        visual?.fieldCalibration?.status === "calibrated"
+          ? "Field zone is calibrated by homography."
+          : "Field zone is estimated until a homography calibration stage is configured."
       ]
     }
   };

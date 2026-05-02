@@ -7,22 +7,26 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { analyzeAsset, analyzeAssetGroup, buildClipDetail, buildLocalIndex, listAssetClips, probeVideo, searchAssets, withSceneData } from "./intelligence";
 import { buildDomainSegmentIndex, expandDomainQuery } from "./domainIndex";
+import { groundQueryWithKnowledge } from "./knowledgeGrounding";
 import { buildOrchestrationPlan } from "./orchestrator";
-import { parseDomainFilters, planDomainQuery } from "./queryPlanner";
+import { isPlayerInventoryQuery, parseDomainFilters, planDomainQuery } from "./queryPlanner";
 import { enqueueLocalTask, getQueueDepth } from "./localQueue";
 import { embedQueryText, embedTimelineSegments, getEmbeddingModelName } from "./localEmbeddingRuntime";
 import { embedKeyframes, embedVisualQuery, getVisualEmbeddingModelName } from "./localVisualEmbeddingRuntime";
 import { generateKeyframes } from "./keyframes";
 import { applyDiarizationToAsrSegments, runLocalModelRuntime, runWhisperXDiarizationForAsset } from "./localModelRuntime";
 import { applyEventClassification } from "./eventClassifier";
+import { importFootballDataKnowledge } from "./footballDataClient";
 import { getObjectPath, getPublicMediaRoot, putUploadedObject } from "./localObjectStorage";
 import { rebuildVectorStore, searchVectors, upsertAssetVectors } from "./localVectorStore";
 import { rebuildVisualVectorStore, searchVisualVectors, upsertAssetVisualVectors } from "./localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, detectTimelineObjects } from "./visionDetectionRuntime";
 import { detectSceneBoundaries } from "./sceneDetection";
 import { getPostgresStatus, isPostgresEnabled } from "./postgresStore";
-import { getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "./sportsKnowledge";
+import { deleteSportsKnowledgePlayer, getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "./sportsKnowledge";
+import { importStatbunkerKnowledge } from "./statbunkerImport";
 import { getTrackingSummary, listTrackingRecords, rebuildTrackingStore, upsertAssetTracking } from "./trackingStore";
+import { checkVlmWorkerHealth, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "./vlmWorkerClient";
 import { getObservabilitySnapshot, logJson, observabilityMiddleware, traceAsync, traceJobAsync } from "./observability";
 import { normalizeUploadedText } from "./textEncoding";
 import {
@@ -137,8 +141,8 @@ app.post("/api/indexes", async (req, res) => {
     name: String(req.body.name || "Untitled index"),
     description: String(req.body.description || ""),
     models: {
-      search: String(req.body.models?.search || "local-marengo-simulator"),
-      analysis: String(req.body.models?.analysis || "local-pegasus-simulator"),
+      search: String(req.body.models?.search || "local-semantic-retrieval"),
+      analysis: String(req.body.models?.analysis || "local-pattern-analysis"),
       embedding: String(req.body.models?.embedding || getEmbeddingModelName())
     },
     modalities: Array.isArray(req.body.modalities) && req.body.modalities.length > 0 ? req.body.modalities : ["visual", "audio", "transcription", "metadata"],
@@ -296,6 +300,69 @@ app.post("/api/assets/:id/reindex", async (req, res) => {
   res.status(202).json(queuedJob);
 });
 
+app.post("/api/assets/:id/domain-vlm/refine", async (req, res) => {
+  const asset = await getAsset(String(req.params.id));
+  if (!asset) return sendNotFound(res, "Asset not found");
+  const index = await getIndex(asset.indexId);
+  if (!index) return sendNotFound(res, "Index not found");
+  if (!index.domainIndexing?.enabled || !index.domainIndexing.groups.includes("sports.football")) {
+    res.status(409).json({ error: "Sports domain indexing is not enabled for this asset group." });
+    return;
+  }
+  if (!isVlmWorkerEnabled()) {
+    res.status(409).json({ error: "VLM_WORKER_URL is not configured." });
+    return;
+  }
+  const activeJob = await getActiveAssetJob(asset.id);
+  if (activeJob) {
+    logJson("info", "job.domain_vlm.duplicate", "Domain VLM refinement ignored because an active asset job already exists", {
+      assetId: asset.id,
+      activeJobId: activeJob.id,
+      activeStage: activeJob.stage,
+      activeStatus: activeJob.status
+    });
+    res.setHeader("x-existing-job", "true");
+    res.status(202).json(activeJob);
+    return;
+  }
+  const job = await createJob("asset.domain-vlm.refine", asset.indexId, asset.id);
+  enqueueDomainVlmRefinement(job, asset.id);
+  res.status(202).json(job);
+});
+
+app.post("/api/indexes/:id/domain-vlm/refine", async (req, res) => {
+  const index = await getIndex(String(req.params.id));
+  if (!index) return sendNotFound(res, "Index not found");
+  if (!index.domainIndexing?.enabled || !index.domainIndexing.groups.includes("sports.football")) {
+    res.status(409).json({ error: "Sports domain indexing is not enabled for this asset group." });
+    return;
+  }
+  if (!isVlmWorkerEnabled()) {
+    res.status(409).json({ error: "VLM_WORKER_URL is not configured." });
+    return;
+  }
+  const assets = (await listAssets(index.id)).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
+  const jobs: JobRecord[] = [];
+  const skipped: Array<{ assetId: string; reason: string }> = [];
+  for (const asset of assets) {
+    const activeJob = await getActiveAssetJob(asset.id);
+    if (activeJob) {
+      skipped.push({ assetId: asset.id, reason: `active job ${activeJob.id}` });
+      continue;
+    }
+    const job = await createJob("asset.domain-vlm.refine", asset.indexId, asset.id);
+    jobs.push(job);
+    enqueueDomainVlmRefinement(job, asset.id);
+  }
+  res.status(202).json({
+    indexId: index.id,
+    queued: jobs.length,
+    skipped: skipped.length,
+    jobs,
+    skippedAssets: skipped
+  });
+});
+
 app.get("/api/jobs", async (_req, res) => {
   res.json(await listJobs());
 });
@@ -325,16 +392,20 @@ app.post("/api/jobs/:id/retry", async (req, res) => {
     return;
   }
   const retry = await createJob(job.type === "asset.index" ? "asset.reindex" : job.type, asset.indexId, asset.id);
-  await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
-  enqueueLocalTask(retry.id, () =>
-    traceJobAsync("job.indexing", { jobId: retry.id, assetId: asset.id }, { type: retry.type }, () =>
-      runIndexingJob(
-        retry.id,
-        asset.id,
-        getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey)
+  if (retry.type === "asset.domain-vlm.refine") {
+    enqueueDomainVlmRefinement(retry, asset.id);
+  } else {
+    await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
+    enqueueLocalTask(retry.id, () =>
+      traceJobAsync("job.indexing", { jobId: retry.id, assetId: asset.id }, { type: retry.type }, () =>
+        runIndexingJob(
+          retry.id,
+          asset.id,
+          getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey)
+        )
       )
-    )
-  );
+    );
+  }
   res.status(202).json(retry);
 });
 
@@ -342,16 +413,23 @@ app.get("/api/search", async (req, res) => {
   const query = String(req.query.q ?? "");
   const explicitFilters = parseDomainFilters(req.query);
   const queryPlan = planDomainQuery(query, explicitFilters);
-  const expandedQuery = expandDomainQuery(queryPlan.semanticQuery).expandedText;
   const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
+  const groundedQuery = groundQueryWithKnowledge(queryPlan, assets);
+  const expandedQuery = expandDomainQuery(groundedQuery.semanticQuery).expandedText;
   const options = {
     indexId: req.query.indexId ? String(req.query.indexId) : undefined,
     tag: req.query.tag ? String(req.query.tag) : undefined,
     modality: req.query.modality ? String(req.query.modality) : undefined,
     limit: req.query.limit ? Number(req.query.limit) : undefined,
-    domainFilters: queryPlan.domainFilters,
-    queryPlan
+    domainFilters: groundedQuery.filters,
+    queryPlan,
+    knowledgeEvidence: groundedQuery.evidence
   };
+  if (isPlayerInventoryQuery(query)) {
+    const results = searchAssets(assets, indexes, query, options);
+    res.json(results.map((result) => ({ ...result, explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`] })));
+    return;
+  }
   const queryVector = await traceAsync("search.embed_text_query", { indexId: options.indexId ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query");
   const visualQueryVector = await traceAsync(
     "search.embed_visual_query",
@@ -383,9 +461,13 @@ app.get("/api/search", async (req, res) => {
   }
   const results = searchAssets(assets, indexes, query, { ...options, queryVector, vectorHitsBySegment, visualHitsBySegment }).map((result) => ({
     ...result,
-    explain: [...result.explain, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
+    explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
   }));
   res.json(results);
+});
+
+app.get("/api/models/vlm/health", async (_req, res) => {
+  res.json(await checkVlmWorkerHealth());
 });
 
 app.get("/api/search/plan", async (req, res) => {
@@ -394,6 +476,27 @@ app.get("/api/search/plan", async (req, res) => {
 
 app.get("/api/knowledge/sports", async (_req, res) => {
   res.json(getSportsKnowledgeSnapshot());
+});
+
+app.post("/api/knowledge/sports/import/football-data", async (req, res) => {
+  const competitionCode = String(req.body.competitionCode ?? "PL");
+  const season = req.body.season ? Number(req.body.season) : undefined;
+  const includeMatches = Boolean(req.body.includeMatches);
+  const matchLimit = req.body.matchLimit ? Number(req.body.matchLimit) : undefined;
+  const result = await importFootballDataKnowledge({ competitionCode, season, includeMatches, matchLimit });
+  res.json(result);
+});
+
+app.post("/api/knowledge/sports/import/statbunker", async (req, res) => {
+  const result = await importStatbunkerKnowledge({
+    source: req.body.source === "statbunker" ? "statbunker" : "kaggle",
+    dataset: String(req.body.dataset ?? ""),
+    localPath: String(req.body.localPath ?? ""),
+    competition: String(req.body.competition ?? ""),
+    season: String(req.body.season ?? ""),
+    download: Boolean(req.body.download)
+  });
+  res.json(result);
 });
 
 app.post("/api/knowledge/sports/players", async (req, res) => {
@@ -415,14 +518,65 @@ app.post("/api/knowledge/sports/players", async (req, res) => {
   const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
   res.status(201).json(
     upsertSportsKnowledgePlayer({
+      id: String(req.body.id ?? "").trim() || undefined,
       canonical,
       aliases,
       activeSeasons,
       teamsBySeason,
       sport: req.body.sport === "american_football" ? "american_football" : "football",
-      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined
+      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
+      position: String(req.body.position ?? "").trim() || null,
+      shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
+      provider: "local"
     })
   );
+});
+
+app.put("/api/knowledge/sports/players/:id", async (req, res) => {
+  const id = String(req.params.id).trim();
+  const canonical = String(req.body.canonical ?? "").trim();
+  if (!id) {
+    res.status(400).json({ error: "Player id is required" });
+    return;
+  }
+  if (!canonical) {
+    res.status(400).json({ error: "Player canonical name is required" });
+    return;
+  }
+  const aliases = String(req.body.aliases ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const activeSeasons = String(req.body.activeSeasons ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const team = String(req.body.team ?? "").trim();
+  const league = String(req.body.league ?? "");
+  const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
+  res.json(
+    upsertSportsKnowledgePlayer({
+      id,
+      canonical,
+      aliases,
+      activeSeasons,
+      teamsBySeason,
+      sport: req.body.sport === "american_football" ? "american_football" : "football",
+      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
+      position: String(req.body.position ?? "").trim() || null,
+      shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
+      provider: "local"
+    })
+  );
+});
+
+app.delete("/api/knowledge/sports/players/:id", async (req, res) => {
+  const id = String(req.params.id).trim();
+  if (!id) {
+    res.status(400).json({ error: "Player id is required" });
+    return;
+  }
+  res.json(deleteSportsKnowledgePlayer(id));
 });
 
 app.get("/api/orchestrate/plan", async (req, res) => {
@@ -849,12 +1003,43 @@ async function runIndexingJob(jobId: string, assetId: string, filePath: string) 
       "stage.vision_detection"
     );
     const detectedTimeline = applyEventClassification(applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections)));
-    const timelineForDomain = embeddingIndex.domainIndexing?.enabled
+    let timelineForDomain = embeddingIndex.domainIndexing?.enabled
       ? enrichDomainTimeline({ ...refreshed, timeline: detectedTimeline }, embeddingIndex, detectedTimeline)
       : detectedTimeline;
     if (embeddingIndex.domainIndexing?.enabled) {
       const domainEvents = timelineForDomain.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
       await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Sports domain event layer ready with ${domainEvents} event candidates`);
+      if (isVlmWorkerEnabled()) {
+        await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports domain events with ${getVlmWorkerModelName()}`);
+        const vlmRefinement = await traceAsync(
+          "model.vlm.sports_domain",
+          { jobId, assetId, segments: timelineForDomain.length, model: getVlmWorkerModelName() },
+          () =>
+            refineSportsDomainTimelineWithVlm({ ...refreshed, timeline: timelineForDomain }, embeddingIndex, timelineForDomain, {
+              onProgress: async (event) => {
+                await updateJob(
+                  jobId,
+                  { stage: "domain-vlm", progress: 82 + Math.round(event.progress * 0.01) },
+                  `[domain-vlm:${event.status}] ${event.message}`
+                );
+              }
+            }),
+          "model.vlm.sports_domain"
+        );
+        timelineForDomain = vlmRefinement.timeline;
+        await updateJob(
+          jobId,
+          { stage: "domain-vlm", progress: 83 },
+          `VLM sports domain refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
+        );
+        if (vlmRefinement.errors.length > 0) {
+          logJson("warn", "model.vlm.sports_domain.partial", "VLM sports domain refinement had partial failures", {
+            jobId,
+            assetId,
+            errors: vlmRefinement.errors
+          });
+        }
+      }
     }
     await updateJob(jobId, { stage: "embed", progress: 84 }, `Computing semantic text embeddings with ${getEmbeddingModelName()}`);
     await emitForAsset("asset.indexing.progress", "Embedding started", assetId, jobId, { progress: 84, model: getEmbeddingModelName() });
@@ -895,9 +1080,10 @@ async function runIndexingJob(jobId: string, assetId: string, filePath: string) 
         ...refreshed.intelligence,
         modelTrace: [
           ...refreshed.intelligence.modelTrace,
+          isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
           `embedding:${getEmbeddingModelName()}`,
           `visual-embedding:${getVisualEmbeddingModelName()}`
-        ]
+        ].filter(Boolean)
       },
       ...output,
       timeline,
@@ -930,6 +1116,103 @@ async function runIndexingJob(jobId: string, assetId: string, filePath: string) 
     );
     await emitForAsset("asset.indexing.failed", "Indexing failed", assetId, jobId, { error: message });
   }
+}
+
+async function runDomainVlmRefineJob(jobId: string, assetId: string) {
+  try {
+    await updateJob(jobId, { status: "running", stage: "domain-vlm", progress: 5 }, `Starting sports domain VLM refinement with ${getVlmWorkerModelName()}`);
+    const asset = await getAsset(assetId);
+    if (!asset) throw new Error("Asset not found");
+    const index = await getIndex(asset.indexId);
+    if (!index) throw new Error("Index not found");
+    if (!index.domainIndexing?.enabled || !index.domainIndexing.groups.includes("sports.football")) {
+      throw new Error("Sports domain indexing is not enabled for this asset group.");
+    }
+    if (!isVlmWorkerEnabled()) {
+      throw new Error("VLM_WORKER_URL is not configured.");
+    }
+    if (asset.timeline.length === 0) {
+      throw new Error("Asset has no timeline segments. Run indexing first.");
+    }
+
+    const timelineWithDomain = ensureDomainTimeline(asset, index, asset.timeline);
+    await updateJob(jobId, { stage: "domain-vlm", progress: 10 }, `Prepared ${timelineWithDomain.length} timeline segments for VLM refinement`);
+    const result = await traceAsync(
+      "model.vlm.sports_domain.retry",
+      { jobId, assetId, segments: timelineWithDomain.length, model: getVlmWorkerModelName() },
+      () =>
+        refineSportsDomainTimelineWithVlm({ ...asset, timeline: timelineWithDomain }, index, timelineWithDomain, {
+          onProgress: async (event) => {
+            await updateJob(
+              jobId,
+              { stage: "domain-vlm", progress: 10 + Math.round(event.progress * 0.7) },
+              `[domain-vlm:${event.status}] ${event.message}`,
+              event.status === "failed" || event.status === "invalid" ? "warn" : "info"
+            );
+          }
+        }),
+      "model.vlm.sports_domain.retry"
+    );
+
+    await updateJob(jobId, { stage: "embed", progress: 84 }, "Rebuilding text embeddings after VLM domain refinement");
+    const timeline = await traceAsync(
+      "model.embedding.text.domain_vlm",
+      { jobId, assetId, segments: result.timeline.length },
+      () => embedTimelineSegments(result.timeline),
+      "model.embedding.text.domain_vlm"
+    );
+    await updateJob(jobId, { stage: "vector-upsert-text", progress: 92 }, "Writing refined domain timeline vectors");
+    await traceAsync(
+      "stage.vector_upsert.text.domain_vlm",
+      { jobId, assetId, segments: timeline.length },
+      () => upsertAssetVectors(index.id, asset.id, timeline),
+      "stage.vector_upsert.text.domain_vlm"
+    );
+
+    const modelTrace = [
+      ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:")),
+      `domain-vlm-refine:${result.model}:${result.refinedSegments}/${result.attemptedSegments}:invalid=${result.invalidSegments}:failed=${result.failedSegments}`
+    ];
+    const refinedAsset: AssetRecord = {
+      ...asset,
+      timeline,
+      intelligence: {
+        ...asset.intelligence,
+        modelTrace
+      },
+      status: "indexed",
+      progress: 100,
+      error: null,
+      updatedAt: new Date().toISOString()
+    };
+    await saveAsset(refinedAsset);
+    await traceAsync("stage.tracking_upsert.domain_vlm", { jobId, assetId, segments: timeline.length }, () => upsertAssetTracking(refinedAsset), "stage.tracking_upsert.domain_vlm");
+    await updateJob(
+      jobId,
+      { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
+      `VLM refinement complete: ${result.refinedSegments}/${result.attemptedSegments} refined, ${result.invalidSegments} invalid, ${result.failedSegments} failed`
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Domain VLM refinement failed";
+    logJson("error", "job.domain_vlm.failed", message, { jobId, assetId });
+    await updateJob(
+      jobId,
+      { status: "failed", stage: "failed", progress: 100, error: message, completedAt: new Date().toISOString() },
+      message,
+      "error"
+    );
+  }
+}
+
+function enqueueDomainVlmRefinement(job: JobRecord, assetId: string) {
+  enqueueLocalTask(job.id, () =>
+    traceJobAsync("job.domain_vlm.refine", { jobId: job.id, assetId }, { type: job.type }, () => runDomainVlmRefineJob(job.id, assetId))
+  );
+}
+
+function ensureDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
+  const generated = enrichDomainTimeline(asset, index, timeline);
+  return timeline.map((segment, index) => (segment.domain ? segment : generated[index] ?? segment));
 }
 
 async function runSpeakerDiarizationJob(jobId: string, assetId: string) {

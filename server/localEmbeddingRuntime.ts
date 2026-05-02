@@ -57,6 +57,8 @@ export function segmentToEmbeddingText(segment: TimelineSegment) {
           : "",
         segment.sceneData.vision.objects.ball.status === "estimated" || segment.sceneData.vision.objects.ball.status === "detected" ? `ball ${segment.sceneData.vision.objects.ball.status}` : "",
         segment.sceneData.vision.fieldZone.zone !== "unknown" ? `zone ${segment.sceneData.vision.fieldZone.zone}` : "",
+        segment.sceneData.vision.fieldCalibration ? `field calibration ${segment.sceneData.vision.fieldCalibration.status} ${segment.sceneData.vision.fieldCalibration.method}` : "",
+        segment.sceneData.vision.fieldCalibration?.attackingDirection !== "unknown" ? `attacking direction ${segment.sceneData.vision.fieldCalibration?.attackingDirection}` : "",
         segment.sceneData.vision.tracking?.ballTrackId ? `ball track ${segment.sceneData.vision.tracking.ballTrackId}` : "",
         segment.sceneData.vision.tracking?.nearestPlayerTrackId ? `nearest player ${segment.sceneData.vision.tracking.nearestPlayerTrackId}` : "",
         segment.sceneData.vision.eventClassification && segment.sceneData.vision.eventClassification.label !== "unknown" ? `event classifier ${segment.sceneData.vision.eventClassification.label}` : ""

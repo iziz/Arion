@@ -11,7 +11,7 @@ export type AssetStatus =
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
-export type JobType = "asset.index" | "asset.reindex" | "webhook.test";
+export type JobType = "asset.index" | "asset.reindex" | "asset.domain-vlm.refine" | "webhook.test";
 
 export type StorageProvider = "local" | "local-s3" | "local-r2";
 
@@ -73,14 +73,14 @@ export type DomainEvent = {
 export type PlayerIdentity = {
   name: string;
   confidence: number;
-  source: "query" | "title" | "asr" | "ocr" | "metadata" | "knowledge";
+  source: "query" | "title" | "asr" | "ocr" | "metadata" | "knowledge" | "vlm";
   evidence: string[];
 };
 
 export type DomainScopeValue = {
   value: string;
   confidence: number;
-  source: "title" | "asr" | "ocr" | "metadata" | "knowledge";
+  source: "title" | "asr" | "ocr" | "metadata" | "knowledge" | "vlm";
   evidence: string[];
 };
 
@@ -89,6 +89,17 @@ export type DomainScope = {
   season: DomainScopeValue | null;
   teams: DomainScopeValue[];
   players: DomainScopeValue[];
+};
+
+export type DomainVlmQuality = {
+  provider: string;
+  model: string;
+  status: "refined" | "invalid" | "failed" | "skipped";
+  attemptedAt: string;
+  confidence: number;
+  message: string;
+  rawResponse: string | null;
+  error: string | null;
 };
 
 export type VisionEvidence = {
@@ -159,7 +170,17 @@ export type VisionEvidence = {
   fieldZone: {
     zone: "defensive_third" | "middle_third" | "final_third" | "penalty_area" | "unknown";
     confidence: number;
-    method: "color_motion_heuristic" | "detector" | "homography" | "none";
+    method: "color_motion_heuristic" | "detector" | "detector_x_position" | "homography" | "text_context" | "none";
+  };
+  fieldCalibration?: {
+    status: "not_configured" | "estimated" | "calibrated";
+    method: "color_motion_heuristic" | "detector_x_position" | "homography" | "text_context" | "none";
+    zone: VisionEvidence["fieldZone"]["zone"];
+    zoneConfidence: number;
+    attackingDirection: "left_to_right" | "right_to_left" | "unknown";
+    attackingDirectionConfidence: number;
+    evidence: string[];
+    limitations: string[];
   };
   eventCandidates: Array<{
     type: "pass_receive" | "shot" | "carry" | "unknown";
@@ -221,6 +242,7 @@ export type TimelineSegment = {
     searchText: string;
     confidence: number;
     generatedBy: string;
+    vlm?: DomainVlmQuality;
   };
   tags: string[];
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
@@ -384,8 +406,25 @@ export type SearchResult = {
   };
   explain: string[];
   queryPlan: DomainQueryPlan | null;
+  knowledgeEvidence: KnowledgeEvidence[];
   matchReasons: SearchMatchReason[];
   verification: VerificationCheck[];
+};
+
+export type KnowledgeEvidence = {
+  id: string;
+  kind: "roster" | "player_profile" | "match_activity" | "competition_scope" | "video_scope" | "team_stat" | "attendance";
+  entityType: "player" | "team" | "competition" | "season" | "event";
+  entityName: string;
+  source: "sports_knowledge" | "football-data" | "kaggle" | "statbunker" | "video_index" | "query";
+  confidence: number;
+  evidenceText: string;
+  competition?: string;
+  season?: string;
+  team?: string;
+  matchTime?: string;
+  assetId?: string;
+  segmentId?: string;
 };
 
 export type DomainSearchFilters = {
@@ -430,7 +469,7 @@ export type OrchestrationPlan = {
   steps: Array<{
     id: string;
     label: string;
-    owner: "router" | "knowledge" | "marengo" | "pegasus" | "platform";
+    owner: "router" | "knowledge" | "retrieval" | "analysis" | "platform";
     action: string;
     input: string;
     output: string;
@@ -438,13 +477,13 @@ export type OrchestrationPlan = {
     trigger: string;
   }>;
   retrieval: {
-    engine: "marengo_semantic" | "structured_domain" | "hybrid";
+    engine: "semantic_retrieval" | "structured_domain" | "hybrid";
     filters: DomainSearchFilters;
     fallback: string[];
   };
   analysis: {
     required: boolean;
-    model: "pegasus_generate" | "none";
+    model: "pattern_analysis_generate" | "none";
     prompt: string;
     inputs: string[];
   };
@@ -544,6 +583,42 @@ export type SportsKnowledgeSnapshot = {
     league: string;
     activeSeasons: string[];
     teamsBySeason: Record<string, string>;
+    provider?: "local" | "football-data" | "kaggle" | "statbunker";
+    externalIds?: Record<string, string | number>;
+    position?: string | null;
+    shirtNumber?: number | null;
+  }>;
+  matchActivities?: Array<{
+    id: string;
+    provider: "football-data" | "kaggle" | "statbunker";
+    competition: string;
+    season: string;
+    matchId: number;
+    utcDate: string | null;
+    matchday: number | null;
+    homeTeam: string;
+    awayTeam: string;
+    team: string;
+    player: string;
+    playerId: number | null;
+    role: "STARTING" | "BENCH" | "GOAL" | "ASSIST" | "SUB_IN" | "SUB_OUT" | "CARD" | "STAT";
+    minute: number | null;
+    event: string;
+    sourceText: string;
+  }>;
+  facts?: Array<{
+    id: string;
+    provider: "football-data" | "kaggle" | "statbunker";
+    kind: "league_table" | "team_offense" | "team_defense" | "attendance" | "nationality_distribution" | "team_stat";
+    competition: string;
+    season: string;
+    entityType: "team" | "competition" | "country";
+    entityName: string;
+    team?: string;
+    metric: string;
+    value: string | number;
+    rank?: number | null;
+    sourceText: string;
   }>;
 };
 

@@ -4,9 +4,10 @@ import { matchCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./
 export function planDomainQuery(query: string, explicitFilters: DomainSearchFilters = {}): DomainQueryPlan {
   const originalQuery = query.trim();
   const normalized = normalize(originalQuery);
+  const playerInventory = isPlayerInventoryQuery(originalQuery);
   const inferred: DomainSearchFilters = {};
   const warnings: string[] = [];
-  let confidence = originalQuery ? 0.35 : 0.15;
+  let confidence = playerInventory ? 0.72 : originalQuery ? 0.35 : 0.15;
 
   const playerMatch = matchKnowledgePlayer(originalQuery);
   let competition = inferCompetition(originalQuery);
@@ -90,8 +91,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   }
 
   const domainFilters = compactFilters({ ...inferred, ...compactFilters(explicitFilters) });
-  const semanticQuery = buildSemanticQuery(originalQuery, domainFilters);
-  const rewrittenQuery = buildRewrittenQuery(domainFilters, semanticQuery);
+  const semanticQuery = playerInventory ? "mentioned player names" : buildSemanticQuery(originalQuery, domainFilters);
+  const rewrittenQuery = playerInventory ? "Extract mentioned player names from indexed timeline text and domain scopes." : buildRewrittenQuery(domainFilters, semanticQuery);
 
   return {
     originalQuery,
@@ -109,6 +110,13 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence: Number(Math.min(0.92, confidence).toFixed(2)),
     warnings
   };
+}
+
+export function isPlayerInventoryQuery(query: string) {
+  const normalized = query.toLowerCase();
+  const asksKoreanPlayerNames = /선수/.test(normalized) && /(이름|목록|리스트|언급|추출|전체|모든)/.test(normalized);
+  const asksEnglishPlayerNames = /\bplayers?\b/.test(normalized) && /\b(name|names|list|mentioned|extract|all|every)\b/.test(normalized);
+  return asksKoreanPlayerNames || asksEnglishPlayerNames;
 }
 
 export function parseDomainFilters(value: Record<string, unknown>): DomainSearchFilters {

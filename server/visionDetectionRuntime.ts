@@ -101,6 +101,7 @@ export function applyVisionDetections(timeline: TimelineSegment[], result: Detec
     const detectedZone = estimateZoneFromDetections(playerBoxes, ballBoxes, sceneData.vision.fieldZone.zone);
     const playerConfidence = maxConfidence(playerBoxes);
     const ballConfidence = maxConfidence(ballBoxes);
+    const fieldCalibration = buildDetectedFieldCalibration(detectedZone, frame, sceneData.vision);
     const nextVision: VisionEvidence = {
       ...sceneData.vision,
       generatedBy: `${sceneData.vision.generatedBy}+${frame.provider}`,
@@ -127,6 +128,7 @@ export function applyVisionDetections(timeline: TimelineSegment[], result: Detec
         confidence: detectedZone.confidence,
         method: detectedZone.method
       },
+      fieldCalibration,
       eventCandidates: mergeEventCandidates(sceneData.vision.eventCandidates, frame, detectedZone.zone),
       limitations: [
         frame.provider.startsWith("ultralytics") ? "Object boxes come from YOLO detector output." : "Object boxes come from OpenCV fallback and may miss broadcast-scale players or balls.",
@@ -194,9 +196,11 @@ export function applyVisionTracking(timeline: TimelineSegment[]): TimelineSegmen
         }
       : vision.proximity;
     const trackingStatus = ballTrackId || nearestPlayer ? "tracked" : vision.objects.ball.status === "detected" || vision.objects.players.status === "detected" ? "estimated" : "not_configured";
+    const fieldCalibration = inferTrackingFieldCalibration(vision, ballMovement);
     const trackedVision: VisionEvidence = {
       ...vision,
       proximity,
+      fieldCalibration,
       tracking: {
         status: trackingStatus,
         ballTrackId,
@@ -221,6 +225,29 @@ export function applyVisionTracking(timeline: TimelineSegment[]): TimelineSegmen
   });
 }
 
+function inferTrackingFieldCalibration(
+  vision: VisionEvidence,
+  movement: NonNullable<VisionEvidence["tracking"]>["ballMovement"]
+): NonNullable<VisionEvidence["fieldCalibration"]> | undefined {
+  const base = vision.fieldCalibration;
+  if (!base) return undefined;
+  const direction = movement.direction === "right" ? "left_to_right" : movement.direction === "left" ? "right_to_left" : base.attackingDirection;
+  const directionConfidence =
+    movement.direction === "right" || movement.direction === "left"
+      ? Number(Math.min(0.56, 0.26 + Math.min(0.3, (movement.speedPerSecond ?? 0) * 1.8)).toFixed(2))
+      : base.attackingDirectionConfidence;
+  return {
+    ...base,
+    attackingDirection: direction,
+    attackingDirectionConfidence: direction === "unknown" ? 0 : directionConfidence,
+    evidence: [
+      ...base.evidence,
+      direction !== "unknown" ? `Attacking direction estimated from ball movement: ${direction}.` : "Attacking direction unavailable from ball movement."
+    ].slice(0, 6),
+    limitations: Array.from(new Set([...base.limitations, "Direction v1 uses short-window ball movement, not team possession."]))
+  };
+}
+
 function estimateZoneFromDetections(
   players: VisionBoundingBox[],
   balls: VisionBoundingBox[],
@@ -235,7 +262,35 @@ function estimateZoneFromDetections(
   return {
     zone,
     confidence: Number(Math.min(0.68, 0.42 + target.confidence * 0.32).toFixed(2)),
-    method: "detector"
+    method: "detector_x_position"
+  };
+}
+
+function buildDetectedFieldCalibration(
+  detectedZone: Pick<VisionEvidence["fieldZone"], "zone" | "confidence" | "method">,
+  frame: DetectorFrame,
+  previous: VisionEvidence
+): NonNullable<VisionEvidence["fieldCalibration"]> {
+  const hasDetection = detectedZone.method === "detector_x_position";
+  const ball = frame.boxes.find((box) => box.label === "sports_ball");
+  const playerCount = frame.boxes.filter((box) => box.label === "person").length;
+  const status = hasDetection ? "estimated" : detectedZone.zone === "unknown" ? "not_configured" : "estimated";
+  return {
+    status,
+    method: hasDetection ? "detector_x_position" : detectedZone.method === "color_motion_heuristic" ? "color_motion_heuristic" : "none",
+    zone: detectedZone.zone,
+    zoneConfidence: detectedZone.confidence,
+    attackingDirection: previous.fieldCalibration?.attackingDirection ?? "unknown",
+    attackingDirectionConfidence: previous.fieldCalibration?.attackingDirectionConfidence ?? 0,
+    evidence: [
+      hasDetection ? `Zone estimated from normalized detector x-position using ${ball ? "ball" : "top player"} candidate.` : "No detector candidate was available for zone estimation.",
+      `${playerCount} player boxes detected.`,
+      ball ? `Ball box confidence ${Math.round(ball.confidence * 100)}%.` : "No ball box detected."
+    ],
+    limitations: [
+      "Detector x-position is not pitch homography.",
+      "Broadcast camera direction and attacking direction are not calibrated."
+    ]
   };
 }
 

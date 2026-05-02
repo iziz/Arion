@@ -55,9 +55,19 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
         trigger: "Competition or season is present in the query."
       },
       {
+        id: "ground",
+        label: "Knowledge grounding",
+        owner: "knowledge",
+        action: "Fetch structured roster, player profile, competition, and video-scope evidence before moment retrieval.",
+        input: queryPlan.rewrittenQuery,
+        output: "Grounded entity evidence for retrieval expansion and result attribution",
+        status: "ready",
+        trigger: "Queries that need information beyond the video pixels, ASR, or OCR."
+      },
+      {
         id: "retrieve",
         label: "Moment retrieval",
-        owner: "marengo",
+        owner: "retrieval",
         action: "Run semantic retrieval and merge it with structured event filters.",
         input: queryPlan.semanticQuery,
         output: "Ranked timeline segments with match reasons",
@@ -67,7 +77,7 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       {
         id: "generate",
         label: "Pattern analysis",
-        owner: "pegasus",
+        owner: "analysis",
         action: mode === "search" ? "Skip generation unless the user asks for summary, comparison, or decision patterns." : "Generate a grounded pattern summary from retrieved segments only.",
         input: mode === "search" ? "Not required" : "Retrieved moments + domain evidence + scope metadata",
         output: mode === "search" ? "Search results only" : "Evidence-backed tactical or player pattern report",
@@ -76,15 +86,15 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       }
     ],
     retrieval: {
-      engine: queryPlan.intent.domain ? "hybrid" : "marengo_semantic",
+      engine: queryPlan.intent.domain ? "hybrid" : "semantic_retrieval",
       filters: queryPlan.domainFilters,
       fallback: retrievalFallback
     },
     analysis: {
       required: mode !== "search",
-      model: mode === "search" ? "none" : "pegasus_generate",
+      model: mode === "search" ? "none" : "pattern_analysis_generate",
       prompt: buildAnalysisPrompt(queryPlan),
-      inputs: ["retrieved_segments", "domain_events", "identity_resolution", "scope_metadata"]
+      inputs: ["retrieved_segments", "domain_events", "knowledge_evidence", "identity_resolution", "scope_metadata"]
     },
     warnings
   };
@@ -213,7 +223,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
   return {
     id: "route",
     label: "Route",
-    value: mode === "search" ? "Marengo retrieval" : "Marengo retrieval + Pegasus analysis",
+    value: mode === "search" ? "Moment retrieval" : "Moment retrieval + Pattern analysis",
     confidence: domainIndexes.length > 0 ? 0.82 : 0.58,
     status: domainIndexes.length > 0 ? "ready" : "fallback",
     reason: domainIndexes.length > 0 ? "At least one asset group has sports domain indexing enabled." : "No domain-indexed asset group is available."

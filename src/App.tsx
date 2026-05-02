@@ -20,6 +20,7 @@ import { Fragment, type Dispatch, FormEvent, type SetStateAction, useEffect, use
 import type {
   AnalysisResult,
   AssetRecord,
+  ClipDetailResult,
   DomainQueryPlan,
   DomainSearchFilters,
   EventRecord,
@@ -68,7 +69,7 @@ type ObservabilitySnapshot = {
   recentLogs: Array<{ timestamp: string; level: string; event: string; message: string; requestId: string | null; traceId: string | null }>;
 };
 
-type ConsoleTab = "dashboard" | "data" | "search" | "system";
+type ConsoleTab = "dashboard" | "data" | "knowledge" | "search" | "system";
 type AssetDetailTab = "overview" | "workflow" | "evidence" | "timeline";
 type DialogMode = "index" | "edit-index" | "asset" | null;
 type FlowStepState = "done" | "active" | "waiting" | "skipped" | "error";
@@ -86,6 +87,36 @@ type FlowStep = {
     progress: number;
   };
   helpText?: string;
+};
+
+type FootballDataImportResult = {
+  competitionCode: string;
+  season: number;
+  teams: number;
+  players: number;
+  matchActivities: number;
+  facts: number;
+  warnings: string[];
+  snapshot: SportsKnowledgeSnapshot;
+};
+
+type StatbunkerImportResult = {
+  source: "kaggle" | "statbunker";
+  path: string;
+  files: number;
+  players: number;
+  matchActivities: number;
+  facts: number;
+  warnings: string[];
+  snapshot: SportsKnowledgeSnapshot;
+};
+
+type DomainVlmBulkRefineResult = {
+  indexId: string;
+  queued: number;
+  skipped: number;
+  jobs: JobRecord[];
+  skippedAssets: Array<{ assetId: string; reason: string }>;
 };
 
 const emptyMetrics: MetricsSummary = {
@@ -119,6 +150,18 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
+    return readJson<T>(response);
+  },
+  async put<T>(url: string, body: unknown) {
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    return readJson<T>(response);
+  },
+  async delete<T>(url: string) {
+    const response = await fetch(url, { method: "DELETE" });
     return readJson<T>(response);
   }
 };
@@ -254,6 +297,8 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [clipDetail, setClipDetail] = useState<ClipDetailResult | null>(null);
+  const [clipDetailLoading, setClipDetailLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeek] = useState<{ assetId: string; at: number } | null>(null);
   const [activeTab, setActiveTab] = useState<ConsoleTab>("dashboard");
@@ -452,6 +497,22 @@ export default function App() {
     seekTo(assetId, at);
   }
 
+  async function openClipDetail(clip: SearchResult["clips"][number]) {
+    selectSegment(clip.assetId, clip.segmentId, clip.start);
+    setClipDetailLoading(true);
+    const params = new URLSearchParams({ q: query || question });
+    for (const [key, value] of Object.entries(domainFilters)) {
+      if (value) params.set(key, value);
+    }
+    try {
+      setClipDetail(await api.get<ClipDetailResult>(`/api/assets/${clip.assetId}/clips/${clip.segmentId}?${params.toString()}`));
+    } catch (error) {
+      setMessage(`Clip detail warning: ${getFailureMessage(error)}`);
+    } finally {
+      setClipDetailLoading(false);
+    }
+  }
+
   async function runAnalysis(event: FormEvent) {
     event.preventDefault();
     if (!selectedAsset) return;
@@ -482,17 +543,82 @@ export default function App() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const snapshot = await api.post<SportsKnowledgeSnapshot>("/api/knowledge/sports/players", {
+    const id = String(data.get("id") ?? "").trim();
+    const payload = {
+      id,
       canonical: data.get("canonical"),
       aliases: data.get("aliases"),
       sport: data.get("sport"),
       league: data.get("league"),
       activeSeasons: data.get("activeSeasons"),
-      team: data.get("team")
-    });
+      team: data.get("team"),
+      position: data.get("position"),
+      shirtNumber: data.get("shirtNumber")
+    };
+    const snapshot = id
+      ? await api.put<SportsKnowledgeSnapshot>(`/api/knowledge/sports/players/${id}`, payload)
+      : await api.post<SportsKnowledgeSnapshot>("/api/knowledge/sports/players", payload);
     setSportsKnowledge(snapshot);
     form.reset();
-    setMessage("Knowledge registry updated.");
+    setMessage(id ? "Knowledge player updated." : "Knowledge registry updated.");
+  }
+
+  async function deleteKnowledgePlayer(id: string) {
+    const snapshot = await api.delete<SportsKnowledgeSnapshot>(`/api/knowledge/sports/players/${id}`);
+    setSportsKnowledge(snapshot);
+    setMessage("Knowledge player deleted.");
+  }
+
+  async function importFootballData(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api.post<FootballDataImportResult>("/api/knowledge/sports/import/football-data", {
+        competitionCode: data.get("competitionCode"),
+        season: data.get("season"),
+        includeMatches: data.get("includeMatches") === "on",
+        matchLimit: data.get("matchLimit")
+      });
+      setSportsKnowledge(result.snapshot);
+      setMessage(
+        `Football-data import stored ${result.players} players, ${result.teams} teams, ${result.matchActivities} match activities.${
+          result.warnings.length > 0 ? ` Warning: ${result.warnings[0]}` : ""
+        }`
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importStatbunker(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api.post<StatbunkerImportResult>("/api/knowledge/sports/import/statbunker", {
+        source: data.get("source"),
+        dataset: data.get("dataset"),
+        localPath: data.get("localPath"),
+        competition: data.get("competition"),
+        season: data.get("season"),
+        download: data.get("download") === "on"
+      });
+      setSportsKnowledge(result.snapshot);
+      setMessage(
+        `${result.source} import parsed ${result.files} files, stored ${result.players} players and ${result.matchActivities} stat/activity records.${
+          result.facts ? ` Facts: ${result.facts}.` : ""
+        }${
+          result.warnings.length > 0 ? ` Warning: ${result.warnings[0]}` : ""
+        }`
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function retryJob(id: string) {
@@ -501,8 +627,24 @@ export default function App() {
   }
 
   async function retryAssetStage(assetId: string, stage: string) {
-    await api.post<JobRecord>(`/api/assets/${assetId}/reindex`, { stage });
+    if (stage === "domain") {
+      await api.post<JobRecord>(`/api/assets/${assetId}/domain-vlm/refine`, {});
+    } else {
+      await api.post<JobRecord>(`/api/assets/${assetId}/reindex`, { stage });
+    }
     await refresh();
+  }
+
+  async function refineAssetGroupVlm(indexId: string) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api.post<DomainVlmBulkRefineResult>(`/api/indexes/${indexId}/domain-vlm/refine`, {});
+      setMessage(`Queued ${result.queued} VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function retryWebhook(id: string) {
@@ -633,6 +775,13 @@ export default function App() {
           onClick={() => setActiveTab("search")}
         />
         <TabButton
+          active={activeTab === "knowledge"}
+          icon={<Layers3 size={17} />}
+          label="지식"
+          meta={`${sportsKnowledge?.players.length ?? 0} players`}
+          onClick={() => setActiveTab("knowledge")}
+        />
+        <TabButton
           active={activeTab === "system"}
           icon={<Database size={17} />}
           label="시스템"
@@ -670,9 +819,15 @@ export default function App() {
             <p className="section-label">Data</p>
             <h2>데이터 구성</h2>
           </div>
-          <p>에셋그룹, 영상, 인덱싱 옵션, knowledge registry를 구성합니다.</p>
+          <p>에셋그룹, 영상, 인덱싱 옵션을 구성합니다.</p>
         </div>
-        <AssetGroupSummary index={selectedIndex} assets={visibleAssets} onEdit={() => setDialogMode("edit-index")} />
+        <AssetGroupSummary
+          index={selectedIndex}
+          assets={visibleAssets}
+          busy={busy}
+          onEdit={() => setDialogMode("edit-index")}
+          onRefineVlm={(indexId) => void refineAssetGroupVlm(indexId)}
+        />
       <section className="asset-workbench asset-detail-workbench">
         <section className="panel detail-panel">
           {selectedAsset ? (
@@ -777,9 +932,26 @@ export default function App() {
           )}
         </section>
       </section>
-      <section className="data-config-grid">
-        <SportsKnowledgePanel sportsKnowledge={sportsKnowledge} onSubmit={registerKnowledgePlayer} />
       </section>
+      )}
+
+      {activeTab === "knowledge" && (
+      <section className="section-block knowledge-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-label">Knowledge</p>
+            <h2>지식 베이스</h2>
+          </div>
+          <p>검색 전에 로컬로 저장해 둔 roster, player profile, match activity evidence를 확인하고 갱신합니다.</p>
+        </div>
+        <SportsKnowledgePanel
+          sportsKnowledge={sportsKnowledge}
+          onSubmit={registerKnowledgePlayer}
+          onDelete={deleteKnowledgePlayer}
+          onImport={importFootballData}
+          onStatbunkerImport={importStatbunker}
+          importing={busy}
+        />
       </section>
       )}
 
@@ -842,6 +1014,16 @@ export default function App() {
                     {result.index?.name ?? "Unknown index"}
                   </span>
                 </div>
+                {result.explain.some((item) => item.includes("mentioned players:")) && (
+                  <span className="result-summary-row">
+                    {result.explain
+                      .filter((item) => item.includes("mentioned players:"))
+                      .map((item) => (
+                        <em key={item}>{item}</em>
+                      ))}
+                  </span>
+                )}
+                {result.knowledgeEvidence.length > 0 && <KnowledgeEvidenceRow evidence={result.knowledgeEvidence} />}
                 {result.segments.slice(0, 3).map((segment) => (
                   <button
                     key={segment.id}
@@ -857,7 +1039,7 @@ export default function App() {
                     />
                   </button>
                 ))}
-                {result.clips.length > 0 && <ClipStrip clips={result.clips} onSelect={selectSegment} />}
+                {result.clips.length > 0 && <ClipStrip clips={result.clips} onOpen={openClipDetail} />}
               </article>
             ))}
             {!searching && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
@@ -928,7 +1110,7 @@ export default function App() {
                 </div>
               )}
               {analysis.patterns.gaps.length > 0 && <p className="analysis-gaps">{analysis.patterns.gaps.slice(0, 3).join(" ")}</p>}
-              {analysis.clips.length > 0 && <ClipStrip clips={analysis.clips} onSelect={selectSegment} />}
+              {analysis.clips.length > 0 && <ClipStrip clips={analysis.clips} onOpen={openClipDetail} />}
               <div className="analysis-report">
                 <strong>{analysis.report.title}</strong>
                 <span>Confidence {Math.round(analysis.report.confidence * 100)}%</span>
@@ -1109,6 +1291,15 @@ export default function App() {
       </section>
       )}
 
+      {(clipDetail || clipDetailLoading) && (
+        <ClipDetailDrawer
+          detail={clipDetail}
+          loading={clipDetailLoading}
+          onClose={() => setClipDetail(null)}
+          onSeek={(assetId, segmentId, at) => selectSegment(assetId, segmentId, at)}
+        />
+      )}
+
       {dialogMode && (
         <section className="modal-backdrop" role="presentation" onMouseDown={() => setDialogMode(null)}>
           <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="asset-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -1172,11 +1363,38 @@ function InfoTile({ label, value }: { label: string; value: string }) {
 
 function SportsKnowledgePanel({
   sportsKnowledge,
-  onSubmit
+  onSubmit,
+  onDelete,
+  onImport,
+  onStatbunkerImport,
+  importing
 }: {
   sportsKnowledge: SportsKnowledgeSnapshot | null;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onImport: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onStatbunkerImport: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  importing: boolean;
 }) {
+  const [filter, setFilter] = useState("");
+  const [provider, setProvider] = useState("all");
+  const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
+  const normalizedFilter = filter.trim().toLowerCase();
+  const players = sportsKnowledge?.players.filter((player) => {
+    const providerMatch = provider === "all" || (provider === "local" ? !player.provider || player.provider === "local" : player.provider === provider);
+    if (!providerMatch) return false;
+    if (!normalizedFilter) return true;
+    return [player.canonical, player.league, player.position ?? "", ...player.aliases, ...Object.values(player.teamsBySeason)]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedFilter);
+  }) ?? [];
+  const activities = sportsKnowledge?.matchActivities ?? [];
+  const facts = sportsKnowledge?.facts ?? [];
+  const footballDataCount = sportsKnowledge?.players.filter((player) => player.provider === "football-data").length ?? 0;
+  const kaggleCount = sportsKnowledge?.players.filter((player) => player.provider === "kaggle").length ?? 0;
+  const statbunkerCount = sportsKnowledge?.players.filter((player) => player.provider === "statbunker").length ?? 0;
+  const editingPlayer = sportsKnowledge?.players.find((player) => player.id === editingPlayerId) ?? null;
   return (
     <section className="panel knowledge-panel">
       <div className="panel-title">
@@ -1187,35 +1405,171 @@ function SportsKnowledgePanel({
         <>
           <div className="obs-summary">
             <span>{sportsKnowledge.players.length} players</span>
+            <span>{footballDataCount} football-data</span>
+            <span>{kaggleCount} kaggle</span>
+            <span>{statbunkerCount} statbunker</span>
             <span>{sportsKnowledge.teams.length} teams</span>
             <span>{sportsKnowledge.competitions.length} competitions</span>
+            <span>{activities.length} activities</span>
+            <span>{facts.length} facts</span>
           </div>
-          <form className="knowledge-form" onSubmit={(event) => void onSubmit(event)}>
-            <input name="canonical" placeholder="Player canonical name" required />
-            <input name="aliases" placeholder="Aliases, comma separated" />
-            <select name="sport" defaultValue="football">
-              <option value="football">football</option>
-              <option value="american_football">american football</option>
+          <div className="knowledge-grid">
+            <form className="knowledge-import-card" onSubmit={(event) => void onImport(event)}>
+              <div>
+                <strong>Football-data import</strong>
+                <span>Prefetch roster and optional match activity into local knowledge.</span>
+              </div>
+              <input name="competitionCode" defaultValue="PL" placeholder="Competition code e.g. PL" />
+              <input name="season" defaultValue={defaultFootballSeason()} placeholder="Season start year e.g. 2025" inputMode="numeric" />
+              <input name="matchLimit" defaultValue="10" placeholder="Match limit for activity import" inputMode="numeric" />
+              <label className="inline-toggle">
+                <input name="includeMatches" type="checkbox" />
+                <span>Import match activity</span>
+              </label>
+              <button type="submit" disabled={importing}>
+                <Database size={16} />
+                {importing ? "Importing" : "Import"}
+              </button>
+            </form>
+            <form className="knowledge-import-card" onSubmit={(event) => void onStatbunkerImport(event)}>
+              <div>
+                <strong>Kaggle / StatBunker import</strong>
+                <span>Import CC0 Kaggle dumps or approved StatBunker CSV/JSON exports.</span>
+              </div>
+              <select name="source" defaultValue="kaggle">
+                <option value="kaggle">Kaggle dataset</option>
+                <option value="statbunker">StatBunker export</option>
+              </select>
+              <input name="dataset" defaultValue="cclayford/statbunker-football-stats" placeholder="Kaggle dataset ref" />
+              <input name="localPath" placeholder="Local CSV/JSON directory path" />
+              <input name="competition" defaultValue="Premier League" placeholder="Competition" />
+              <input name="season" placeholder="Season e.g. 2017-18" />
+              <label className="inline-toggle">
+                <input name="download" type="checkbox" />
+                <span>Download with Kaggle CLI</span>
+              </label>
+              <button type="submit" disabled={importing}>
+                <Database size={16} />
+                {importing ? "Importing" : "Import dataset"}
+              </button>
+            </form>
+            <form
+              key={editingPlayer?.id ?? "new-player"}
+              className="knowledge-form"
+              onSubmit={(event) => {
+                void onSubmit(event).then(() => setEditingPlayerId(null));
+              }}
+            >
+              <div>
+                <strong>{editingPlayer ? "Edit player" : "Manual player"}</strong>
+                <span>{editingPlayer ? "Override a player record in local knowledge." : "Add or override a known player record."}</span>
+              </div>
+              <input name="id" type="hidden" defaultValue={editingPlayer?.id ?? ""} />
+              <input name="canonical" placeholder="Player canonical name" defaultValue={editingPlayer?.canonical ?? ""} required />
+              <input name="aliases" placeholder="Aliases, comma separated" defaultValue={editingPlayer?.aliases.join(", ") ?? ""} />
+              <select name="sport" defaultValue={editingPlayer?.sport ?? "football"}>
+                <option value="football">football</option>
+                <option value="american_football">american football</option>
+              </select>
+              <select name="league" defaultValue={editingPlayer?.league ?? "Premier League"}>
+                {sportsKnowledge.competitions.map((competition) => (
+                  <option key={competition.value} value={competition.value}>{competition.value}</option>
+                ))}
+              </select>
+              <input name="activeSeasons" placeholder="Seasons, comma separated" defaultValue={editingPlayer?.activeSeasons.join(", ") ?? ""} />
+              <input name="team" placeholder="Team for listed seasons" defaultValue={editingPlayer ? Object.values(editingPlayer.teamsBySeason)[0] ?? "" : ""} />
+              <input name="position" placeholder="Position" defaultValue={editingPlayer?.position ?? ""} />
+              <input name="shirtNumber" placeholder="Shirt number" defaultValue={editingPlayer?.shirtNumber ?? ""} inputMode="numeric" />
+              <button type="submit">
+                {editingPlayer ? <Edit3 size={16} /> : <Plus size={16} />}
+                {editingPlayer ? "Save player" : "Add player"}
+              </button>
+              {editingPlayer && (
+                <button type="button" className="secondary-button" onClick={() => setEditingPlayerId(null)}>
+                  <X size={16} />
+                  Cancel edit
+                </button>
+              )}
+            </form>
+          </div>
+          <div className="knowledge-toolbar">
+            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter players, teams, positions" />
+            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+              <option value="all">All sources</option>
+              <option value="football-data">Football-data</option>
+              <option value="kaggle">Kaggle</option>
+              <option value="statbunker">StatBunker</option>
+              <option value="local">Local/manual</option>
             </select>
-            <select name="league" defaultValue="Premier League">
-              {sportsKnowledge.competitions.map((competition) => (
-                <option key={competition.value} value={competition.value}>{competition.value}</option>
-              ))}
-            </select>
-            <input name="activeSeasons" placeholder="Seasons, comma separated" />
-            <input name="team" placeholder="Team for listed seasons" />
-            <button type="submit">
-              <Plus size={16} />
-              Add player
-            </button>
-          </form>
-          <div className="table-list">
-            {sportsKnowledge.players.slice(0, 8).map((player) => (
-              <article key={player.id} className="ops-row">
-                <strong>{player.canonical}</strong>
-                <span>{player.league} · {player.sport} · {player.aliases.slice(0, 4).join(", ")}</span>
-              </article>
-            ))}
+          </div>
+          <div className="knowledge-columns">
+            <section className="knowledge-list-block">
+              <div className="subsection-heading compact">
+                <p className="section-label">Players</p>
+                <h3>{players.length} records</h3>
+              </div>
+              <div className="table-list knowledge-table">
+                {players.slice(0, 60).map((player) => {
+                  const seasons = player.activeSeasons.slice(-3).join(", ");
+                  const currentTeam = player.teamsBySeason[player.activeSeasons[player.activeSeasons.length - 1] ?? ""] ?? Object.values(player.teamsBySeason)[0] ?? "No team";
+                  return (
+                    <article key={player.id} className="ops-row">
+                      <div>
+                        <strong>{player.canonical}</strong>
+                        <span>
+                          {player.league} · {currentTeam} · {seasons || "No season"} · {player.position ?? "position unknown"} · {player.provider ?? "local"}
+                        </span>
+                      </div>
+                      <div className="row-actions">
+                        <button type="button" onClick={() => setEditingPlayerId(player.id)}>
+                          <Edit3 size={14} />
+                          Edit
+                        </button>
+                        <button type="button" onClick={() => void onDelete(player.id)}>
+                          <X size={14} />
+                          Delete
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {players.length === 0 && <EmptyState text="No player record matches the filter." />}
+              </div>
+            </section>
+            <section className="knowledge-list-block">
+              <div className="subsection-heading compact">
+                <p className="section-label">Match Activity</p>
+                <h3>{activities.length} records</h3>
+              </div>
+              <div className="table-list knowledge-table">
+                {activities.slice(0, 40).map((activity) => (
+                  <article key={activity.id} className="ops-row">
+                    <strong>{activity.player}</strong>
+                    <span>
+                      {activity.role} · {activity.minute === null ? "sheet" : `${activity.minute}'`} · {activity.team} · {activity.homeTeam} vs {activity.awayTeam}
+                    </span>
+                  </article>
+                ))}
+                {activities.length === 0 && <EmptyState text="No match activity has been imported yet." />}
+              </div>
+            </section>
+            <section className="knowledge-list-block wide">
+              <div className="subsection-heading compact">
+                <p className="section-label">Facts</p>
+                <h3>{facts.length} records</h3>
+              </div>
+              <div className="table-list knowledge-table">
+                {facts.slice(0, 80).map((fact) => (
+                  <article key={fact.id} className="ops-row">
+                    <strong>{fact.entityName}</strong>
+                    <span>
+                      {fact.kind} · {fact.metric}: {String(fact.value)} · {fact.season} · {fact.provider}
+                    </span>
+                  </article>
+                ))}
+                {facts.length === 0 && <EmptyState text="No team, table, attendance, or nationality facts have been imported yet." />}
+              </div>
+            </section>
           </div>
         </>
       ) : (
@@ -1223,6 +1577,12 @@ function SportsKnowledgePanel({
       )}
     </section>
   );
+}
+
+function defaultFootballSeason() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  return String(now.getUTCMonth() >= 6 ? year : year - 1);
 }
 
 function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> }) {
@@ -1270,9 +1630,23 @@ function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null; onSubm
   );
 }
 
-function AssetGroupSummary({ index, assets, onEdit }: { index: IndexRecord | null; assets: AssetRecord[]; onEdit: () => void }) {
+function AssetGroupSummary({
+  index,
+  assets,
+  busy,
+  onEdit,
+  onRefineVlm
+}: {
+  index: IndexRecord | null;
+  assets: AssetRecord[];
+  busy: boolean;
+  onEdit: () => void;
+  onRefineVlm: (indexId: string) => void;
+}) {
   const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
   const domain = index?.domainIndexing;
+  const canRefineVlm = Boolean(index && domain?.enabled && domain.groups.includes("sports.football") && indexedCount > 0);
+  const vlmSummary = summarizeAssetGroupVlm(assets);
   const domainText =
     domain?.enabled && domain.groups.length > 0
       ? `${domain.groups.join(", ")} · ${domain.stages.map((stage) => stage.replace(/_/g, " ")).join(", ")}`
@@ -1294,11 +1668,43 @@ function AssetGroupSummary({ index, assets, onEdit }: { index: IndexRecord | nul
             <b>Domain</b>
             {domainText}
           </span>
+          <span>
+            <b>VLM</b>
+            {vlmSummary}
+          </span>
         </div>
       </div>
-      <span className="asset-group-status-pill">{index?.status ?? "empty"}</span>
+      <div className="asset-group-actions">
+        <button
+          type="button"
+          className="asset-group-refine"
+          disabled={!canRefineVlm || busy}
+          onClick={() => index && onRefineVlm(index.id)}
+          title="Run Qwen VLM domain refinement for indexed assets in this asset group"
+        >
+          <BrainCircuit size={17} />
+          <span>VLM refine</span>
+        </button>
+        <span className="asset-group-status-pill">{index?.status ?? "empty"}</span>
+      </div>
     </section>
   );
+}
+
+function summarizeAssetGroupVlm(assets: AssetRecord[]) {
+  const counts = assets.reduce(
+    (sum, asset) => {
+      for (const segment of asset.timeline) {
+        const status = segment.domain?.vlm?.status;
+        if (status) sum[status] += 1;
+      }
+      return sum;
+    },
+    { refined: 0, invalid: 0, failed: 0, skipped: 0 }
+  );
+  const attempted = counts.refined + counts.invalid + counts.failed;
+  if (attempted === 0) return "not run";
+  return `${counts.refined}/${attempted} refined${counts.invalid ? ` · ${counts.invalid} invalid` : ""}${counts.failed ? ` · ${counts.failed} failed` : ""}`;
 }
 
 function DomainSearchControls({
@@ -1404,8 +1810,8 @@ function OrchestrationPlanCard({ plan }: { plan: OrchestrationPlan }) {
   const ownerLabel: Record<OrchestrationPlan["steps"][number]["owner"], string> = {
     router: "Router",
     knowledge: "Knowledge",
-    marengo: "Marengo",
-    pegasus: "Pegasus",
+    retrieval: "Retrieval",
+    analysis: "Analysis",
     platform: "Platform"
   };
   return (
@@ -1440,7 +1846,7 @@ function OrchestrationPlanCard({ plan }: { plan: OrchestrationPlan }) {
         <p className="orchestration-warning">{[...plan.retrieval.fallback, ...plan.warnings].slice(0, 3).join(" ")}</p>
       )}
       {plan.analysis.required && (
-        <p className="orchestration-analysis">Pegasus prompt: {truncateText(plan.analysis.prompt, 180)}</p>
+        <p className="orchestration-analysis">Analysis prompt: {truncateText(plan.analysis.prompt, 180)}</p>
       )}
     </section>
   );
@@ -1615,6 +2021,23 @@ function FlowConnector({ label }: { label?: string }) {
   );
 }
 
+function KnowledgeEvidenceRow({ evidence }: { evidence: SearchResult["knowledgeEvidence"] }) {
+  return (
+    <span className="knowledge-evidence-row">
+      {evidence.slice(0, 6).map((item) => (
+        <em key={item.id} className={item.source}>
+          <b>{item.kind.replace(/_/g, " ")}</b>
+          {item.entityName}
+          {item.season ? ` · ${item.season}` : ""}
+          {item.team ? ` · ${item.team}` : ""}
+          {item.matchTime ? ` · ${item.matchTime}` : ""}
+          {` · ${Math.round(item.confidence * 100)}%`}
+        </em>
+      ))}
+    </span>
+  );
+}
+
 function SearchSceneEvidence({
   segment,
   query,
@@ -1676,6 +2099,7 @@ function SearchSceneEvidence({
                 pitch {Math.round(scene.vision.pitch.confidence * 100)}% · players {scene.vision.objects.players.status}
                 {scene.vision.objects.ball.status === "estimated" || scene.vision.objects.ball.status === "detected" ? ` · ball ${scene.vision.objects.ball.status}` : ""}
                 {scene.vision.fieldZone.zone !== "unknown" ? ` · ${scene.vision.fieldZone.zone}` : ""}
+                {scene.vision.fieldCalibration ? ` · field ${scene.vision.fieldCalibration.status}/${scene.vision.fieldCalibration.method}` : ""}
                 {scene.vision.tracking?.ballTrackId ? ` · ${scene.vision.tracking.ballTrackId}` : ""}
                 {scene.vision.eventClassification && scene.vision.eventClassification.label !== "unknown" ? ` · ${scene.vision.eventClassification.label} ${Math.round(scene.vision.eventClassification.confidence * 100)}%` : ""}
               </span>
@@ -1718,17 +2142,17 @@ function SearchSceneEvidence({
 
 function ClipStrip({
   clips,
-  onSelect
+  onOpen
 }: {
   clips: SearchResult["clips"];
-  onSelect: (assetId: string, segmentId: string, start: number) => void;
+  onOpen: (clip: SearchResult["clips"][number]) => Promise<void>;
 }) {
   return (
     <div className="clip-strip">
       {clips.slice(0, 5).map((clip) => {
         const imagePath = clip.thumbnailPath ? mediaPath(clip.thumbnailPath) : null;
         return (
-          <button key={clip.id} type="button" onClick={() => onSelect(clip.assetId, clip.segmentId, clip.start)}>
+          <button key={clip.id} type="button" onClick={() => void onOpen(clip)}>
             {imagePath ? <img src={imagePath} alt="" /> : <span>No image</span>}
             <b>{clip.title}</b>
             <em>
@@ -1742,6 +2166,111 @@ function ClipStrip({
         );
       })}
     </div>
+  );
+}
+
+function ClipDetailDrawer({
+  detail,
+  loading,
+  onClose,
+  onSeek
+}: {
+  detail: ClipDetailResult | null;
+  loading: boolean;
+  onClose: () => void;
+  onSeek: (assetId: string, segmentId: string, at: number) => void;
+}) {
+  const imagePath = detail?.clip.thumbnailPath ? mediaPath(detail.clip.thumbnailPath) : null;
+  const scene = detail ? getSearchSceneData(detail.segment, "") : null;
+  return (
+    <aside className="clip-detail-drawer" aria-label="Clip detail">
+      <div className="clip-detail-header">
+        <div>
+          <p className="section-label">Clip Detail</p>
+          <h2>{detail?.clip.title ?? "Loading clip"}</h2>
+          {detail && <span>{detail.asset.title}</span>}
+        </div>
+        <button type="button" className="small-button icon-only" aria-label="닫기" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </div>
+      {loading && !detail ? (
+        <div className="clip-detail-loading">
+          <span className="search-loading-bar" />
+          <p>Loading clip evidence.</p>
+        </div>
+      ) : detail ? (
+        <>
+          <button type="button" className="clip-detail-hero" onClick={() => onSeek(detail.clip.assetId, detail.clip.segmentId, detail.clip.start)}>
+            {imagePath ? <img src={imagePath} alt="" /> : <span>No image</span>}
+            <span>
+              <b>{formatDuration(detail.clip.start)}-{formatDuration(detail.clip.end)}</b>
+              <em>{detail.clip.event}{detail.clip.player ? ` · ${detail.clip.player}` : ""} · {Math.round(detail.clip.confidence * 100)}%</em>
+            </span>
+          </button>
+
+          <section className="clip-detail-section">
+            <h3>Verification</h3>
+            <div className="clip-detail-grid">
+              {detail.verification.length > 0 ? detail.verification.map((check) => (
+                <span key={`${check.constraint}-${check.expected}-${check.observed}`} className={check.status}>
+                  <b>{check.constraint}</b>
+                  {check.status} · {check.observed}
+                  <em>{Math.round(check.confidence * 100)}%</em>
+                </span>
+              )) : <p>No structured verification checks for this clip.</p>}
+            </div>
+          </section>
+
+          <section className="clip-detail-section">
+            <h3>Tracking</h3>
+            <div className="clip-track-list">
+              {detail.tracking.length > 0 ? detail.tracking.map((track) => (
+                <article key={track.id}>
+                  <strong>{track.trackType} · {track.trackId}</strong>
+                  <span>{track.status} · {track.fieldZone} · {track.direction} · {Math.round(track.confidence * 100)}%</span>
+                  <span>{track.player ?? "unresolved player"}{track.linkedTrackId ? ` · linked ${track.linkedTrackId}` : ""}</span>
+                  {track.evidence.length > 0 && <em>{track.evidence.slice(0, 2).join(" · ")}</em>}
+                </article>
+              )) : <p>No tracking records persisted for this segment.</p>}
+            </div>
+          </section>
+
+          <section className="clip-detail-section">
+            <h3>Domain Events</h3>
+            <div className="clip-event-list">
+              {detail.domainEvents.length > 0 ? detail.domainEvents.map((event) => (
+                <article key={event.id}>
+                  <strong>{event.eventType}</strong>
+                  <span>{event.caption}</span>
+                  {event.football && <em>{event.football.fieldZone} · {event.football.passType} · {event.football.ball.state}</em>}
+                </article>
+              )) : <p>No domain event attached to this segment.</p>}
+            </div>
+          </section>
+
+          <section className="clip-detail-section">
+            <h3>Evidence</h3>
+            <div className="clip-evidence-list">
+              {detail.reasons.slice(0, 8).map((reason, index) => (
+                <span key={`${reason.kind}-${reason.label}-${index}`}>
+                  <b>{reason.label}</b>
+                  {reason.value}
+                  {typeof reason.confidence === "number" ? ` · ${Math.round(reason.confidence * 100)}%` : ""}
+                </span>
+              ))}
+              {scene && (
+                <>
+                  {scene.text.speech && <span><b>Speech</b>{truncateText(scene.text.speech, 140)}</span>}
+                  {scene.text.subtitles.length > 0 && <span><b>Subtitle</b>{truncateText(scene.text.subtitles.join(" "), 140)}</span>}
+                  {scene.vision?.tracking?.ballTrackId && <span><b>Vision</b>{scene.vision.tracking.ballTrackId} · {scene.vision.tracking.nearestPlayerTrackId ?? "no player track"}</span>}
+                </>
+              )}
+            </div>
+          </section>
+        </>
+      ) : null}
+    </aside>
   );
 }
 
@@ -1790,6 +2319,7 @@ function SignalEvidence({ asset }: { asset: AssetRecord }) {
       event
     }))
   );
+  const vlmSegments = asset.timeline.filter((segment) => segment.domain?.vlm);
   const visionSegments = asset.timeline.filter((segment) => segment.sceneData?.vision);
   return (
     <section className="evidence-panel" aria-label="Extracted text evidence">
@@ -1801,7 +2331,7 @@ function SignalEvidence({ asset }: { asset: AssetRecord }) {
         <article className="evidence-card domain-evidence-card">
           <div className="evidence-title">
             <strong>Domain events</strong>
-            <span>{domainEvents.length} candidates</span>
+            <span>{domainEvents.length} candidates · {vlmSegments.length} VLM checks</span>
           </div>
           <div className="domain-event-list">
             {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
@@ -1828,22 +2358,47 @@ function SignalEvidence({ asset }: { asset: AssetRecord }) {
                     <span><b>Receiver</b>{event.football.receivingPlayer.identity ? `${event.football.receivingPlayer.identity.name} · ${event.football.receivingPlayer.identity.source}` : event.football.receivingPlayer.trackingStatus}</span>
                     {event.football.passingPlayer.identity && <span><b>Passer</b>{event.football.passingPlayer.identity.name} · {event.football.passingPlayer.identity.source}</span>}
                     <span><b>Ball</b>{event.football.ball.state} · {event.football.ball.trackingStatus}</span>
-                    <span><b>Field</b>{event.football.field.calibrationStatus} · {Math.round(event.football.field.zoneConfidence * 100)}%</span>
+                    <span><b>Field</b>{event.football.field.calibrationStatus} · {Math.round(event.football.field.zoneConfidence * 100)}% · {event.football.field.attackingDirection}</span>
                   </div>
                 )}
                 <details className="domain-event-details">
                   <summary>Evidence and limitations</summary>
+                  {segment.domain?.vlm && (
+                    <p>
+                      VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
+                      {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
+                    </p>
+                  )}
                   <p>{[...event.evidence.asr, ...event.evidence.ocr, ...event.evidence.visual].filter(Boolean).slice(0, 4).join(" · ") || "No direct evidence text stored."}</p>
+                  {segment.domain?.vlm?.rawResponse && <p>Raw VLM: {truncateText(segment.domain.vlm.rawResponse, 360)}</p>}
                   <p>{[...event.evidence.heuristics, ...(event.football?.limitations ?? [])].filter(Boolean).slice(0, 5).join(" · ")}</p>
                 </details>
               </article>
             ))}
+            {vlmSegments
+              .filter((segment) => segment.domain?.vlm?.status !== "refined" || (segment.domain?.events.length ?? 0) === 0)
+              .slice(0, 8)
+              .map((segment) => (
+                <article key={`${segment.id}-vlm-quality`} className="domain-event-row">
+                  <div>
+                    <strong>VLM quality check</strong>
+                    <span>
+                      {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.domain?.vlm?.status} · {Math.round((segment.domain?.vlm?.confidence ?? 0) * 100)}%
+                    </span>
+                  </div>
+                  <details className="domain-event-details" open>
+                    <summary>Raw result</summary>
+                    <p>{segment.domain?.vlm?.message}{segment.domain?.vlm?.error ? ` · ${segment.domain.vlm.error}` : ""}</p>
+                    {segment.domain?.vlm?.rawResponse && <p>Raw VLM: {truncateText(segment.domain.vlm.rawResponse, 360)}</p>}
+                  </details>
+                </article>
+              ))}
           </div>
         </article>
 
         <article className="evidence-card">
           <div className="evidence-title">
-            <strong>Vision evidence v0</strong>
+            <strong>Vision evidence + field calibration</strong>
             <span>{visionSegments.length} segments</span>
           </div>
           <div className="segment-list compact-list">
@@ -1857,6 +2412,7 @@ function SignalEvidence({ asset }: { asset: AssetRecord }) {
                   {vision.objects.players.status}
                   {vision.objects.ball.status === "estimated" || vision.objects.ball.status === "detected" ? ` · ball ${vision.objects.ball.status}` : ""}
                   {vision.fieldZone.zone !== "unknown" ? ` · ${vision.fieldZone.zone}` : ""}
+                  {vision.fieldCalibration ? ` · field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method} ${Math.round(vision.fieldCalibration.zoneConfidence * 100)}%` : ""}
                   {vision.tracking?.ballTrackId ? ` · ${vision.tracking.ballTrackId}` : ""}
                   {vision.eventClassification && vision.eventClassification.label !== "unknown" ? ` · ${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%` : ""}
                 </span>
@@ -2138,6 +2694,7 @@ function SceneDataSummary({ segment }: { segment: AssetRecord["timeline"][number
           pitch {Math.round(vision.pitch.confidence * 100)}% · players {vision.objects.players.status}
           {vision.objects.ball.status === "estimated" || vision.objects.ball.status === "detected" ? ` · ball ${vision.objects.ball.status}` : ""}
           {vision.fieldZone.zone !== "unknown" ? ` · ${vision.fieldZone.zone}` : ""}
+          {vision.fieldCalibration ? ` · field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}` : ""}
           {vision.tracking?.ballTrackId ? ` · ${vision.tracking.ballTrackId}` : ""}
           {vision.eventClassification && vision.eventClassification.label !== "unknown" ? ` · ${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%` : ""}
         </span>
@@ -2193,6 +2750,8 @@ function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job: JobRec
   const isIndexed = asset.status === "indexed";
   const hasTimeline = asset.timeline.length > 0;
   const hasDomainEvents = asset.timeline.some((segment) => (segment.domain?.events.length ?? 0) > 0);
+  const domainEventCount = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
+  const domainVlmSummary = getDomainVlmSummary(asset);
   const domainIndexingEnabled = Boolean(index?.domainIndexing?.enabled && index.domainIndexing.groups.length > 0);
   const hasEmbedding = isIndexed || asset.intelligence.modelTrace.some((trace) => trace.startsWith("embedding:"));
   const isFailed = asset.status === "failed" || (asset.status !== "indexed" && job?.status === "failed");
@@ -2203,6 +2762,7 @@ function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job: JobRec
   const ocrRuntimeStatus = getRuntimeStageStatus(job, "ocr");
   const visualRuntimeStatus = getRuntimeStageStatus(job, "visual");
   const hasActiveJob = job?.status === "queued" || job?.status === "running";
+  const domainVlmRunning = hasActiveJob && job?.type === "asset.domain-vlm.refine";
   const storedWhisperFailure = asset.intelligence.modelTrace.find((trace) => trace.startsWith("whisper-unavailable:"));
   const storedDiarizationError = asset.intelligence.modelTrace.find((trace) => trace.startsWith("whisperx-unavailable:"))?.replace(/^whisperx-unavailable:/, "");
   const storedOcrFailure = asset.intelligence.modelTrace.find((trace) => trace.startsWith("paddleocr-unavailable:"))?.replace(/^paddleocr-unavailable:/, "");
@@ -2366,9 +2926,14 @@ function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job: JobRec
     },
     {
       id: "domain",
-      label: "Sports domain events",
-      detail: hasDomainEvents ? `${asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0)} event candidates` : domainFlow.detail,
-      state: hasDomainEvents ? "done" : domainFlow.state
+      label: "Sports domain events + VLM",
+      detail: domainVlmRunning
+        ? `Qwen VLM refinement running · ${job?.progress ?? 0}%`
+        : hasDomainEvents
+          ? `${domainEventCount} event candidates${domainVlmSummary ? ` · ${domainVlmSummary}` : ""}`
+          : domainFlow.detail,
+      state: domainVlmRunning ? "active" : hasDomainEvents ? "done" : domainFlow.state,
+      helpText: "Retry runs only the sports-domain VLM refinement pass and then rebuilds text vectors."
     },
     {
       id: "vector",
@@ -2390,6 +2955,20 @@ function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job: JobRec
     retryStage: step.id,
     serverProgress: getFlowStepServerProgress(step, job)
   }));
+}
+
+function getDomainVlmSummary(asset: AssetRecord) {
+  const counts = asset.timeline.reduce(
+    (sum, segment) => {
+      const status = segment.domain?.vlm?.status;
+      if (status) sum[status] += 1;
+      return sum;
+    },
+    { refined: 0, invalid: 0, failed: 0, skipped: 0 }
+  );
+  const attempted = counts.refined + counts.invalid + counts.failed;
+  if (attempted === 0) return "";
+  return `VLM ${counts.refined}/${attempted} refined${counts.invalid ? `, ${counts.invalid} invalid` : ""}${counts.failed ? `, ${counts.failed} failed` : ""}`;
 }
 
 function getFlowStepServerProgress(step: Omit<FlowStep, "progress" | "retryStage">, job: JobRecord | null) {

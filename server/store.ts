@@ -243,8 +243,8 @@ export function createDefaultIndex(now = new Date().toISOString()): IndexRecord 
     name: "Default video intelligence index",
     description: "Local index for uploaded assets, timeline metadata, search, and analysis.",
     models: {
-      search: "local-marengo-simulator",
-      analysis: "local-pegasus-simulator",
+      search: "local-semantic-retrieval",
+      analysis: "local-pattern-analysis",
       embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small"
     },
     modalities: ["visual", "audio", "transcription", "metadata"],

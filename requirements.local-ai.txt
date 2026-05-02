@@ -1,5 +1,7 @@
-# Optional local AI dependencies.
+# Local AI dependencies.
 # Python 3.10-3.12 is recommended for PaddleOCR/PaddlePaddle compatibility.
+fastapi
+uvicorn[standard]
 faster-whisper
 openai-whisper
 whisperx
@@ -13,5 +15,10 @@ paddlepaddle
 sentence-transformers
 open_clip_torch
 torchvision
+torch
+transformers>=4.50.0
+accelerate
+qwen-vl-utils
+Pillow
 # Optional: enables YOLO person/sports-ball detector. Without it, the app uses OpenCV fallback.
 ultralytics
