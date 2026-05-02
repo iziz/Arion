@@ -601,6 +601,8 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
   const verified = verification.filter((check) => check.status === "pass").length;
   const uncertain = verification.filter((check) => check.status === "soft_pass" || check.status === "unknown").length;
   const failed = verification.filter((check) => check.status === "fail").length;
+  const features = chapters.map((segment) => featureFromSegment(segment, buildVerificationChecks(asset, segment, queryPlan.domainFilters)));
+  const patterns = aggregatePatterns(features);
   const domainSignals = chapters.flatMap((segment) => [
     ...(segment.domain?.labels ?? []),
     ...(segment.domain?.scope?.players.map((player) => player.value) ?? []),
@@ -624,8 +626,75 @@ export function analyzeAsset(asset: AssetRecord, question = ""): AnalysisResult 
     answer,
     chapters,
     signals,
+    patterns,
     generatedAt: new Date().toISOString()
   };
+}
+
+function featureFromSegment(segment: TimelineSegment, verification: VerificationCheck[]) {
+  const event = segment.domain?.events[0];
+  const football = event?.football;
+  return {
+    segmentId: segment.id,
+    player: football?.receivingPlayer.identity?.name ?? football?.passingPlayer.identity?.name ?? segment.domain?.scope?.players[0]?.value ?? "unknown_player",
+    competition: segment.domain?.scope?.competition?.value ?? "unknown_competition",
+    season: segment.domain?.scope?.season?.value ?? "unknown_season",
+    eventType: event?.eventType ?? "unknown_event",
+    passType: football?.passType ?? "unknown_pass",
+    fieldZone: football?.fieldZone ?? "unknown_zone",
+    role: football?.receivingPlayer.present ? "receiver" : football?.passingPlayer.present ? "passer" : event?.eventType === "shot" ? "shooter" : "unknown_role",
+    ballState: football?.ball.state ?? "unknown_ball",
+    confidence: event?.confidence ?? segment.confidence,
+    verification
+  };
+}
+
+function aggregatePatterns(features: ReturnType<typeof featureFromSegment>[]): AnalysisResult["patterns"] {
+  const verification = features.flatMap((feature) => feature.verification);
+  const topGroups = [
+    ...topFeatureGroups(features, "fieldZone", "Zone"),
+    ...topFeatureGroups(features, "passType", "Pass"),
+    ...topFeatureGroups(features, "eventType", "Event"),
+    ...topFeatureGroups(features, "player", "Player"),
+    ...topFeatureGroups(features, "season", "Season")
+  ]
+    .filter((group) => !group.key.startsWith("unknown_"))
+    .sort((a, b) => b.count - a.count || b.confidence - a.confidence)
+    .slice(0, 8);
+  const gaps = [
+    features.some((feature) => feature.player === "unknown_player") ? "Some moments have no resolved player identity." : "",
+    features.some((feature) => feature.season === "unknown_season") ? "Some moments have no season scope." : "",
+    features.some((feature) => feature.competition === "unknown_competition") ? "Some moments have no competition scope." : "",
+    verification.some((check) => check.status === "fail") ? "Some retrieved moments failed structured verification." : "",
+    verification.some((check) => check.status === "unknown") ? "Some constraints are missing indexed evidence." : ""
+  ].filter(Boolean);
+  return {
+    totalMoments: features.length,
+    verifiedConstraints: verification.filter((check) => check.status === "pass").length,
+    uncertainConstraints: verification.filter((check) => check.status === "soft_pass" || check.status === "unknown").length,
+    failedConstraints: verification.filter((check) => check.status === "fail").length,
+    topGroups,
+    gaps
+  };
+}
+
+function topFeatureGroups(features: ReturnType<typeof featureFromSegment>[], key: "player" | "competition" | "season" | "eventType" | "passType" | "fieldZone" | "role", label: string) {
+  const groups = new Map<string, { count: number; confidence: number }>();
+  for (const feature of features) {
+    const value = feature[key];
+    const current = groups.get(value) ?? { count: 0, confidence: 0 };
+    groups.set(value, {
+      count: current.count + 1,
+      confidence: current.confidence + feature.confidence
+    });
+  }
+  return Array.from(groups.entries()).map(([value, group]) => ({
+    key: value,
+    label: `${label}: ${value.replace(/_/g, " ")}`,
+    count: group.count,
+    share: features.length > 0 ? Number((group.count / features.length).toFixed(2)) : 0,
+    confidence: Number((group.confidence / Math.max(1, group.count)).toFixed(2))
+  }));
 }
 
 export function checksum(input: string) {

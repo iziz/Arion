@@ -461,6 +461,20 @@ export type AnalysisResult = {
   answer: string;
   chapters: TimelineSegment[];
   signals: string[];
+  patterns: {
+    totalMoments: number;
+    verifiedConstraints: number;
+    uncertainConstraints: number;
+    failedConstraints: number;
+    topGroups: Array<{
+      key: string;
+      label: string;
+      count: number;
+      share: number;
+      confidence: number;
+    }>;
+    gaps: string[];
+  };
   generatedAt: string;
 };
 

@@ -849,6 +849,35 @@ export default function App() {
                   <span key={signal}>{signal}</span>
                 ))}
               </div>
+              <div className="analysis-patterns">
+                <span>
+                  <b>Moments</b>
+                  {analysis.patterns.totalMoments}
+                </span>
+                <span>
+                  <b>Verified</b>
+                  {analysis.patterns.verifiedConstraints}
+                </span>
+                <span>
+                  <b>Uncertain</b>
+                  {analysis.patterns.uncertainConstraints}
+                </span>
+                <span>
+                  <b>Failed</b>
+                  {analysis.patterns.failedConstraints}
+                </span>
+              </div>
+              {analysis.patterns.topGroups.length > 0 && (
+                <div className="analysis-pattern-list">
+                  {analysis.patterns.topGroups.map((group) => (
+                    <span key={`${group.label}-${group.key}`}>
+                      <b>{group.label}</b>
+                      {group.count} · {Math.round(group.share * 100)}% · {Math.round(group.confidence * 100)}%
+                    </span>
+                  ))}
+                </div>
+              )}
+              {analysis.patterns.gaps.length > 0 && <p className="analysis-gaps">{analysis.patterns.gaps.slice(0, 3).join(" ")}</p>}
             </article>
           ) : (
             <EmptyState text="Select an indexed asset and ask a question." />
