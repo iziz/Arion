@@ -102,7 +102,7 @@ export function isVisualPgVectorCompatible(vector: number[]) {
 }
 
 export function getExpectedEmbeddingDimensions() {
-  return Number(process.env.EMBEDDING_DIMENSIONS || 384);
+  return Number(process.env.EMBEDDING_DIMENSIONS || 768);
 }
 
 export function getExpectedVisualEmbeddingDimensions() {

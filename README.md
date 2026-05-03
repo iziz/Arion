@@ -122,7 +122,7 @@ Local environment values are loaded from `.env` automatically when present.
 - Set `VISION_TRACKER=bytetrack.yaml` to run Ultralytics ByteTrack/BoT-SORT tracking when `ultralytics` is installed.
 - Set `SOCCERNET_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `SOCCERNET_ACTION_SPOTS_JSON=/path/to/predictions.json` to import SoccerNet-style action spotting results as trusted sports domain evidence.
 - Set `CAPABILITY_*` values or the asset-group capability policy to `disabled|optional|required`. Required capabilities fail the indexing job when unavailable; optional capabilities only record unavailable traces.
-- Set `EMBEDDING_MODEL=intfloat/multilingual-e5-small` and `EMBEDDING_DIMENSIONS=384` to choose the local semantic embedding model.
+- Set `EMBEDDING_MODEL=intfloat/multilingual-e5-base` and `EMBEDDING_DIMENSIONS=768` to choose the local semantic embedding model.
 - Set `VISUAL_EMBEDDING_MODEL=ViT-B-32`, `VISUAL_EMBEDDING_PRETRAINED=laion2b_s34b_b79k`, and `VISUAL_EMBEDDING_DIMENSIONS=512` to choose the local visual embedding model.
 - Set `SCENE_THRESHOLD=0.3` to tune FFmpeg scene-boundary detection sensitivity.
 - Enable `Sports domain indexing` when creating an asset group to add football ontology captions, event labels, and structured event metadata. This layer is asset-group scoped and is skipped for non-sports asset groups.
@@ -148,7 +148,7 @@ The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `ope
 
 ## Local Embeddings
 
-The default semantic embedding model is `intfloat/multilingual-e5-small`, which produces normalized 384-dimensional vectors for transcript, OCR, visual labels, tags, and timeline text. Query text is embedded with the same model before vector search.
+The default semantic embedding model is `intfloat/multilingual-e5-base`, which produces normalized 768-dimensional vectors for transcript, OCR, visual labels, tags, and timeline text. Query text is embedded with the same model before vector search.
 The default visual embedding model is OpenCLIP `ViT-B-32/laion2b_s34b_b79k`, which produces normalized 512-dimensional vectors for generated keyframes and visual text queries.
 
 ```bash
@@ -188,7 +188,7 @@ The app creates these tables automatically:
 - `app_vectors`
 - `app_visual_vectors`
 
-If the `vector` extension is available, `app_vectors.embedding vector(384)` is created and vector distance search uses pgvector. If the extension is unavailable, vectors are still stored in PostgreSQL as JSON and searched in the app process as a local fallback.
+If the `vector` extension is available, `app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(768)` columns and vector distance search uses pgvector. If the extension is unavailable, vectors are still stored in PostgreSQL as JSON and searched in the app process as a local fallback.
 Visual vectors are stored in `app_visual_vectors.embedding vector(512)` when pgvector is available.
 Segments with missing or incompatible embeddings keep their JSON vector payload but leave the pgvector column empty, so migrations can safely preserve older local data.
 `npm run db:reset` truncates app tables and recreates the default local user/index. It does not delete object-storage files under `.data/object-storage`.

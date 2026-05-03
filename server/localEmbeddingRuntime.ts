@@ -6,7 +6,7 @@ import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZo
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const embedScript = path.resolve("scripts", "embed_text.py");
-const embeddingModel = process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small";
+const embeddingModel = process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-base";
 const embeddingCache = new Map<string, number[]>();
 
 type EmbeddingKind = "query" | "passage";
@@ -26,7 +26,7 @@ export function getEmbeddingModelName() {
 }
 
 export function getExpectedEmbeddingDimensions() {
-  return Number(process.env.EMBEDDING_DIMENSIONS || 384);
+  return Number(process.env.EMBEDDING_DIMENSIONS || 768);
 }
 
 export async function embedQueryText(text: string) {

@@ -45,7 +45,6 @@ import {
   ClipStrip,
   EmptyState,
   getAssetProgressLine,
-  InfoTile,
   KnowledgeEvidenceRow,
   SearchSceneEvidence,
   SportsKnowledgePanel,
@@ -153,6 +152,40 @@ const sectionTechStacks = {
   knowledge: "Sports registry · Football-Data · StatBunker · StatsBomb · nflverse · knowledge vectors",
   system: "TypeScript · Vite · Node.js/Express · PostgreSQL · OpenTelemetry · local queue · NDJSON logs"
 } as const;
+
+type AssetOverviewFact = {
+  label: string;
+  value: string;
+};
+
+function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
+  return [
+    { label: "Duration", value: formatDuration(asset.duration ?? 0) },
+    {
+      label: "Frame",
+      value: [
+        asset.width && asset.height ? `${asset.width}x${asset.height}` : "No dimensions",
+        asset.technicalMetadata.frameRate ? `${Math.round(asset.technicalMetadata.frameRate)}fps` : ""
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    },
+    {
+      label: "Codec",
+      value: [
+        asset.technicalMetadata.videoCodec ?? "No video codec",
+        asset.technicalMetadata.audioCodec ? `audio ${asset.technicalMetadata.audioCodec}` : ""
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    },
+    { label: "Detail", value: `${asset.timeline.length} moments · ${asset.keyframes.length} keyframes` },
+    { label: "ASR", value: `${Math.round(asset.intelligence.asr.confidence * 100)}%` },
+    { label: "OCR", value: `${asset.intelligence.ocr.tokens.length} tokens` },
+    { label: "Color", value: asset.intelligence.visual.dominantColor },
+    { label: "Motion", value: asset.intelligence.visual.motionScore.toString() }
+  ];
+}
 
 export function ConsoleLayout(props: ConsoleLayoutProps) {
   const {
@@ -421,45 +454,16 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                     <div className="asset-player-column">
                       <video key={selectedAsset.id} ref={playerRef} className="player" src={`/media/${selectedAsset.storedName}`} controls preload="metadata" />
                     </div>
-                    <aside className="asset-metadata-panel" aria-label="Video technical details">
-                      <InfoTile label="Duration" value={formatDuration(selectedAsset.duration ?? 0)} />
-                      <InfoTile
-                        label="Frame"
-                        value={[
-                          selectedAsset.width && selectedAsset.height ? `${selectedAsset.width}x${selectedAsset.height}` : "No dimensions",
-                          selectedAsset.technicalMetadata.frameRate ? `${Math.round(selectedAsset.technicalMetadata.frameRate)}fps` : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      />
-                      <InfoTile
-                        label="Codec"
-                        value={[
-                          selectedAsset.technicalMetadata.videoCodec ?? "No video codec",
-                          selectedAsset.technicalMetadata.audioCodec ? `audio ${selectedAsset.technicalMetadata.audioCodec}` : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      />
-                      <InfoTile
-                        label="Detail"
-                        value={`${selectedAsset.timeline.length} moments · ${selectedAsset.keyframes.length} keyframes`}
-                      />
+                    <aside className="asset-metadata-strip" aria-label="Video technical and model details">
+                      {buildAssetOverviewFacts(selectedAsset).map((fact) => (
+                        <span key={fact.label} className="asset-metadata-fact">
+                          <em>{fact.label}</em>
+                          <strong>{fact.value}</strong>
+                        </span>
+                      ))}
                     </aside>
                   </div>
                   <p className="summary">{selectedAsset.summary || "Indexing metadata is not ready yet."}</p>
-                  <div className="signal-group">
-                    <div className="subsection-heading">
-                      <p className="section-label">Signals</p>
-                      <h3>Model outputs</h3>
-                    </div>
-                    <div className="intelligence-grid">
-                      <InfoTile label="ASR" value={`${Math.round(selectedAsset.intelligence.asr.confidence * 100)}%`} />
-                      <InfoTile label="OCR" value={`${selectedAsset.intelligence.ocr.tokens.length} tokens`} />
-                      <InfoTile label="Color" value={selectedAsset.intelligence.visual.dominantColor} />
-                      <InfoTile label="Motion" value={selectedAsset.intelligence.visual.motionScore.toString()} />
-                    </div>
-                  </div>
                   <div className="chips">
                     {selectedAsset.tags.map((tag) => (
                       <span key={tag}>{tag}</span>

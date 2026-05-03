@@ -7,7 +7,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description="Embed text with a local sentence-transformers model.")
-    parser.add_argument("--model", default="intfloat/multilingual-e5-small")
+    parser.add_argument("--model", default="intfloat/multilingual-e5-base")
     parser.add_argument("--kind", choices=["query", "passage"], default="passage")
     args = parser.parse_args()
 

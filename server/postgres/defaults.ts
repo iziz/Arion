@@ -34,7 +34,7 @@ export function createDefaultIndex(now = new Date().toISOString()): IndexRecord 
     models: {
       search: "local-semantic-retrieval",
       analysis: "local-pattern-analysis",
-      embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-small"
+      embedding: process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-base"
     },
     modalities: ["visual", "audio", "transcription", "metadata"],
     domainIndexing: {
