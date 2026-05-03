@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { TimelineSegment } from "../../shared/types";
+import { parsePythonJson } from "../modelRuntime/pythonProcess";
 import { detectorModel, pythonBin, trackerName, trackerScript } from "./runtimeConfig";
 import type { TrackerResult } from "./types";
 
@@ -62,7 +63,7 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
       });
       child.stdin.end(JSON.stringify({ segments: items }));
     });
-    return JSON.parse(stdout) as TrackerResult;
+    return parsePythonJson<TrackerResult>(stdout);
   } catch (error) {
     return {
       available: false,

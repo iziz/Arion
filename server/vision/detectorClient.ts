@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import type { KeyframeRecord, TimelineSegment } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
+import { parsePythonJson } from "../modelRuntime/pythonProcess";
 import { allowHeuristicDetectorFallback, detectorBackend, detectorConfidence, detectorModel, detectorScript, pythonBin, rfDetrModel } from "./runtimeConfig";
 import type { DetectorResult } from "./types";
 
@@ -65,7 +66,7 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
       });
       child.stdin.end(JSON.stringify({ images: items }));
     });
-    return JSON.parse(stdout) as DetectorResult;
+    return parsePythonJson<DetectorResult>(stdout);
   } catch (error) {
     return {
       available: false,
