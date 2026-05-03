@@ -11,6 +11,7 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
   const domain = index?.domainIndexing;
   const domainEnabled = Boolean(domain?.enabled);
   const stages = new Set(domain?.stages ?? ["domain_caption", "event_label", "structured_event"]);
+  const policy = index?.capabilityPolicy;
   return (
     <form className="stack compact" onSubmit={(event) => void onSubmit(event)}>
       <input name="name" placeholder="새 에셋그룹 이름" defaultValue={index?.name ?? ""} autoFocus />
@@ -44,12 +45,32 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
             <span>Field/player/ball event schema</span>
           </label>
         </div>
+        <div className="stage-options" aria-label="Model capability policy">
+          <CapabilitySelect name="capabilityWhisperX" label="WhisperX diarization" value={policy?.whisperXDiarization ?? "optional"} />
+          <CapabilitySelect name="capabilityVisionDetector" label="Vision detector" value={policy?.visionDetector ?? "optional"} />
+          <CapabilitySelect name="capabilityVisionTracker" label="Vision tracker" value={policy?.visionTracker ?? "optional"} />
+          <CapabilitySelect name="capabilitySoccerNetAction" label="SoccerNet action spotting" value={policy?.soccerNetActionSpotting ?? "optional"} />
+          <CapabilitySelect name="capabilityDomainVlm" label="Domain VLM refinement" value={policy?.domainVlmRefinement ?? "optional"} />
+        </div>
       </div>
       <button type="submit">
         <Layers3 size={16} />
         {index ? "에셋그룹 저장" : "에셋그룹 만들기"}
       </button>
     </form>
+  );
+}
+
+function CapabilitySelect({ name, label, value }: { name: string; label: string; value: "disabled" | "optional" | "required" }) {
+  return (
+    <label>
+      <span>{label}</span>
+      <select name={name} defaultValue={value}>
+        <option value="optional">optional</option>
+        <option value="required">required</option>
+        <option value="disabled">disabled</option>
+      </select>
+    </label>
   );
 }
 
@@ -74,6 +95,7 @@ export function AssetGroupSummary({
     domain?.enabled && domain.groups.length > 0
       ? `${domain.groups.join(", ")} · ${domain.stages.map((stage) => stage.replace(/_/g, " ")).join(", ")}`
       : "Off";
+  const capabilityText = index?.capabilityPolicy ? summarizeCapabilityPolicy(index.capabilityPolicy) : "capabilities optional";
   return (
     <section className="asset-group-summary" aria-label="Selected asset group summary">
       <div>
@@ -90,6 +112,10 @@ export function AssetGroupSummary({
           <span>
             <b>Domain</b>
             {domainText}
+          </span>
+          <span>
+            <b>Policy</b>
+            {capabilityText}
           </span>
           <span>
             <b>VLM</b>
@@ -112,6 +138,18 @@ export function AssetGroupSummary({
       </div>
     </section>
   );
+}
+
+function summarizeCapabilityPolicy(policy: NonNullable<IndexRecord["capabilityPolicy"]>) {
+  const required = Object.entries(policy)
+    .filter(([, mode]) => mode === "required")
+    .map(([name]) => name.replace(/([A-Z])/g, " $1").toLowerCase());
+  const disabled = Object.entries(policy)
+    .filter(([, mode]) => mode === "disabled")
+    .map(([name]) => name.replace(/([A-Z])/g, " $1").toLowerCase());
+  if (required.length > 0) return `required: ${required.join(", ")}`;
+  if (disabled.length > 0) return `disabled: ${disabled.join(", ")}`;
+  return "capabilities optional";
 }
 
 function summarizeAssetGroupVlm(assets: AssetRecord[]) {

@@ -1,4 +1,5 @@
 import type { IndexRecord, UserRecord } from "../../shared/types";
+import { defaultCapabilityPolicy } from "../domainConfig";
 import { getPool } from "./connection";
 
 export async function seedDefaults() {
@@ -41,6 +42,7 @@ export function createDefaultIndex(now = new Date().toISOString()): IndexRecord 
       groups: [],
       stages: []
     },
+    capabilityPolicy: defaultCapabilityPolicy({ enabled: false, groups: [], stages: [] }),
     assetIds: [],
     status: "empty",
     createdAt: now,

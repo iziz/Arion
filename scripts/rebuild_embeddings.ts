@@ -1,6 +1,5 @@
 import "../server/env";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
-import { buildDomainSegmentIndex } from "../server/domainIndex";
 import { withSceneData } from "../server/intelligence";
 import { embedTimelineSegments, getEmbeddingModelName } from "../server/localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../server/localVisualEmbeddingRuntime";
@@ -11,8 +10,10 @@ import { upsertAssetVisualVectors } from "../server/localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../server/visionDetectionRuntime";
 import { applyEventClassification } from "../server/eventClassifier";
+import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../server/modelCapabilities";
 import { rebuildTrackingStore } from "../server/trackingStore";
-import { isTrustedDomainSegment } from "../server/evidenceTrust";
+import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, spotSoccerNetActions } from "../server/soccernet";
+import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
 
 const indexedAssets = (await listAssets()).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
 const indexes = await listIndexes();
@@ -70,30 +71,50 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
     };
   });
   const filePath = getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey);
-  const detections = await detectTimelineObjects(thumbnailTimeline, keyframes);
+  const capabilityPolicy = index ? resolveCapabilityPolicy(index) : null;
+  const detections = !index || isCapabilityEnabled(index, "visionDetector")
+    ? await detectTimelineObjects(thumbnailTimeline, keyframes)
+    : { available: false, provider: "disabled", model: capabilityPolicy?.visionDetector ?? "disabled", frames: [], error: "Vision detector disabled by capability policy." };
   console.error(`[rebuild] ${asset.id} detections ${detections.available ? "ready" : "fallback"} (${detections.frames.length} frames)`);
+  const detectorTrace = detections.available
+    ? `vision-detector:${detections.provider}:${detections.model}:${detections.frames.length}`
+    : `vision-detector-unavailable:${detections.error ?? "detector unavailable"}`;
   const trackedV0Timeline = applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections));
-  const tracks = await detectTimelineTracks(filePath, trackedV0Timeline);
+  if (index) assertCapabilityAvailable(index, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
+  const tracks = !index || isCapabilityEnabled(index, "visionTracker")
+    ? await detectTimelineTracks(filePath, trackedV0Timeline)
+    : { available: false, provider: "disabled", model: detections.model, tracker: capabilityPolicy?.visionTracker ?? "disabled", segments: [], error: "Vision tracker disabled by capability policy." };
   console.error(`[rebuild] ${asset.id} tracking ${tracks.available ? "ready" : "fallback"} (${tracks.segments.length} segments)`);
+  const trackerTrace = tracks.available
+    ? `vision-tracker:${tracks.provider}:${tracks.tracker}:${tracks.segments.length}`
+    : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
   const detectedTimeline = applyEventClassification(applyVisionTracks(trackedV0Timeline, tracks));
-  const sceneAsset = { ...asset, timeline: detectedTimeline };
-  const domainTimeline = index
-    ? detectedTimeline.map((segment) => {
-        const domain = buildDomainSegmentIndex(sceneAsset, index, segment);
-        if (!domain) return segment;
-        return {
-          ...segment,
-          domain,
-          sources: Array.from(new Set([...segment.sources, ...(isTrustedDomainSegment(domain) ? (["domain"] as const) : [])]))
-        };
-      })
-    : detectedTimeline;
+  if (index) assertCapabilityAvailable(index, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
+  const soccerNetResult =
+    index?.domainIndexing?.groups.includes("sports.football") &&
+    isCapabilityEnabled(index, "soccerNetActionSpotting") &&
+    (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(index, "soccerNetActionSpotting"))
+      ? await spotSoccerNetActions(filePath, detectedTimeline, asset.duration)
+      : null;
+  if (index && soccerNetResult) {
+    assertCapabilityAvailable(index, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
+  }
+  const actionTimeline = soccerNetResult ? applySoccerNetActionSpots(detectedTimeline, soccerNetResult) : detectedTimeline;
+  const domainTimeline = index ? enrichDomainTimeline({ ...asset, timeline: actionTimeline }, index, actionTimeline) : actionTimeline;
   console.error(`[rebuild] ${asset.id} domain timeline ready (${domainTimeline.length} segments)`);
   const timeline = await embedTimelineSegments(domainTimeline);
   console.error(`[rebuild] ${asset.id} text embeddings ready`);
   segments += timeline.length;
   const modelTrace = [...asset.intelligence.modelTrace];
+  modelTrace.push(detectorTrace, trackerTrace);
   if (!modelTrace.includes(`embedding:${getEmbeddingModelName()}`)) modelTrace.push(`embedding:${getEmbeddingModelName()}`);
+  if (soccerNetResult) {
+    modelTrace.push(
+      soccerNetResult.available
+        ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
+        : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`
+    );
+  }
   let records: Awaited<ReturnType<typeof embedKeyframes>> = [];
   try {
     records = await embedKeyframes(asset.indexId, asset.id, timeline, keyframes);

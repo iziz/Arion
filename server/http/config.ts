@@ -15,6 +15,7 @@ export const rateLimitExemptGetPaths = new Set([
   "/api/webhooks",
   "/api/metrics",
   "/api/db/status",
+  "/api/model-capabilities",
   "/api/observability"
 ]);
 

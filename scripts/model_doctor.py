@@ -26,6 +26,8 @@ result = {
     "paddle": present("paddle"),
     "scenedetect": present("scenedetect"),
     "ultralytics": present("ultralytics"),
+    "rfdetr": present("rfdetr"),
+    "soccernet": present("SoccerNet") or present("soccerNet") or present("soccernet"),
     "cv2": present("cv2"),
     "nltk": present("nltk"),
     "omegaconf": present("omegaconf"),

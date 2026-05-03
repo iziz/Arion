@@ -1,5 +1,4 @@
-import { buildDomainSegmentIndex } from "../domainIndex";
-import { isTrustedDomainSegment } from "../evidenceTrust";
+import { withDomainSegment } from "../domainIndex";
 import { enqueueLocalTask } from "../localQueue";
 import { embedTimelineSegments } from "../localEmbeddingRuntime";
 import { upsertAssetVectors } from "../localVectorStore";
@@ -12,15 +11,7 @@ import type { AssetRecord, IndexRecord, JobRecord, TimelineSegment } from "../..
 
 export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
   const assetWithTimeline = { ...asset, timeline };
-  return timeline.map((segment) => {
-    const domain = buildDomainSegmentIndex(assetWithTimeline, index, segment);
-    if (!domain) return segment;
-    return {
-      ...segment,
-      domain,
-      sources: Array.from(new Set([...segment.sources, ...(isTrustedDomainSegment(domain) ? (["domain"] as const) : [])]))
-    };
-  });
+  return timeline.map((segment) => withDomainSegment(assetWithTimeline, index, segment));
 }
 
 export async function runDomainVlmRefineJob(jobId: string, assetId: string) {

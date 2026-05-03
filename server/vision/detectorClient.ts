@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import type { KeyframeRecord, TimelineSegment } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
-import { detectorModel, detectorScript, pythonBin } from "./runtimeConfig";
+import { allowHeuristicDetectorFallback, detectorBackend, detectorConfidence, detectorModel, detectorScript, pythonBin, rfDetrModel } from "./runtimeConfig";
 import type { DetectorResult } from "./types";
 
 export async function detectTimelineObjects(timeline: TimelineSegment[], keyframes: KeyframeRecord[]) {
@@ -26,7 +26,19 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
 
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
-      const child = spawn(pythonBin, [detectorScript, "--model", detectorModel], {
+      const args = [
+        detectorScript,
+        "--backend",
+        detectorBackend,
+        "--model",
+        detectorModel,
+        "--rfdetr-model",
+        rfDetrModel,
+        "--conf",
+        detectorConfidence
+      ];
+      if (allowHeuristicDetectorFallback) args.push("--allow-heuristic-fallback");
+      const child = spawn(pythonBin, args, {
         stdio: ["pipe", "pipe", "pipe"]
       });
       const timeoutMs = Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0);
@@ -57,8 +69,8 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
   } catch (error) {
     return {
       available: false,
-      provider: "vision-detector",
-      model: detectorModel,
+      provider: detectorBackend === "rfdetr" ? "rfdetr" : detectorBackend === "ultralytics" ? "ultralytics" : "vision-detector",
+      model: detectorBackend === "rfdetr" ? rfDetrModel : detectorModel,
       frames: [],
       error: error instanceof Error ? error.message : "Vision detector failed"
     } satisfies DetectorResult;

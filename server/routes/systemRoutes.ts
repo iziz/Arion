@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { getQueueDepth } from "../localQueue";
+import { getRuntimeCapabilities } from "../modelCapabilities";
 import { getObservabilitySnapshot } from "../observability";
 import { getPostgresStatus, isPostgresEnabled } from "../postgresStore";
 import { getMetrics, listBilling, listEvents, listUsers } from "../store";
@@ -23,6 +24,14 @@ export function registerSystemRoutes(app: Express) {
 
   app.get("/api/observability", async (_req, res) => {
     res.json(getObservabilitySnapshot());
+  });
+
+  app.get("/api/model-capabilities", async (_req, res) => {
+    try {
+      res.json(await getRuntimeCapabilities());
+    } catch (error) {
+      res.status(503).json({ available: false, error: error instanceof Error ? error.message : "Model capability check failed" });
+    }
   });
 
   app.get("/api/users", async (_req, res) => {

@@ -81,11 +81,11 @@ export function withDomainSegment(asset: AssetRecord, index: IndexRecord, segmen
   if (!domain) return segment;
   const domainTagText = domain.labels.flatMap((label) => [label, readableLabel(label)]).join(" ");
   return {
-      ...segment,
-      domain,
-      tags: unique([...segment.tags, ...domain.labels, ...extractLightKeywords(domainTagText)]).slice(0, 32),
-      sources: unique([...segment.sources, ...(isTrustedDomainSegment(domain) ? (["domain"] as const) : [])])
-    };
+    ...segment,
+    domain,
+    tags: unique([...segment.tags, ...domain.labels, ...extractLightKeywords(domainTagText)]).slice(0, 32),
+    sources: unique([...segment.sources, ...(isTrustedDomainSegment(domain) ? (["domain"] as const) : [])])
+  };
 }
 
 function buildAmericanFootballDomainSegment(

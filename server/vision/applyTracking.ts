@@ -55,10 +55,10 @@ export function applyVisionTracking(timeline: TimelineSegment[]): TimelineSegmen
       : vision.proximity;
     const trackingStatus = ballTrackId || nearestPlayer ? "tracked" : vision.objects.ball.status === "detected" || vision.objects.players.status === "detected" ? "estimated" : "not_configured";
     const fieldCalibration = inferTrackingFieldCalibration(vision, ballMovement);
-      const trackedVision: VisionEvidence = {
-        ...vision,
-        trust: trackingStatus === "tracked" ? "detected" : vision.trust,
-        proximity,
+    const trackedVision: VisionEvidence = {
+      ...vision,
+      trust: trackingStatus === "tracked" ? "detected" : vision.trust,
+      proximity,
       fieldCalibration,
       tracking: {
         status: trackingStatus,
@@ -86,7 +86,7 @@ export function applyVisionTracking(timeline: TimelineSegment[]): TimelineSegmen
 }
 
 function isDetectorBackedBox(box: { source: string }) {
-  return box.source.startsWith("ultralytics");
+  return box.source.startsWith("ultralytics") || box.source.startsWith("rfdetr");
 }
 
 export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerResult): TimelineSegment[] {
@@ -111,10 +111,10 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
       },
       summary.ballMovement
     );
-      const nextVision: VisionEvidence = {
-        ...vision,
-        trust: "detected",
-        generatedBy: `${vision.generatedBy}+${summary.provider}:${summary.tracker}`,
+    const nextVision: VisionEvidence = {
+      ...vision,
+      trust: "detected",
+      generatedBy: `${vision.generatedBy}+${summary.provider}:${summary.tracker}`,
       objects: {
         players: {
           ...vision.objects.players,

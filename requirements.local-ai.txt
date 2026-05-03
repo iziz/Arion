@@ -21,5 +21,8 @@ accelerate
 qwen-vl-utils
 mlx-vlm; platform_system == "Darwin" and platform_machine == "arm64"
 Pillow
-# Optional: enables YOLO person/sports-ball detector. Without it, the app uses OpenCV fallback.
+# Optional detector/action spotting backends. Missing backends are reported as unavailable.
+scenedetect
 ultralytics
+rfdetr
+SoccerNet

@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AssetRecord, LocalIntelligence, WhisperSegment } from "../../shared/types";
+import type { AssetRecord, CapabilityMode, LocalIntelligence, WhisperSegment } from "../../shared/types";
 import { getObjectPath, getPublicMediaRoot } from "../localObjectStorage";
 import { traceAsync } from "../observability";
 import { parsePythonJson, runPythonScriptOnExit } from "./pythonProcess";
@@ -9,7 +9,13 @@ import { runRuntimeStage, type RuntimeStageReporter } from "./stageReporter";
 const whisperScript = path.resolve("scripts", "whisper_transcribe.py");
 const whisperXScript = path.resolve("scripts", "whisperx_diarize.py");
 
-export async function runSpeechRuntime(audioPath: string, asset: AssetRecord, language: string | null, reportStage?: RuntimeStageReporter) {
+export async function runSpeechRuntime(
+  audioPath: string,
+  asset: AssetRecord,
+  language: string | null,
+  reportStage?: RuntimeStageReporter,
+  options: { diarizationMode?: CapabilityMode } = {}
+) {
   const whisper = await runRuntimeStage(
     reportStage,
     "asr",
@@ -23,20 +29,10 @@ export async function runSpeechRuntime(audioPath: string, asset: AssetRecord, la
       ),
     (result) => (result.available ? null : (result.error ?? "Whisper returned no transcript result"))
   );
-  const segmentsJsonPath = await writeWhisperSegmentsForDiarizationResult(asset.id, whisper.segments);
-  const diarization = await runRuntimeStage(
-    reportStage,
-    "diarization",
-    "Running WhisperX diarization",
-    () =>
-      traceAsync(
-        "model.diarization.whisperx",
-        { assetId: asset.id, model: process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3" },
-        () => runWhisperXDiarization(audioPath, language, segmentsJsonPath ?? undefined),
-        "model.diarization.whisperx"
-      ),
-    (result) => (result.available ? null : (result.error ?? "WhisperX returned no speaker result"))
-  );
+  const diarization =
+    options.diarizationMode === "disabled"
+      ? disabledDiarizationResult()
+      : await runWhisperXStage(audioPath, asset, language, whisper.segments, reportStage);
   return { whisper, diarization };
 }
 
@@ -60,6 +56,33 @@ type DiarizationResult = {
   segments: Array<{ start: number; end: number; speaker: string; text: string }>;
   error?: string | null;
 };
+
+async function runWhisperXStage(audioPath: string, asset: AssetRecord, language: string | null, segments: WhisperSegment[], reportStage?: RuntimeStageReporter) {
+  const segmentsJsonPath = await writeWhisperSegmentsForDiarizationResult(asset.id, segments);
+  return runRuntimeStage(
+    reportStage,
+    "diarization",
+    "Running WhisperX diarization",
+    () =>
+      traceAsync(
+        "model.diarization.whisperx",
+        { assetId: asset.id, model: process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3" },
+        () => runWhisperXDiarization(audioPath, language, segmentsJsonPath ?? undefined),
+        "model.diarization.whisperx"
+      ),
+    (result) => (result.available ? null : (result.error ?? "WhisperX returned no speaker result"))
+  );
+}
+
+function disabledDiarizationResult(): DiarizationResult {
+  return {
+    available: false,
+    provider: "whisperx",
+    speakers: [],
+    segments: [],
+    error: "WhisperX diarization disabled by capability policy."
+  };
+}
 
 async function runWhisper(filePath: string, language: string | null, duration: number | null): Promise<WhisperResult> {
   try {

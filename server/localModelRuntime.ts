@@ -1,4 +1,4 @@
-import type { AssetRecord, LocalIntelligence } from "../shared/types";
+import type { AssetRecord, CapabilityMode, LocalIntelligence } from "../shared/types";
 import { getPublicMediaRoot } from "./localObjectStorage";
 import { extractAudioAndVad } from "./modelRuntime/audioRuntime";
 import { toPublicMediaPath } from "./modelRuntime/mediaPath";
@@ -10,7 +10,12 @@ import { logJson, recordLatency, traceAsync } from "./observability";
 
 export { applyDiarizationToAsrSegments, runWhisperXDiarizationForAsset } from "./modelRuntime/speechRuntime";
 
-export async function runLocalModelRuntime(filePath: string, asset: AssetRecord, reportStage?: RuntimeStageReporter): Promise<LocalIntelligence> {
+export async function runLocalModelRuntime(
+  filePath: string,
+  asset: AssetRecord,
+  reportStage?: RuntimeStageReporter,
+  options: { whisperXDiarization?: CapabilityMode } = {}
+): Promise<LocalIntelligence> {
   const languageHints = inferLanguageHints(asset);
   const audio = await runRuntimeStage(
     reportStage,
@@ -46,7 +51,7 @@ export async function runLocalModelRuntime(filePath: string, asset: AssetRecord,
         ),
       (result) => (result.available ? null : (result.error ?? "PaddleOCR returned no OCR result"))
     ),
-    runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage)
+    runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage, { diarizationMode: options.whisperXDiarization })
   ]);
   const { whisper, diarization } = speech;
   if (!whisper.available) {

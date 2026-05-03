@@ -6,12 +6,14 @@ import { embedTimelineSegments, getEmbeddingModelName } from "../localEmbeddingR
 import { embedKeyframes, getVisualEmbeddingModelName } from "../localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../keyframes";
 import { runLocalModelRuntime } from "../localModelRuntime";
+import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../modelCapabilities";
 import { applyEventClassification } from "../eventClassifier";
 import { getObjectPath, putUploadedObject } from "../localObjectStorage";
 import { upsertAssetVectors } from "../localVectorStore";
 import { upsertAssetVisualVectors } from "../localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
 import { detectSceneBoundaries } from "../sceneDetection";
+import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "../soccernet";
 import { upsertAssetTracking } from "../trackingStore";
 import { getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync, traceJobAsync } from "../observability";
@@ -122,11 +124,19 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     await updateJob(jobId, { stage: "local-model-runtime", progress: 40 }, "Running local ASR/OCR/visual model runtime");
     const runtimeInput = await getAsset(assetId);
     if (!runtimeInput) return;
+    const runtimeIndex = (await getIndex(runtimeInput.indexId)) ?? createDefaultIndex();
+    const runtimePolicy = resolveCapabilityPolicy(runtimeIndex);
     const intelligence = await traceAsync(
       "stage.local_model_runtime",
       { jobId, assetId },
-      () => runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event)),
+      () => runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event), { whisperXDiarization: runtimePolicy.whisperXDiarization }),
       "stage.local_model_runtime"
+    );
+    assertCapabilityAvailable(
+      runtimeIndex,
+      "whisperXDiarization",
+      intelligence.diarization.provider !== "none" && intelligence.diarization.segments.length > 0,
+      intelligence.diarization.error ?? "WhisperX did not return speaker segments."
     );
     await updateAsset(assetId, { status: "scanning", progress: 60, intelligence });
     await updateJob(jobId, { stage: "scan", progress: 60 }, "Local ASR, OCR, and visual scan complete");
@@ -149,6 +159,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             updatedAt: new Date().toISOString()
           };
     if (embeddingIndex !== index) await saveIndex(embeddingIndex);
+    const capabilityPolicy = resolveCapabilityPolicy(embeddingIndex);
     const sceneBoundaries = await traceAsync(
       "stage.scene_detection",
       { jobId, assetId },
@@ -190,28 +201,71 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     });
     await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting players and ball candidates in keyframes");
     await updateAsset(assetId, { status: "embedding", progress: 78 });
-    const detections = await traceAsync(
-      "stage.vision_detection",
-      { jobId, assetId, segments: thumbnailTimeline.length },
-      () => detectTimelineObjects(thumbnailTimeline, keyframes),
-      "stage.vision_detection"
-    );
+    const detections = isCapabilityEnabled(embeddingIndex, "visionDetector")
+      ? await traceAsync(
+          "stage.vision_detection",
+          { jobId, assetId, segments: thumbnailTimeline.length },
+          () => detectTimelineObjects(thumbnailTimeline, keyframes),
+          "stage.vision_detection"
+        )
+      : { available: false, provider: "disabled", model: capabilityPolicy.visionDetector, frames: [], error: "Vision detector disabled by capability policy." };
+    const detectorTrace = detections.available
+      ? `vision-detector:${detections.provider}:${detections.model}:${detections.frames.length}`
+      : `vision-detector-unavailable:${detections.error ?? "detector unavailable"}`;
+    assertCapabilityAvailable(embeddingIndex, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
     const trackedV0Timeline = applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections));
     await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking players and ball candidates over video");
-    const tracks = await traceAsync(
-      "stage.vision_tracking",
-      { jobId, assetId, segments: trackedV0Timeline.length },
-      () => detectTimelineTracks(filePath, trackedV0Timeline),
-      "stage.vision_tracking"
-    );
+    const tracks = isCapabilityEnabled(embeddingIndex, "visionTracker")
+      ? await traceAsync(
+          "stage.vision_tracking",
+          { jobId, assetId, segments: trackedV0Timeline.length },
+          () => detectTimelineTracks(filePath, trackedV0Timeline),
+          "stage.vision_tracking"
+        )
+      : { available: false, provider: "disabled", model: detections.model, tracker: capabilityPolicy.visionTracker, segments: [], error: "Vision tracker disabled by capability policy." };
+    const trackerTrace = tracks.available
+      ? `vision-tracker:${tracks.provider}:${tracks.tracker}:${tracks.segments.length}`
+      : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
+    assertCapabilityAvailable(embeddingIndex, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
     const detectedTimeline = applyEventClassification(applyVisionTracks(trackedV0Timeline, tracks));
+    let soccerNetTrace = "";
+    let actionTimeline = detectedTimeline;
+    const shouldRunSoccerNet =
+      embeddingIndex.domainIndexing?.groups.includes("sports.football") &&
+      isCapabilityEnabled(embeddingIndex, "soccerNetActionSpotting") &&
+      (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(embeddingIndex, "soccerNetActionSpotting"));
+    if (shouldRunSoccerNet) {
+      await updateJob(jobId, { stage: "soccernet-action", progress: 81 }, `Running SoccerNet action spotting with ${soccerNetActionModel}`);
+      const soccerNetResult = await traceAsync(
+        "model.soccernet.action_spotting",
+        { jobId, assetId, model: soccerNetActionModel, segments: detectedTimeline.length },
+        () => spotSoccerNetActions(filePath, detectedTimeline, refreshed.duration),
+        "model.soccernet.action_spotting"
+      );
+      soccerNetTrace = soccerNetResult.available
+        ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
+        : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`;
+      if (!soccerNetResult.available) {
+        logJson("warn", "model.soccernet.action_spotting.unavailable", "SoccerNet action spotting unavailable", {
+          jobId,
+          assetId,
+          error: soccerNetResult.error
+        });
+      }
+      assertCapabilityAvailable(embeddingIndex, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
+      actionTimeline = applySoccerNetActionSpots(detectedTimeline, soccerNetResult);
+    }
     let timelineForDomain = embeddingIndex.domainIndexing?.enabled
-      ? enrichDomainTimeline({ ...refreshed, timeline: detectedTimeline }, embeddingIndex, detectedTimeline)
-      : detectedTimeline;
+      ? enrichDomainTimeline({ ...refreshed, timeline: actionTimeline }, embeddingIndex, actionTimeline)
+      : actionTimeline;
     if (embeddingIndex.domainIndexing?.enabled) {
       const domainEvents = timelineForDomain.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
       await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Sports domain event layer ready with ${domainEvents} event candidates`);
-      if (isVlmWorkerEnabled()) {
+      const shouldRunDomainVlm =
+        isCapabilityEnabled(embeddingIndex, "domainVlmRefinement") &&
+        (isVlmWorkerEnabled() || isCapabilityRequired(embeddingIndex, "domainVlmRefinement"));
+      if (shouldRunDomainVlm) {
+        assertCapabilityAvailable(embeddingIndex, "domainVlmRefinement", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
         await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports domain events with ${getVlmWorkerModelName()}`);
         const vlmRefinement = await traceAsync(
           "model.vlm.sports_domain",
@@ -291,7 +345,10 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         ...refreshed.intelligence,
         modelTrace: [
           ...refreshed.intelligence.modelTrace,
+          detectorTrace,
+          trackerTrace,
           isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
+          soccerNetTrace,
           `embedding:${getEmbeddingModelName()}`,
           visualEmbeddingTrace
         ].filter(Boolean)

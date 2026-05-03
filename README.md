@@ -118,6 +118,10 @@ Local environment values are loaded from `.env` automatically when present.
 - Set `WHISPER_LANGUAGE=auto` to let Whisper detect the spoken language, or set a specific language code.
 - Set `WHISPERX_MODEL=large-v3` and `WHISPERX_HF_TOKEN=...` to enable optional WhisperX speaker diarization.
 - Set `PADDLEOCR_LANG=auto` to run OCR language candidates based on asset metadata, or set `en|korean|ch|...` to force one language pack.
+- Set `VISION_DETECTOR_BACKEND=auto|ultralytics|rfdetr` to choose the person/ball detector. YOLO uses `VISION_DETECTOR_MODEL`, RF-DETR uses `VISION_RFDETR_MODEL`, and missing detector backends are marked unavailable.
+- Set `VISION_TRACKER=bytetrack.yaml` to run Ultralytics ByteTrack/BoT-SORT tracking when `ultralytics` is installed.
+- Set `SOCCERNET_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `SOCCERNET_ACTION_SPOTS_JSON=/path/to/predictions.json` to import SoccerNet-style action spotting results as trusted sports domain evidence.
+- Set `CAPABILITY_*` values or the asset-group capability policy to `disabled|optional|required`. Required capabilities fail the indexing job when unavailable; optional capabilities only record unavailable traces.
 - Set `EMBEDDING_MODEL=intfloat/multilingual-e5-small` and `EMBEDDING_DIMENSIONS=384` to choose the local semantic embedding model.
 - Set `VISUAL_EMBEDDING_MODEL=ViT-B-32`, `VISUAL_EMBEDDING_PRETRAINED=laion2b_s34b_b79k`, and `VISUAL_EMBEDDING_DIMENSIONS=512` to choose the local visual embedding model.
 - Set `SCENE_THRESHOLD=0.3` to tune FFmpeg scene-boundary detection sensitivity.
@@ -126,6 +130,7 @@ Local environment values are loaded from `.env` automatically when present.
 - Every API response includes `x-request-id` and W3C `traceparent` headers for request correlation.
 - Structured JSON logs are written to stdout and `.data/logs/app.ndjson`.
 - `GET /api/observability` returns recent spans, recent logs, request latency, stage latency, and model runtime latency/error metrics.
+- `GET /api/model-capabilities` returns the current local runtime dependency/capability check.
 
 ## Local AI Setup
 
@@ -139,7 +144,7 @@ LOCAL_AI_PYTHON="$PWD/.venv-ai/bin/python" npm run dev
 ```
 
 The runtime extracts 16 kHz mono WAV audio with FFmpeg, derives speech/music regions with FFmpeg VAD-style silence detection, then tries `faster-whisper` first and `openai-whisper` second. WhisperX diarization is optional because pyannote-backed diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg and can try multiple OCR language candidates when `PADDLEOCR_LANG=auto`.
-The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, and `sentence-transformers`.
+The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, `sentence-transformers`, and optional `ultralytics`/`rfdetr`/`SoccerNet` backends.
 
 ## Local Embeddings
 

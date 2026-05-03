@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import path from "node:path";
+import { defaultCapabilityPolicy, normalizeCapabilityPolicy } from "./domainConfig";
 import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import { getVectorCount } from "./localVectorStore";
 import * as pgStore from "./postgresStore";
@@ -248,6 +249,7 @@ export function createDefaultIndex(now = new Date().toISOString()): IndexRecord 
       groups: [],
       stages: []
     },
+    capabilityPolicy: defaultCapabilityPolicy({ enabled: false, groups: [], stages: [] }),
     assetIds: [],
     status: "empty",
     createdAt: now,
@@ -279,7 +281,8 @@ function migrate(raw: LegacyDatabase): Database {
   const migrated = emptyDatabase();
   migrated.indexes = (raw.indexes ?? []).map((index) => ({
     ...index,
-    domainIndexing: index.domainIndexing ?? { enabled: false, groups: [], stages: [] }
+    domainIndexing: index.domainIndexing ?? { enabled: false, groups: [], stages: [] },
+    capabilityPolicy: normalizeCapabilityPolicy(index.capabilityPolicy, index.domainIndexing)
   }));
   migrated.assets = raw.assets ?? raw.videos ?? [];
   migrated.jobs = raw.jobs ?? [];

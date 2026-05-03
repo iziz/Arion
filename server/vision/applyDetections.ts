@@ -51,11 +51,11 @@ export function applyVisionDetections(timeline: TimelineSegment[], result: Detec
       },
       fieldCalibration,
       eventCandidates: mergeEventCandidates(sceneData.vision.eventCandidates, frame, detectedZone.zone),
-        limitations: [
-          "Object boxes come from YOLO detector output.",
-          "Player identity, team assignment, and calibrated pitch coordinates still require tracker/re-id/homography stages."
-        ]
-      };
+      limitations: [
+        `Object boxes come from ${detectorName(frame.provider)} detector output.`,
+        "Player identity, team assignment, and calibrated pitch coordinates still require tracker/re-id/homography stages."
+      ]
+    };
     return {
       ...segment,
       sceneData: {
@@ -67,9 +67,19 @@ export function applyVisionDetections(timeline: TimelineSegment[], result: Detec
 }
 
 function isDetectorBacked(frameProvider: string, resultProvider: string, resultAvailable: boolean, frameAvailable: boolean) {
-  return resultAvailable && frameAvailable && (frameProvider.startsWith("ultralytics") || resultProvider.startsWith("ultralytics"));
+  return (
+    resultAvailable &&
+    frameAvailable &&
+    (frameProvider.startsWith("ultralytics") || resultProvider.startsWith("ultralytics") || frameProvider.startsWith("rfdetr") || resultProvider.startsWith("rfdetr"))
+  );
 }
 
 function adjustedBoxConfidence(confidence: number, detectorBacked: boolean) {
   return detectorBacked ? confidence : Number(Math.min(0.42, confidence).toFixed(2));
+}
+
+function detectorName(provider: string) {
+  if (provider.startsWith("rfdetr")) return "RF-DETR";
+  if (provider.startsWith("ultralytics")) return "YOLO";
+  return provider;
 }

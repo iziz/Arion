@@ -26,6 +26,15 @@ export type WebhookEventType =
 export type SportsDomainGroup = "sports.football" | "sports.american_football";
 
 export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "inferred" | "heuristic" | "unavailable";
+export type CapabilityMode = "disabled" | "optional" | "required";
+
+export type CapabilityPolicy = {
+  whisperXDiarization: CapabilityMode;
+  visionDetector: CapabilityMode;
+  visionTracker: CapabilityMode;
+  soccerNetActionSpotting: CapabilityMode;
+  domainVlmRefinement: CapabilityMode;
+};
 
 export type DomainEvent = {
   id: string;
@@ -425,6 +434,7 @@ export type IndexRecord = {
     groups: SportsDomainGroup[];
     stages: Array<"domain_caption" | "event_label" | "structured_event">;
   };
+  capabilityPolicy?: CapabilityPolicy;
   assetIds: string[];
   status: "ready" | "empty";
   createdAt: string;

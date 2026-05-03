@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { normalizeDomainIndexing } from "../domainConfig";
+import { normalizeCapabilityPolicy, normalizeDomainIndexing } from "../domainConfig";
 import { sendNotFound } from "../http/middleware";
 import { getEmbeddingModelName } from "../localEmbeddingRuntime";
 import { recordEvent } from "../services/events";
@@ -14,6 +14,7 @@ export function registerIndexRoutes(app: Express) {
 
   app.post("/api/indexes", async (req, res) => {
     const now = new Date().toISOString();
+    const domainIndexing = normalizeDomainIndexing(req.body.domainIndexing);
     const index: IndexRecord = {
       ...createDefaultIndex(now),
       id: randomUUID(),
@@ -25,7 +26,8 @@ export function registerIndexRoutes(app: Express) {
         embedding: String(req.body.models?.embedding || getEmbeddingModelName())
       },
       modalities: Array.isArray(req.body.modalities) && req.body.modalities.length > 0 ? req.body.modalities : ["visual", "audio", "transcription", "metadata"],
-      domainIndexing: normalizeDomainIndexing(req.body.domainIndexing),
+      domainIndexing,
+      capabilityPolicy: normalizeCapabilityPolicy(req.body.capabilityPolicy, domainIndexing),
       assetIds: [],
       status: "empty",
       createdAt: now,
@@ -46,11 +48,13 @@ export function registerIndexRoutes(app: Express) {
     const index = await getIndex(String(req.params.id));
     if (!index) return sendNotFound(res, "Index not found");
     const now = new Date().toISOString();
+    const domainIndexing = req.body.domainIndexing === undefined ? index.domainIndexing : normalizeDomainIndexing(req.body.domainIndexing);
     const next: IndexRecord = {
       ...index,
       name: typeof req.body.name === "string" && req.body.name.trim() ? req.body.name.trim() : index.name,
       description: typeof req.body.description === "string" ? req.body.description : index.description,
-      domainIndexing: req.body.domainIndexing === undefined ? index.domainIndexing : normalizeDomainIndexing(req.body.domainIndexing),
+      domainIndexing,
+      capabilityPolicy: req.body.capabilityPolicy === undefined ? index.capabilityPolicy : normalizeCapabilityPolicy(req.body.capabilityPolicy, domainIndexing),
       updatedAt: now
     };
     await saveIndex(next);

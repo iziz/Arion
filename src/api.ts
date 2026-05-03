@@ -219,6 +219,17 @@ export function indexFormPayload(form: HTMLFormElement) {
       enabled: domainEnabled,
       groups: domainEnabled && (domainGroup === "sports.football" || domainGroup === "sports.american_football") ? [domainGroup] : [],
       stages: domainEnabled ? domainStages : []
+    },
+    capabilityPolicy: {
+      whisperXDiarization: modeValue(data.get("capabilityWhisperX")),
+      visionDetector: modeValue(data.get("capabilityVisionDetector")),
+      visionTracker: modeValue(data.get("capabilityVisionTracker")),
+      soccerNetActionSpotting: modeValue(data.get("capabilitySoccerNetAction")),
+      domainVlmRefinement: modeValue(data.get("capabilityDomainVlm"))
     }
   };
+}
+
+function modeValue(value: FormDataEntryValue | null) {
+  return value === "disabled" || value === "optional" || value === "required" ? value : "optional";
 }
