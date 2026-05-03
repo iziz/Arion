@@ -23,6 +23,10 @@ export type WebhookEventType =
   | "asset.indexing.failed"
   | "analysis.completed";
 
+export type SportsDomainGroup = "sports.football" | "sports.american_football";
+
+export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "inferred" | "heuristic" | "unavailable";
+
 export type DomainEvent = {
   id: string;
   domain: string;
@@ -31,6 +35,7 @@ export type DomainEvent = {
   eventType: string;
   labels: string[];
   confidence: number;
+  trust?: EvidenceTrustTier;
   evidence: {
     asr: string[];
     ocr: string[];
@@ -65,6 +70,31 @@ export type DomainEvent = {
       calibrationStatus: "not_configured" | "estimated" | "calibrated";
       attackingDirection: "left_to_right" | "right_to_left" | "unknown";
       zoneConfidence: number;
+    };
+    limitations: string[];
+  };
+  americanFootball?: {
+    phase: "dropback" | "designed_run" | "scramble" | "play_action" | "unknown";
+    playType: "scramble" | "pocket_escape" | "throw_on_run" | "pressure" | "pass" | "rush" | "unknown";
+    quarterback: {
+      present: boolean;
+      confidence: number;
+      trackId: string | null;
+      trackingStatus: "not_configured" | "estimated" | "detected" | "not_detected";
+      identity?: PlayerIdentity | null;
+    };
+    pressure: {
+      present: boolean;
+      confidence: number;
+      source: "text" | "vision" | "vlm" | "unknown";
+    };
+    pocket: {
+      status: "intact" | "collapsing" | "escaped" | "unknown";
+      confidence: number;
+    };
+    decision: {
+      outcome: "run" | "throw" | "sack_avoidance" | "unknown";
+      confidence: number;
     };
     limitations: string[];
   };
@@ -104,6 +134,7 @@ export type DomainVlmQuality = {
 
 export type VisionEvidence = {
   generatedBy: string;
+  trust?: EvidenceTrustTier;
   frameAt: number | null;
   pitch: {
     present: boolean;
@@ -134,6 +165,30 @@ export type VisionEvidence = {
     ballTrackId: string | null;
     nearestPlayerTrackId: string | null;
     continuity: number;
+    version?: "tracking_v0" | "tracking_v2";
+    provider?: string;
+    model?: string;
+    tracker?: string;
+    frameCount?: number;
+    trackedFrameCount?: number;
+    trackCoverage?: number;
+    idSwitches?: number;
+    playerTracks?: Array<{
+      id: string;
+      label: "person" | "sports_ball";
+      frames: number;
+      confidence: number;
+      firstSeen: number | null;
+      lastSeen: number | null;
+    }>;
+    ballTracks?: Array<{
+      id: string;
+      label: "person" | "sports_ball";
+      frames: number;
+      confidence: number;
+      firstSeen: number | null;
+      lastSeen: number | null;
+    }>;
     ballMovement: {
       fromPrevious: number | null;
       speedPerSecond: number | null;
@@ -166,6 +221,9 @@ export type VisionEvidence = {
       fieldZone: VisionEvidence["fieldZone"]["zone"];
       ballDirection: "left" | "right" | "vertical" | "stationary" | "unknown";
       trackingContinuity?: number;
+      trackingVersion?: "tracking_v0" | "tracking_v2";
+      trackingCoverage?: number | null;
+      trackingReliable?: boolean;
       ballSpeed?: number | null;
       directionMatchesAttack?: boolean;
       sameNearestPlayerWindow?: boolean;
@@ -198,6 +256,7 @@ export type VisionEvidence = {
 
 export type VisionBoundingBox = {
   label: "person" | "sports_ball" | "unknown";
+  trackId?: string | null;
   confidence: number;
   x: number;
   y: number;
@@ -248,6 +307,7 @@ export type TimelineSegment = {
     searchText: string;
     confidence: number;
     generatedBy: string;
+    trust?: EvidenceTrustTier;
     vlm?: DomainVlmQuality;
   };
   tags: string[];
@@ -259,6 +319,8 @@ export type TimelineSegment = {
   scene?: {
     shotIndex: number;
     boundaryScore: number | null;
+    boundarySource?: "pyscenedetect" | "ffmpeg" | null;
+    boundaryDetector?: string | null;
   };
 };
 
@@ -297,6 +359,11 @@ export type KeyframeRecord = {
 export type LocalIntelligence = {
   audio: {
     extractedPath: string | null;
+    vad?: {
+      available: boolean;
+      provider: string;
+      error: string | null;
+    };
     speechSegments: Array<{
       start: number;
       end: number;
@@ -333,10 +400,12 @@ export type LocalIntelligence = {
     frames: OcrFrameResult[];
   };
   visual: {
+    available?: boolean;
     labels: string[];
     dominantColor: string;
     brightness: number;
     motionScore: number;
+    error?: string | null;
   };
   modelTrace: string[];
 };
@@ -353,7 +422,7 @@ export type IndexRecord = {
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
   domainIndexing?: {
     enabled: boolean;
-    groups: Array<"sports.football">;
+    groups: SportsDomainGroup[];
     stages: Array<"domain_caption" | "event_label" | "structured_event">;
   };
   assetIds: string[];

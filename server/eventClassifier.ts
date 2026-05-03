@@ -92,6 +92,9 @@ type SequenceContext = {
   sameNearestPlayerWindow: boolean;
   directionMatchesAttack: boolean;
   trackingContinuity: number;
+  trackingVersion: "tracking_v0" | "tracking_v2" | null;
+  trackingCoverage: number | null;
+  trackingReliable: boolean;
   ballSpeed: number | null;
   pressureCue: boolean;
   calibratedZone: boolean;
@@ -121,11 +124,11 @@ function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence, 
     confidence += Math.min(0.28, textMatches.length * 0.14);
     confidence += receiverMatches.length > 0 || receiverCue ? 0.12 : 0;
     confidence += playerNearBall ? 0.12 : 0;
-    confidence += ballTracked ? 0.08 : 0;
+    confidence += ballTracked ? (context.trackingReliable ? 0.1 : 0.04) : 0;
     confidence += vision.fieldZone.zone === "final_third" || vision.fieldZone.zone === "penalty_area" ? 0.08 : 0;
     confidence += context.directionMatchesAttack ? 0.08 : 0;
     confidence += context.sameNearestPlayerWindow && rule.label.endsWith("_receive") ? 0.06 : 0;
-    confidence += context.trackingContinuity >= 0.45 ? 0.06 : 0;
+    confidence += context.trackingContinuity >= 0.45 ? (context.trackingReliable ? 0.08 : 0.03) : 0;
     confidence += context.calibratedZone ? 0.06 : 0;
     confidence += direction !== "unknown" && direction !== "stationary" ? 0.04 : 0;
     if (candidateMatch) confidence += 0.08;
@@ -173,6 +176,9 @@ function classifySegmentEvent(segment: TimelineSegment, vision: VisionEvidence, 
       fieldZone: vision.fieldZone.zone,
       ballDirection: direction,
       trackingContinuity: context.trackingContinuity,
+      trackingVersion: context.trackingVersion ?? undefined,
+      trackingCoverage: context.trackingCoverage,
+      trackingReliable: context.trackingReliable,
       ballSpeed: context.ballSpeed,
       directionMatchesAttack: context.directionMatchesAttack,
       sameNearestPlayerWindow: context.sameNearestPlayerWindow,
@@ -191,6 +197,9 @@ function buildSequenceContext(timeline: TimelineSegment[], index: number, vision
   );
   const ballSpeed = vision.tracking?.ballMovement.speedPerSecond ?? null;
   const trackingContinuity = vision.tracking?.continuity ?? 0;
+  const trackingVersion = vision.tracking?.version ?? null;
+  const trackingCoverage = vision.tracking?.trackCoverage ?? null;
+  const trackingReliable = Boolean(trackingVersion === "tracking_v2" && (trackingCoverage ?? trackingContinuity) >= 0.12);
   const attackDirection = vision.fieldCalibration?.attackingDirection ?? "unknown";
   const ballDirection = vision.tracking?.ballMovement.direction ?? "unknown";
   const directionMatchesAttack =
@@ -199,6 +208,7 @@ function buildSequenceContext(timeline: TimelineSegment[], index: number, vision
   const calibratedZone = vision.fieldCalibration?.status === "calibrated";
   const sequenceRules = [
     trackingContinuity > 0 ? `sequence: tracking continuity ${trackingContinuity}` : "",
+    trackingVersion ? `sequence: ${trackingVersion} coverage ${trackingCoverage ?? "unknown"}` : "",
     ballSpeed !== null ? `sequence: ball speed ${ballSpeed}` : "",
     sameNearestPlayerWindow ? `sequence: same nearest player ${nearest} in adjacent window` : "",
     directionMatchesAttack ? `sequence: ball direction matches attack direction ${attackDirection}` : "",
@@ -208,6 +218,9 @@ function buildSequenceContext(timeline: TimelineSegment[], index: number, vision
     sameNearestPlayerWindow,
     directionMatchesAttack,
     trackingContinuity,
+    trackingVersion,
+    trackingCoverage,
+    trackingReliable,
     ballSpeed,
     pressureCue,
     calibratedZone,
@@ -222,12 +235,12 @@ function inferTrackingReceive(vision: VisionEvidence, context: SequenceContext):
   if (!receiveSequence) return null;
   const throughLike = inAttackingZone && context.directionMatchesAttack;
   const confidence = roundConfidence(
-    0.42 +
+    (context.trackingReliable ? 0.44 : 0.36) +
       (vision.proximity?.confidence ?? 0) * 0.18 +
       Math.min(0.14, (context.ballSpeed ?? 0) * 1.4) +
-      (context.sameNearestPlayerWindow ? 0.08 : 0) +
+      (context.sameNearestPlayerWindow ? (context.trackingReliable ? 0.08 : 0.03) : 0) +
       (inAttackingZone ? 0.08 : 0) +
-      (context.directionMatchesAttack ? 0.08 : 0) +
+      (context.directionMatchesAttack ? (context.trackingReliable ? 0.08 : 0.04) : 0) +
       (context.calibratedZone ? 0.06 : 0)
   );
   return { label: throughLike ? "through_ball_receive" : "pass_receive", confidence };
@@ -237,8 +250,10 @@ function inferTrackingCarry(vision: VisionEvidence, context: SequenceContext): {
   const samePlayer = context.sameNearestPlayerWindow;
   const nearBall = Boolean(vision.proximity?.ballNearPlayer);
   const lowOrMediumSpeed = (context.ballSpeed ?? 0) > 0 && (context.ballSpeed ?? 0) < 0.09;
-  if (!samePlayer || !nearBall || !lowOrMediumSpeed) return null;
-  const confidence = roundConfidence(0.38 + (vision.proximity?.confidence ?? 0) * 0.14 + context.trackingContinuity * 0.14);
+  if (!samePlayer || !nearBall || !lowOrMediumSpeed || (!context.trackingReliable && context.trackingContinuity < 0.55)) return null;
+  const confidence = roundConfidence(
+    (context.trackingReliable ? 0.4 : 0.32) + (vision.proximity?.confidence ?? 0) * 0.14 + context.trackingContinuity * 0.14
+  );
   return { label: "dribble", confidence };
 }
 

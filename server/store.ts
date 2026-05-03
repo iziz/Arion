@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
+import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import { getVectorCount } from "./localVectorStore";
 import * as pgStore from "./postgresStore";
 import type {
@@ -44,13 +45,7 @@ export async function ensureStore() {
     return;
   }
   if (loaded) return;
-  await mkdir(dataDir, { recursive: true });
-  try {
-    const raw = await readFile(dbPath, "utf8");
-    database = migrate(JSON.parse(raw) as LegacyDatabase);
-  } catch {
-    database = emptyDatabase();
-  }
+  database = migrate(await readJsonFile<LegacyDatabase>(dbPath, () => ({}), "store.db"));
   ensureDefaultIndex();
   await persist();
   loaded = true;
@@ -307,9 +302,14 @@ function migrate(raw: LegacyDatabase): Database {
       videoCodec: null
     },
     intelligence: {
-      audio: {
-        extractedPath: asset.intelligence?.audio?.extractedPath ?? null,
-        speechSegments: asset.intelligence?.audio?.speechSegments ?? [],
+	      audio: {
+	        extractedPath: asset.intelligence?.audio?.extractedPath ?? null,
+	        vad: asset.intelligence?.audio?.vad ?? {
+	          available: (asset.intelligence?.audio?.speechSegments?.length ?? 0) > 0,
+	          provider: "legacy",
+	          error: null
+	        },
+	        speechSegments: asset.intelligence?.audio?.speechSegments ?? [],
         musicSegments: asset.intelligence?.audio?.musicSegments ?? [],
         hasSpeech: asset.intelligence?.audio?.hasSpeech ?? false,
         hasMusic: asset.intelligence?.audio?.hasMusic ?? false
@@ -332,10 +332,14 @@ function migrate(raw: LegacyDatabase): Database {
         frames: asset.intelligence?.ocr?.frames ?? []
       },
       visual: {
+        available:
+          asset.intelligence?.visual?.available ??
+          isStoredVisualAvailable(asset.intelligence?.visual),
         labels: asset.intelligence?.visual?.labels ?? [],
         dominantColor: asset.intelligence?.visual?.dominantColor ?? "#000000",
         brightness: asset.intelligence?.visual?.brightness ?? 0,
-        motionScore: asset.intelligence?.visual?.motionScore ?? 0
+        motionScore: asset.intelligence?.visual?.motionScore ?? 0,
+        error: asset.intelligence?.visual?.error ?? null
       },
       modelTrace: asset.intelligence?.modelTrace ?? []
     },
@@ -389,9 +393,14 @@ function normalizeStatus(status: string): AssetRecord["status"] {
   return "uploaded";
 }
 
+function isStoredVisualAvailable(visual: AssetRecord["intelligence"]["visual"] | undefined) {
+  if (!visual) return false;
+  if (visual.labels.some((label) => label === "metadata-derived" || label === "visual-fallback")) return false;
+  return visual.labels.length > 0 || visual.dominantColor !== "#000000" || visual.motionScore > 0 || visual.brightness > 0;
+}
+
 async function persist() {
-  const body = JSON.stringify(database, null, 2);
-  writeChain = writeChain.then(() => writeFile(dbPath, body));
+  writeChain = writeChain.then(() => writeJsonFile(dbPath, database));
   await writeChain;
 }
 

@@ -1,4 +1,5 @@
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, IndexRecord, OrchestrationPlan, PlayerIdentity } from "../shared/types";
+import { trustedDomainEvents } from "./evidenceTrust";
 import { getKnowledgePlayer } from "./sportsKnowledge";
 
 export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: AssetRecord[], indexes: IndexRecord[]): OrchestrationPlan {
@@ -8,13 +9,19 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
   const scopeCoverage = estimateScopeCoverage(queryPlan, assets);
   const identityDecision = buildIdentityDecision(queryPlan.intent.player, identityCandidates, mode, knowledgePlayer);
   const scopeDecision = buildScopeDecision(queryPlan, scopeCoverage);
+  const routeDecision = buildRouteDecision(mode, indexes, queryPlan);
   const retrievalFallback = [
+    routeDecision.status !== "ready" ? routeDecision.reason : "",
     scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
     scopeCoverage.season === "missing" ? "Season scope is not indexed for some matching assets; keep it as a soft constraint." : "",
-    queryPlan.intent.player && identityCandidates.length === 0 && !(mode === "stat_qa" && knowledgePlayer) ? "Player identity is unresolved; use lexical title/ASR fallback." : ""
+    queryPlan.intent.player && identityCandidates.length === 0 && !knowledgePlayer ? "Player identity is unresolved; use lexical title/ASR fallback." : "",
+    queryPlan.intent.player && identityCandidates.length === 0 && knowledgePlayer && mode !== "stat_qa"
+      ? "Player identity is known in sports knowledge, but not grounded in indexed video evidence yet."
+      : ""
   ].filter(Boolean);
   const warnings = [
     ...queryPlan.warnings,
+    routeDecision.status !== "ready" ? routeDecision.reason : "",
     identityDecision.status !== "ready" ? identityDecision.reason : "",
     scopeDecision.status !== "ready" ? scopeDecision.reason : "",
     mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
@@ -23,8 +30,8 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
   return {
     query: queryPlan.originalQuery,
     mode,
-    confidence: Number(Math.min(queryPlan.confidence, identityDecision.confidence, scopeDecision.confidence).toFixed(2)),
-    decisions: [identityDecision, scopeDecision, buildRouteDecision(mode, indexes)],
+    confidence: Number(Math.min(queryPlan.confidence, identityDecision.confidence, scopeDecision.confidence, routeDecision.confidence).toFixed(2)),
+    decisions: [identityDecision, scopeDecision, routeDecision],
     steps: [
       {
         id: "parse",
@@ -124,8 +131,8 @@ function collectIdentityCandidates(player: string | null, assets: AssetRecord[])
   for (const asset of assets) {
     for (const segment of asset.timeline) {
       const scopedPlayers = segment.domain?.scope?.players ?? [];
-      const eventPlayers = (segment.domain?.events ?? [])
-        .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity])
+      const eventPlayers = trustedDomainEvents(segment)
+        .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity, event.americanFootball?.quarterback.identity])
         .filter(Boolean)
         .map((identity) => identityToScopeValue(identity as PlayerIdentity));
       for (const candidate of [...scopedPlayers, ...eventPlayers]) {
@@ -156,7 +163,7 @@ function estimateScopeCoverage(queryPlan: DomainQueryPlan, assets: AssetRecord[]
 
 function coverageFor(field: "competition" | "season", value: string | undefined, assets: AssetRecord[]): "not_requested" | "ready" | "missing" {
   if (!value) return "not_requested";
-  const normalizedValue = normalize(value);
+  const requestedValues = splitRequestedValues(value).map(normalize);
   let scoped = 0;
   let matched = 0;
   for (const asset of assets) {
@@ -164,7 +171,8 @@ function coverageFor(field: "competition" | "season", value: string | undefined,
       const scopeValue = field === "competition" ? segment.domain?.scope?.competition?.value : segment.domain?.scope?.season?.value;
       if (!scopeValue) continue;
       scoped += 1;
-      if (normalize(scopeValue).includes(normalizedValue) || normalizedValue.includes(normalize(scopeValue))) matched += 1;
+      const normalizedScopeValue = normalize(scopeValue);
+      if (requestedValues.some((requested) => normalizedScopeValue.includes(requested) || requested.includes(normalizedScopeValue))) matched += 1;
     }
   }
   if (matched > 0) return "ready";
@@ -190,6 +198,16 @@ function buildIdentityDecision(player: string | null, candidates: DomainScopeVal
       confidence: 0.94,
       status: "ready",
       reason: "The player identity is resolved against imported sports knowledge."
+    };
+  }
+  if (knowledgePlayer && candidates.length === 0) {
+    return {
+      id: "identity",
+      label: "Identity",
+      value: `${knowledgePlayer.canonical} (sports knowledge)`,
+      confidence: 0.62,
+      status: "fallback",
+      reason: "The player is resolved in sports knowledge, but no indexed video segment currently grounds that identity."
     };
   }
   if (candidates.length === 0) {
@@ -236,8 +254,9 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
   };
 }
 
-function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[]): OrchestrationPlan["decisions"][number] {
-  const domainIndexes = indexes.filter((index) => index.domainIndexing?.enabled);
+function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
+  const requestedDomain = isSupportedSportsDomain(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
+  const domainIndexes = indexes.filter((index) => index.domainIndexing?.enabled && (!requestedDomain || index.domainIndexing.groups.includes(requestedDomain)));
   if (mode === "stat_qa") {
     return {
       id: "route",
@@ -254,7 +273,14 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
     value: mode === "search" ? "Moment retrieval" : "Moment retrieval + Pattern analysis",
     confidence: domainIndexes.length > 0 ? 0.82 : 0.58,
     status: domainIndexes.length > 0 ? "ready" : "fallback",
-    reason: domainIndexes.length > 0 ? "At least one asset group has sports domain indexing enabled." : "No domain-indexed asset group is available."
+    reason:
+      domainIndexes.length > 0
+        ? requestedDomain
+          ? `At least one ${requestedDomain} asset group has sports domain indexing enabled.`
+          : "At least one asset group has sports domain indexing enabled."
+        : requestedDomain
+          ? `No ${requestedDomain} asset group is indexed yet.`
+          : "No domain-indexed asset group is available."
   };
 }
 
@@ -273,4 +299,12 @@ function buildAnalysisPrompt(queryPlan: DomainQueryPlan) {
 
 function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
+}
+
+function splitRequestedValues(value: string) {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function isSupportedSportsDomain(value: string | null): value is "sports.football" | "sports.american_football" {
+  return value === "sports.football" || value === "sports.american_football";
 }

@@ -141,7 +141,13 @@ function inferCompetition(query: string) {
 
 function inferSeason(query: string, competition?: string) {
   const recent = query.match(/최근\s*(\d+)\s*시즌|last\s*(\d+)\s*seasons?|recent\s*(\d+)\s*seasons?/i);
-  if (recent) return resolveRecentSeasons(competition === "NFL" ? "NFL" : competition === "Premier League" ? "Premier League" : undefined, Number(recent[1] ?? recent[2] ?? recent[3]));
+  if (recent) {
+    const count = Number(recent[1] ?? recent[2] ?? recent[3]);
+    if (/compare|비교/.test(query.toLowerCase()) && /이번\s*시즌|올\s*시즌|현재\s*시즌|this\s*season|current\s*season/i.test(query)) {
+      return resolveComparisonSeasonWindow(competition, count);
+    }
+    return resolveRecentSeasons(competition === "NFL" ? "NFL" : competition === "Premier League" ? "Premier League" : undefined, count);
+  }
   if (/이번\s*시즌|올\s*시즌|현재\s*시즌|this\s*season|current\s*season/i.test(query)) {
     return currentSeason(competition);
   }
@@ -149,6 +155,26 @@ function inferSeason(query: string, competition?: string) {
   if (range) return `${range[1]}-${range[2]}`;
   const year = query.match(/\b(20\d{2})\b/);
   return year?.[1];
+}
+
+function resolveComparisonSeasonWindow(competition: string | undefined, previousCount: number) {
+  const current = currentSeason(competition);
+  const previous = previousSeasons(competition, current, previousCount);
+  return [current, ...previous].join(",");
+}
+
+function previousSeasons(competition: string | undefined, current: string, count: number) {
+  if (competition === "NFL") {
+    const year = Number(current);
+    if (!Number.isFinite(year)) return [];
+    return Array.from({ length: count }, (_, index) => String(year - index - 1));
+  }
+  const start = Number(current.match(/^20\d{2}/)?.[0]);
+  if (!Number.isFinite(start)) return [];
+  return Array.from({ length: count }, (_, index) => {
+    const seasonStart = start - index - 1;
+    return `${seasonStart}-${String(seasonStart + 1).slice(2)}`;
+  });
 }
 
 function currentSeason(competition?: string) {

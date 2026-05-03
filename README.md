@@ -112,6 +112,7 @@ Local environment values are loaded from `.env` automatically when present.
 - A lightweight in-memory rate limiter protects the local API. Set `RATE_LIMIT_PER_MINUTE` to override the default local limit of `600`.
 - Webhook URLs beginning with `log://` are marked delivered without a network call.
 - Set `LOCAL_OBJECT_PROVIDER=local-s3` or `LOCAL_OBJECT_PROVIDER=local-r2` to switch the local object-storage namespace.
+- Set `UPLOAD_MAX_BYTES=8589934592` or another byte value to adjust the local upload limit. The default is 8GB.
 - Set `LOCAL_AI_PYTHON=/path/to/python` if Whisper/PaddleOCR are installed in a dedicated virtual environment.
 - Set `WHISPER_MODEL=large-v3|large-v3-turbo|small|medium|...` to choose the local Whisper model.
 - Set `WHISPER_LANGUAGE=auto` to let Whisper detect the spoken language, or set a specific language code.

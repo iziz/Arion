@@ -1,0 +1,119 @@
+
+.table-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.ops-row {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #fbfcfc;
+  padding: 10px 12px;
+}
+
+.ops-row.active {
+  border-color: #2a7c94;
+  background: #eef8f8;
+}
+
+.ops-row.error-row {
+  border-color: #e9b0a8;
+  background: #fff5f3;
+}
+
+.observability-panel {
+  min-width: 0;
+}
+
+.obs-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.obs-summary span {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #eef3f1;
+  color: #42535b;
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.obs-log {
+  margin-top: 12px;
+}
+
+.row-button {
+  display: grid;
+  justify-content: stretch;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  color: #1d2328;
+  padding: 0;
+  text-align: left;
+}
+
+.job-detail {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #fbfcfc;
+  padding: 12px;
+}
+
+.db-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #fbfcfc;
+  padding: 12px;
+}
+
+.db-card span {
+  color: #63737b;
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.job-detail span,
+.job-log p {
+  color: #63737b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.job-log {
+  display: grid;
+  gap: 4px;
+}
+
+.job-log p {
+  margin: 0;
+}
+
+.ops-row strong {
+  overflow-wrap: anywhere;
+}
+
+.ops-row span {
+  color: #63737b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

@@ -13,7 +13,7 @@ async function main() {
   console.log(`Found ${indexedAssets.length} indexed assets with timelines.`);
   for (const asset of indexedAssets) {
     const index = indexes.find((item) => item.id === asset.indexId) ?? createDefaultIndex();
-    if (!index.domainIndexing?.enabled || !index.domainIndexing.groups.includes("sports.football")) {
+    if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
       console.log(`skip ${asset.id} ${asset.title} - sports domain indexing is disabled`);
       continue;
     }

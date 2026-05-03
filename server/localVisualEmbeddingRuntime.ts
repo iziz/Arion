@@ -46,7 +46,8 @@ export function getExpectedVisualEmbeddingDimensions() {
 
 export async function embedVisualQuery(text: string) {
   const [vector] = await embedTexts([text]);
-  return vector ?? [];
+  if (!vector) throw new Error("Visual embedding runtime returned no query vector");
+  return vector;
 }
 
 export async function embedKeyframes(indexId: string, assetId: string, timeline: TimelineSegment[], keyframes: KeyframeRecord[]) {
@@ -88,17 +89,16 @@ async function embedPayload(items: string[], mode: VisualMode) {
   if (missing.length === 0) return cached.map((vector) => vector ?? []);
 
   const result = await runVisualProcess(missing.map((entry) => entry.item), mode);
-  if (result.available && result.embeddings.length === missing.length) {
-    for (let index = 0; index < missing.length; index += 1) {
-      const vector = normalizeVector(result.embeddings[index]);
-      cache.set(cacheKey(missing[index].item, mode), vector);
-      cached[missing[index].index] = vector;
-    }
-  } else {
-    for (const entry of missing) {
-      cache.set(cacheKey(entry.item, mode), []);
-      cached[entry.index] = [];
-    }
+  if (!result.available) {
+    throw new Error(`Visual embedding runtime unavailable for ${mode}: ${result.error ?? "unknown error"}`);
+  }
+  if (result.embeddings.length !== missing.length) {
+    throw new Error(`Visual embedding runtime returned ${result.embeddings.length} vectors for ${missing.length} ${mode} inputs`);
+  }
+  for (let index = 0; index < missing.length; index += 1) {
+    const vector = normalizeVector(result.embeddings[index], mode);
+    cache.set(cacheKey(missing[index].item, mode), vector);
+    cached[missing[index].index] = vector;
   }
 
   return cached.map((vector) => vector ?? []);
@@ -149,9 +149,12 @@ async function runVisualProcess(items: string[], mode: VisualMode): Promise<Visu
   }
 }
 
-function normalizeVector(vector: number[]) {
+function normalizeVector(vector: number[], mode: VisualMode) {
   const expected = getExpectedVisualEmbeddingDimensions();
-  return vector.length === expected ? vector : vector.slice(0, expected);
+  if (vector.length !== expected || !vector.some((value) => Number.isFinite(value) && value !== 0)) {
+    throw new Error(`Visual embedding runtime returned invalid ${mode} vector dimension ${vector.length}; expected ${expected}`);
+  }
+  return vector;
 }
 
 function cacheKey(item: string, mode: VisualMode) {

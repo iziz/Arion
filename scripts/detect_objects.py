@@ -13,7 +13,7 @@ def main():
     try:
         result = run_yolo(images, args.model)
     except Exception as yolo_error:
-        result = run_opencv_fallback(images, str(yolo_error))
+        result = run_opencv_heuristic(images, str(yolo_error))
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -50,7 +50,7 @@ def run_yolo(images, model_name):
     return {"available": True, "provider": "ultralytics", "model": model_name, "frames": frames}
 
 
-def run_opencv_fallback(images, yolo_error):
+def run_opencv_heuristic(images, yolo_error):
     import cv2
 
     hog = cv2.HOGDescriptor()
@@ -59,7 +59,7 @@ def run_opencv_fallback(images, yolo_error):
     for item in images:
         image = cv2.imread(item["path"])
         if image is None:
-            frames.append(frame_result(item, 0, 0, [], "opencv-fallback", False, "image read failed"))
+            frames.append(frame_result(item, 0, 0, [], "opencv-heuristic", False, "image read failed"))
             continue
         height, width = image.shape[:2]
         boxes = []
@@ -73,8 +73,8 @@ def run_opencv_fallback(images, yolo_error):
         for circle in detect_ball_candidates(image)[:3]:
             x, y, radius, confidence = circle
             boxes.append(normalized_box("sports_ball", x - radius, y - radius, radius * 2, radius * 2, width, height, confidence, "opencv-hough"))
-        frames.append(frame_result(item, width, height, boxes, "opencv-fallback", True, yolo_error))
-    return {"available": True, "provider": "opencv-fallback", "model": "hog+hough", "frames": frames, "warning": yolo_error}
+        frames.append(frame_result(item, width, height, boxes, "opencv-heuristic", False, yolo_error))
+    return {"available": False, "provider": "opencv-heuristic", "model": "hog+hough", "frames": frames, "warning": yolo_error, "error": yolo_error}
 
 
 def detect_ball_candidates(image):

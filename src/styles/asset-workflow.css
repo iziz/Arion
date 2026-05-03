@@ -1,0 +1,359 @@
+.detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid #e3ebe7;
+  padding-bottom: 12px;
+}
+
+.detail-header > div {
+  min-width: 0;
+}
+
+.detail-header h2 {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.video-progress-line {
+  display: block;
+  margin-top: 8px;
+  color: #2b8b70;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.video-status-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.video-status-summary span {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  border-radius: 999px;
+  background: #eef6f2;
+  color: #2b8b70;
+  padding: 8px 13px;
+}
+
+.video-status-summary strong,
+.video-status-summary em {
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.video-status-summary strong {
+  color: #25352f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.video-status-summary em {
+  color: #6f837b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.video-status-summary .complete {
+  background: #e6f5ef;
+}
+
+.asset-flow {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #fbfcfc;
+  padding: 14px;
+}
+
+.flow-summary {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flow-summary h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.flow-summary > span {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #214f62;
+  color: #ffffff;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6eeeb;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2a7c94;
+}
+
+.node-canvas {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) 44px minmax(170px, 1.1fr) 44px minmax(160px, 1fr) 44px minmax(150px, 0.85fr);
+  gap: 8px;
+  align-items: center;
+  overflow-x: auto;
+  border: 1px solid #263744;
+  border-radius: 10px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    #11191f;
+  background-size: 18px 18px;
+  padding: 14px;
+}
+
+.node-column {
+  display: grid;
+  gap: 10px;
+  min-width: 150px;
+}
+
+.node-branch {
+  min-width: 190px;
+}
+
+.flow-node {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #3b5361;
+  border-radius: 8px;
+  background: #18232b;
+  color: #dce8ea;
+  padding: 10px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+}
+
+.flow-node::before,
+.flow-node::after {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #11191f;
+  border-radius: 999px;
+  background: #7f96a1;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.flow-node::before {
+  left: -6px;
+}
+
+.flow-node::after {
+  right: -6px;
+}
+
+.node-title {
+  display: grid;
+  gap: 5px;
+}
+
+.node-title span {
+  width: fit-content;
+  border-radius: 999px;
+  background: #243645;
+  color: #9fb5bf;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.node-title strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.flow-node p {
+  margin: 0;
+  color: #9fb5bf;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.flow-node > em {
+  width: fit-content;
+  border-radius: 999px;
+  background: #263744;
+  color: #c5d4d8;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.flow-node.done {
+  border-color: #3da36d;
+}
+
+.flow-node.done::before,
+.flow-node.done::after,
+.flow-node.done > em {
+  background: #3da36d;
+  color: #06140d;
+}
+
+.flow-node.active {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.32), 0 12px 24px rgba(0, 0, 0, 0.22);
+}
+
+.flow-node.active::before,
+.flow-node.active::after,
+.flow-node.active > em {
+  background: #38bdf8;
+  color: #06121a;
+}
+
+.flow-node.waiting {
+  opacity: 0.68;
+}
+
+.flow-node.error {
+  border-color: #f97362;
+}
+
+.flow-node.error::before,
+.flow-node.error::after,
+.flow-node.error > em {
+  background: #f97362;
+  color: #250b07;
+}
+
+.flow-connector {
+  display: grid;
+  gap: 6px;
+  align-items: center;
+  justify-items: center;
+  min-width: 40px;
+}
+
+.flow-connector span {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: #557080;
+}
+
+.flow-connector span::after {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid #557080;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.flow-connector em {
+  color: #8ea6b0;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.player {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  background: #11191f;
+}
+
+.metadata-grid,
+.intelligence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.intelligence-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 10px 0 0;
+}
+
+.signal-group {
+  margin: 14px 0;
+  padding: 12px 0;
+  border-top: 1px solid #e3ebe7;
+  border-bottom: 1px solid #e3ebe7;
+}
+
+.subsection-heading h3 {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.info-tile {
+  min-height: 54px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border-radius: 8px;
+  background: #eef3f1;
+  color: #42535b;
+  padding: 9px 10px;
+}
+
+.info-tile em,
+.info-tile strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-tile em {
+  color: #6a7a82;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.info-tile strong {
+  color: #263239;
+  font-size: 13px;
+  font-weight: 900;
+}

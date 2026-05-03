@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TimelineSegment } from "../shared/types";
+import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone } from "./evidenceTrust";
+import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import * as pgStore from "./postgresStore";
 
 type VectorRecord = {
@@ -81,21 +82,25 @@ export async function rebuildVectorStore(assets: Array<{ indexId: string; id: st
 
 function vectorRecordText(segment: TimelineSegment) {
   const vision = segment.sceneData?.vision;
+  const trustedVision = isTrustedVisionEvidence(vision);
+  const domainSearchText = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.searchText : "";
+  const domainCaptions = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.captions : [];
+  const domainLabels = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.labels : [];
   return [
     segment.label,
     segment.transcript,
-    segment.domain?.searchText,
-    ...(segment.domain?.captions ?? []),
-    ...(segment.domain?.labels ?? []),
-    vision?.pitch.present ? `pitch ${Math.round(vision.pitch.confidence * 100)}%` : "",
-    vision?.objects.players.status === "estimated" || vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
-    vision?.objects.ball.status === "estimated" || vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
-    vision?.fieldZone.zone !== "unknown" ? `zone ${vision?.fieldZone.zone}` : "",
-    vision?.fieldCalibration ? `field calibration ${vision.fieldCalibration.status} ${vision.fieldCalibration.method}` : "",
-    vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown" ? `attacking direction ${vision.fieldCalibration.attackingDirection}` : "",
-    vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
-    vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
-    vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
+    domainSearchText,
+    ...domainCaptions,
+    ...domainLabels,
+    trustedVision && vision?.pitch.present ? `pitch ${Math.round(vision.pitch.confidence * 100)}%` : "",
+    trustedVision && vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
+    trustedVision && vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
+    isTrustedVisionFieldZone(vision) ? `zone ${vision?.fieldZone.zone}` : "",
+    isTrustedVisionFieldZone(vision) && vision?.fieldCalibration ? `field calibration ${vision.fieldCalibration.status} ${vision.fieldCalibration.method}` : "",
+    trustedVision && vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown" ? `attacking direction ${vision.fieldCalibration.attackingDirection}` : "",
+    trustedVision && vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
+    trustedVision && vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
+    trustedVision && vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
   ]
     .filter(Boolean)
     .join(" ");
@@ -109,18 +114,12 @@ export async function getVectorCount() {
 
 async function ensureVectorStore() {
   if (loaded) return;
-  await mkdir(path.dirname(vectorPath), { recursive: true });
-  try {
-    vectors = JSON.parse(await readFile(vectorPath, "utf8")) as VectorRecord[];
-  } catch {
-    vectors = [];
-  }
+  vectors = await readJsonFile<VectorRecord[]>(vectorPath, () => [], "vector-store");
   loaded = true;
 }
 
 async function persist() {
-  const body = JSON.stringify(vectors, null, 2);
-  writeChain = writeChain.then(() => writeFile(vectorPath, body));
+  writeChain = writeChain.then(() => writeJsonFile(vectorPath, vectors));
   await writeChain;
 }
 

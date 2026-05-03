@@ -56,7 +56,7 @@ def health() -> dict[str, Any]:
 
 @app.post("/structure/sports-event")
 async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
-    if request.domain != "sports.football":
+    if request.domain not in ("sports.football", "sports.american_football"):
         return _empty_response("Unsupported domain.")
 
     output_text = _generate_text(request)
@@ -64,6 +64,7 @@ async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
     if not parsed:
         return _empty_response("Model did not return parseable JSON.", raw=output_text)
 
+    parsed.setdefault("domain", request.domain)
     return _normalize_response(parsed, output_text)
 
 
@@ -202,18 +203,33 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
     scene_data = segment.get("sceneData") or {}
     text = scene_data.get("text") or {}
     existing_domain = segment.get("existingDomain") or {}
+    shape = (
+        "{\"caption\":\"...\",\"eventType\":\"pass_receive|shot|dribble|pressure|save|progressive_pass|scene\","
+        "\"confidence\":0.0,\"labels\":[\"sports.football\"],\"evidence\":[\"...\"],"
+        "\"football\":{\"phase\":\"attack|transition|set_piece|unknown\",\"fieldZone\":\"defensive_third|middle_third|final_third|penalty_area|unknown\","
+        "\"passType\":\"through_ball|cross|cutback|short_pass|long_ball|unknown\","
+        "\"receivingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
+        "\"passingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
+        "\"ballState\":\"in_play|pass_travel|shot|unknown\",\"attackingDirection\":\"left_to_right|right_to_left|unknown\"}}"
+    )
+    if request.domain == "sports.american_football":
+        shape = (
+            "{\"domain\":\"sports.american_football\",\"caption\":\"...\","
+            "\"eventType\":\"scramble|pressure|pocket_escape|throw_on_run|scene\","
+            "\"confidence\":0.0,\"labels\":[\"sports.american_football\"],\"evidence\":[\"...\"],"
+            "\"americanFootball\":{\"phase\":\"dropback|designed_run|scramble|play_action|unknown\","
+            "\"playType\":\"scramble|pocket_escape|throw_on_run|pressure|pass|rush|unknown\","
+            "\"quarterback\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
+            "\"pressure\":{\"present\":false,\"confidence\":0.0,\"source\":\"text|vision|vlm|unknown\"},"
+            "\"pocket\":{\"status\":\"intact|collapsing|escaped|unknown\",\"confidence\":0.0},"
+            "\"decision\":{\"outcome\":\"run|throw|sack_avoidance|unknown\",\"confidence\":0.0}}}"
+        )
     prompt = {
         "task": (
             "Return compact valid JSON only, no markdown. "
-            "Use this exact shape: "
-            "{\"caption\":\"...\",\"eventType\":\"pass_receive|shot|dribble|pressure|save|progressive_pass|scene\","
-            "\"confidence\":0.0,\"labels\":[\"sports.football\"],\"evidence\":[\"...\"],"
-            "\"football\":{\"phase\":\"attack|transition|set_piece|unknown\",\"fieldZone\":\"defensive_third|middle_third|final_third|penalty_area|unknown\","
-            "\"passType\":\"through_ball|cross|cutback|short_pass|long_ball|unknown\","
-            "\"receivingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
-            "\"passingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
-            "\"ballState\":\"in_play|pass_travel|shot|unknown\",\"attackingDirection\":\"left_to_right|right_to_left|unknown\"}}"
+            f"Use this exact shape: {shape}"
         ),
+        "domain": request.domain,
         "asset": {
             "title": request.asset.get("title"),
             "description": request.asset.get("description"),
@@ -258,11 +274,15 @@ def _parse_json(text: str) -> dict[str, Any] | None:
 
 
 def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
+    domain = str(parsed.get("domain") or "sports.football").strip()
+    if domain == "sports.american_football":
+        return _normalize_american_football_response(parsed, raw)
     football = parsed.get("football") if isinstance(parsed.get("football"), dict) else {}
     labels = parsed.get("labels")
     if isinstance(labels, dict):
         labels = [key for key, value in labels.items() if value]
     return {
+        "domain": "sports.football",
         "provider": f"qwen2.5-vl:{BACKEND}",
         "model": DEFAULT_MODEL,
         "caption": str(parsed.get("caption") or "").strip(),
@@ -279,6 +299,45 @@ def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
             "passingPlayer": _role(football.get("passingPlayer")),
             "ballState": football.get("ballState", "unknown"),
             "attackingDirection": football.get("attackingDirection", "unknown"),
+        },
+    }
+
+
+def _normalize_american_football_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
+    american = parsed.get("americanFootball") if isinstance(parsed.get("americanFootball"), dict) else {}
+    labels = parsed.get("labels")
+    if isinstance(labels, dict):
+        labels = [key for key, value in labels.items() if value]
+    pressure = american.get("pressure") if isinstance(american.get("pressure"), dict) else {}
+    pocket = american.get("pocket") if isinstance(american.get("pocket"), dict) else {}
+    decision = american.get("decision") if isinstance(american.get("decision"), dict) else {}
+    return {
+        "domain": "sports.american_football",
+        "provider": f"qwen2.5-vl:{BACKEND}",
+        "model": DEFAULT_MODEL,
+        "caption": str(parsed.get("caption") or "").strip(),
+        "eventType": str(parsed.get("eventType") or "scene").strip(),
+        "confidence": _confidence(parsed.get("confidence")),
+        "labels": labels if isinstance(labels, list) else [],
+        "evidence": _evidence(parsed.get("evidence"), raw),
+        "rawResponse": raw[:2000],
+        "americanFootball": {
+            "phase": american.get("phase", "unknown"),
+            "playType": american.get("playType", "unknown"),
+            "quarterback": _role(american.get("quarterback")),
+            "pressure": {
+                "present": bool(pressure.get("present")),
+                "confidence": _confidence(pressure.get("confidence")),
+                "source": pressure.get("source", "unknown"),
+            },
+            "pocket": {
+                "status": pocket.get("status", "unknown"),
+                "confidence": _confidence(pocket.get("confidence")),
+            },
+            "decision": {
+                "outcome": decision.get("outcome", "unknown"),
+                "confidence": _confidence(decision.get("confidence")),
+            },
         },
     }
 

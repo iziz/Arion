@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import type { VisualVectorRecord } from "./localVisualEmbeddingRuntime";
 import * as pgStore from "./postgresStore";
 
@@ -42,18 +42,12 @@ export async function getVisualVectorCount() {
 
 async function ensureVisualVectorStore() {
   if (loaded) return;
-  await mkdir(path.dirname(visualVectorPath), { recursive: true });
-  try {
-    visualVectors = JSON.parse(await readFile(visualVectorPath, "utf8")) as VisualVectorRecord[];
-  } catch {
-    visualVectors = [];
-  }
+  visualVectors = await readJsonFile<VisualVectorRecord[]>(visualVectorPath, () => [], "visual-vector-store");
   loaded = true;
 }
 
 async function persist() {
-  const body = JSON.stringify(visualVectors, null, 2);
-  writeChain = writeChain.then(() => writeFile(visualVectorPath, body));
+  writeChain = writeChain.then(() => writeJsonFile(visualVectorPath, visualVectors));
   await writeChain;
 }
 

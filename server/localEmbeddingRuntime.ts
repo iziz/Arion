@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { TimelineSegment } from "../shared/types";
-import { vectorize } from "./intelligence";
+import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "./evidenceTrust";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const embedScript = path.resolve("scripts", "embed_text.py");
@@ -31,7 +31,8 @@ export function getExpectedEmbeddingDimensions() {
 
 export async function embedQueryText(text: string) {
   const [embedding] = await embedTexts([text], "query");
-  return embedding ?? vectorize(text);
+  if (!embedding) throw new Error("Embedding runtime returned no query vector");
+  return embedding;
 }
 
 export async function embedTimelineSegments(segments: TimelineSegment[]) {
@@ -39,7 +40,7 @@ export async function embedTimelineSegments(segments: TimelineSegment[]) {
   const embeddings = await embedTexts(texts, "passage");
   return segments.map((segment, index) => ({
     ...segment,
-    embedding: embeddings[index] ?? segment.embedding
+    embedding: embeddings[index] ?? failMissingEmbedding(segment.id)
   }));
 }
 
@@ -48,25 +49,26 @@ export function segmentToEmbeddingText(segment: TimelineSegment) {
   const textEvidence = sceneText
     ? [sceneText.speech, ...sceneText.subtitles, ...sceneText.screenText, ...sceneText.overlays].filter(Boolean).join(" ")
     : segment.transcript;
-  const imageEvidence = segment.sceneData?.image.labels.join(", ") ?? "";
-  const visionEvidence = segment.sceneData?.vision
+  const trustedVision = isTrustedVisionEvidence(segment.sceneData?.vision);
+  const imageEvidence = trustedVision ? (segment.sceneData?.image.labels.join(", ") ?? "") : "";
+  const visionEvidence = segment.sceneData?.vision && trustedVision
     ? [
         segment.sceneData.vision.pitch.present ? `pitch ${Math.round(segment.sceneData.vision.pitch.confidence * 100)}%` : "",
-        segment.sceneData.vision.objects.players.status === "estimated" || segment.sceneData.vision.objects.players.status === "detected"
+        segment.sceneData.vision.objects.players.status === "detected"
           ? `players ${segment.sceneData.vision.objects.players.status} ${segment.sceneData.vision.objects.players.countEstimate}`
           : "",
-        segment.sceneData.vision.objects.ball.status === "estimated" || segment.sceneData.vision.objects.ball.status === "detected" ? `ball ${segment.sceneData.vision.objects.ball.status}` : "",
-        segment.sceneData.vision.fieldZone.zone !== "unknown" ? `zone ${segment.sceneData.vision.fieldZone.zone}` : "",
-        segment.sceneData.vision.fieldCalibration ? `field calibration ${segment.sceneData.vision.fieldCalibration.status} ${segment.sceneData.vision.fieldCalibration.method}` : "",
+        segment.sceneData.vision.objects.ball.status === "detected" ? `ball ${segment.sceneData.vision.objects.ball.status}` : "",
+        isTrustedVisionFieldZone(segment.sceneData.vision) ? `zone ${segment.sceneData.vision.fieldZone.zone}` : "",
+        isTrustedVisionFieldZone(segment.sceneData.vision) && segment.sceneData.vision.fieldCalibration ? `field calibration ${segment.sceneData.vision.fieldCalibration.status} ${segment.sceneData.vision.fieldCalibration.method}` : "",
         segment.sceneData.vision.fieldCalibration?.attackingDirection !== "unknown" ? `attacking direction ${segment.sceneData.vision.fieldCalibration?.attackingDirection}` : "",
         segment.sceneData.vision.tracking?.ballTrackId ? `ball track ${segment.sceneData.vision.tracking.ballTrackId}` : "",
         segment.sceneData.vision.tracking?.nearestPlayerTrackId ? `nearest player ${segment.sceneData.vision.tracking.nearestPlayerTrackId}` : "",
         segment.sceneData.vision.eventClassification && segment.sceneData.vision.eventClassification.label !== "unknown" ? `event classifier ${segment.sceneData.vision.eventClassification.label}` : ""
       ]
-        .filter(Boolean)
-        .join(" ")
+      .filter(Boolean)
+      .join(" ")
     : "";
-  const domainEvidence = segment.domain ? `${segment.domain.searchText}. Events: ${segment.domain.events.map((event) => event.caption).join(" ")}` : "";
+  const domainEvidence = segment.domain && isTrustedDomainSegment(segment.domain) ? `${segment.domain.searchText}. Events: ${trustedDomainEvents(segment).map((event) => event.caption).join(" ")}` : "";
   return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. Image: ${imageEvidence}. Vision: ${visionEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
 }
 
@@ -78,22 +80,20 @@ async function embedTexts(texts: string[], kind: EmbeddingKind) {
 
   if (missing.length > 0) {
     const result = await runSentenceTransformers(missing.map((item) => item.text), kind);
-    if (result.available && result.embeddings.length === missing.length) {
-      for (let index = 0; index < missing.length; index += 1) {
-        const vector = normalizeEmbedding(result.embeddings[index]);
-        embeddingCache.set(cacheKey(missing[index].text, kind), vector);
-        cached[missing[index].index] = vector;
-      }
-    } else {
-      for (const item of missing) {
-        const fallback = vectorize(item.text);
-        embeddingCache.set(cacheKey(item.text, kind), fallback);
-        cached[item.index] = fallback;
-      }
+    if (!result.available) {
+      throw new Error(`Embedding runtime unavailable for ${kind}: ${result.error ?? "unknown error"}`);
+    }
+    if (result.embeddings.length !== missing.length) {
+      throw new Error(`Embedding runtime returned ${result.embeddings.length} vectors for ${missing.length} ${kind} inputs`);
+    }
+    for (let index = 0; index < missing.length; index += 1) {
+      const vector = normalizeEmbedding(result.embeddings[index], kind);
+      embeddingCache.set(cacheKey(missing[index].text, kind), vector);
+      cached[missing[index].index] = vector;
     }
   }
 
-  return cached.map((vector, index) => vector ?? vectorize(texts[index]));
+  return cached.map((vector, index) => vector ?? failMissingEmbedding(`${kind}:${index}`));
 }
 
 async function runSentenceTransformers(texts: string[], kind: EmbeddingKind): Promise<EmbedTextResult> {
@@ -147,13 +147,21 @@ async function runPythonEmbeddingProcess(texts: string[], kind: EmbeddingKind) {
   });
 }
 
-function normalizeEmbedding(vector: number[]) {
+function normalizeEmbedding(vector: number[], kind: EmbeddingKind) {
   const expected = getExpectedEmbeddingDimensions();
-  if (vector.length === expected) return vector;
-  if (vector.length === 0) return vectorize("");
-  return vector.slice(0, expected);
+  if (vector.length !== expected) {
+    throw new Error(`Embedding runtime returned ${vector.length} dimensions for ${kind}; expected ${expected}`);
+  }
+  if (!vector.some((value) => Number.isFinite(value) && value !== 0)) {
+    throw new Error(`Embedding runtime returned an empty ${kind} vector`);
+  }
+  return vector;
 }
 
 function cacheKey(text: string, kind: EmbeddingKind) {
   return createHash("sha256").update(`${embeddingModel}:${kind}:${text}`).digest("hex");
+}
+
+function failMissingEmbedding(context: string): never {
+  throw new Error(`Missing embedding vector for ${context}`);
 }

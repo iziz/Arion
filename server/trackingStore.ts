@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AssetRecord, TimelineSegment, TrackingRecord, TrackingSummary } from "../shared/types";
+import { trustedDomainEvents } from "./evidenceTrust";
+import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 
 type TrackingDatabase = {
   records: TrackingRecord[];
@@ -15,12 +16,7 @@ let writeChain = Promise.resolve();
 
 export async function ensureTrackingStore() {
   if (loaded) return;
-  await mkdir(dataDir, { recursive: true });
-  try {
-    trackingDatabase = normalizeTrackingDatabase(JSON.parse(await readFile(trackingPath, "utf8")) as Partial<TrackingDatabase>);
-  } catch {
-    trackingDatabase = { records: [] };
-  }
+  trackingDatabase = normalizeTrackingDatabase(await readJsonFile<Partial<TrackingDatabase>>(trackingPath, () => ({ records: [] }), "tracking-store"));
   loaded = true;
 }
 
@@ -72,11 +68,13 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
   const vision = segment.sceneData?.vision;
   const tracking = vision?.tracking;
   if (!vision || !tracking) return [];
-  const event = segment.domain?.events[0] ?? null;
+  const event = trustedDomainEvents(segment)[0] ?? null;
   const football = event?.football;
+  const americanFootball = event?.americanFootball;
   const player =
     football?.receivingPlayer.identity?.name ??
     football?.passingPlayer.identity?.name ??
+    americanFootball?.quarterback.identity?.name ??
     segment.domain?.scope?.players[0]?.value ??
     null;
   const base = {
@@ -151,9 +149,6 @@ function normalizeTrackingDatabase(value: Partial<TrackingDatabase>): TrackingDa
 }
 
 async function persistTrackingStore() {
-  writeChain = writeChain.then(async () => {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(trackingPath, JSON.stringify(trackingDatabase, null, 2));
-  });
+  writeChain = writeChain.then(() => writeJsonFile(trackingPath, trackingDatabase));
   await writeChain;
 }
