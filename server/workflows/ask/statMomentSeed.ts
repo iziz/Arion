@@ -29,7 +29,7 @@ export function applyScopeDomainDefaults(
 
 export function shouldContinueWithMomentRetrieval(queryPlan: DomainQueryPlan, sportsAnswer: SportsKnowledgeAnswer) {
   return Boolean(
-    queryPlan.intent.questionType === "stat_qa" &&
+    queryPlan.route === "sports_stat_qa" &&
       sportsAnswer.applicable &&
       sportsAnswer.route === "stat_qa" &&
       sportsAnswer.status === "answered" &&
@@ -66,6 +66,7 @@ export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, sportsAnsw
     semanticQuery,
     rewrittenQuery: buildRewrittenQuery(domainFilters),
     domainFilters,
+    route: "sports_moment_retrieval",
     intent: {
       ...queryPlan.intent,
       domain: domainFromFilters(domainFilters),
@@ -116,6 +117,7 @@ export function buildScopedMetadataMomentPlan(
     semanticQuery,
     rewrittenQuery: buildRewrittenQuery(domainFilters),
     domainFilters,
+    route: "sports_moment_retrieval",
     intent: {
       ...queryPlan.intent,
       domain: domainGroup ?? domainFromFilters(domainFilters),

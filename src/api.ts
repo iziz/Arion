@@ -77,6 +77,11 @@ export type DomainVlmBulkRefineResult = {
   skippedAssets: Array<{ assetId: string; reason: string }>;
 };
 
+export type AssetUploadPayload = {
+  asset: AssetRecord;
+  job?: JobRecord;
+};
+
 export const emptyMetrics: MetricsSummary = {
   indexes: 0,
   assets: 0,
@@ -227,8 +232,13 @@ export function isKnowledgeVectorStoreStatus(value: unknown): value is Knowledge
   );
 }
 
-export function isAssetUploadPayload(value: unknown): value is { asset: AssetRecord } {
-  return isRecord(value) && isRecord(value.asset) && typeof value.asset.id === "string";
+export function isAssetUploadPayload(value: unknown): value is AssetUploadPayload {
+  return (
+    isRecord(value) &&
+    isRecord(value.asset) &&
+    typeof value.asset.id === "string" &&
+    (!("job" in value) || value.job === undefined || (isRecord(value.job) && typeof value.job.id === "string"))
+  );
 }
 
 export function indexFormPayload(form: HTMLFormElement) {

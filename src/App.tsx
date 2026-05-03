@@ -39,6 +39,9 @@ export default function App() {
     dbStatus,
     observability,
     sportsKnowledge,
+    setIndexes,
+    setAssets,
+    setJobs,
     setSportsKnowledge,
     knowledgeVectorStore,
     selectedIndexId,
@@ -65,16 +68,14 @@ export default function App() {
   const {
     query,
     setQuery,
-    searchTag,
-    setSearchTag,
-    searchDomainGroup,
-    setSearchDomainGroup,
-    filtersOpen,
-    setFiltersOpen,
-    domainFilters,
-    setDomainFilters,
+    searchScopeMode,
+    setSearchScopeMode,
+    searchIndexId,
+    setSearchIndexId,
+    searchAssetId,
+    setSearchAssetId,
+    searchScopeLabel,
     trustFilters,
-    setTrustFilters,
     useKnowledgeLayer,
     setUseKnowledgeLayer,
     queryPlan,
@@ -85,10 +86,9 @@ export default function App() {
     searchResults,
     filteredSearchResults,
     searching,
-    activeSearchFilterCount,
     runSearch,
     buildAssetMomentUrl
-  } = useSearchController({ setMessage });
+  } = useSearchController({ indexes, assets, selectedIndexId, selectedAssetId, setMessage });
   const { deleteKnowledgePlayer } = useKnowledgeActions({
     setSportsKnowledge,
     setMessage
@@ -102,16 +102,6 @@ export default function App() {
   const selectedAssetJob = selectedAsset ? getLatestAssetJob(jobs, selectedAsset.id) : null;
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null;
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
-  const filterTags = useMemo(() => {
-    const indexById = new Map(indexes.map((index) => [index.id, index]));
-    const scopedAssets = assets.filter((asset) => {
-      if (!searchDomainGroup) return true;
-      const index = indexById.get(asset.indexId);
-      if (index?.domainIndexing?.groups.includes(searchDomainGroup)) return true;
-      return asset.timeline.some((segment) => segment.domain?.groups.includes(searchDomainGroup));
-    });
-    return Array.from(new Set(scopedAssets.flatMap((asset) => asset.tags))).sort();
-  }, [assets, indexes, searchDomainGroup]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const assetId = params.get("asset");
@@ -151,6 +141,41 @@ export default function App() {
     playerRef.current.pause();
     setPendingSeek(null);
   }, [pendingSeek, selectedAsset]);
+
+  function upsertUploadedAsset(asset: AssetRecord, job?: JobRecord) {
+    setAssets((current) => {
+      const existing = current.findIndex((item) => item.id === asset.id);
+      if (existing >= 0) {
+        const currentAsset = current[existing];
+        if (isNewerAssetRecord(currentAsset, asset)) return current;
+        return current.map((item) => (item.id === asset.id ? asset : item));
+      }
+      return [asset, ...current];
+    });
+    if (job) {
+      setJobs((current) => {
+        const existing = current.findIndex((item) => item.id === job.id);
+        if (existing >= 0) {
+          const currentJob = current[existing];
+          if (isNewerJobRecord(currentJob, job)) return current;
+          return current.map((item) => (item.id === job.id ? job : item));
+        }
+        return [job, ...current];
+      });
+    }
+    setIndexes((current) =>
+      current.map((index) =>
+        index.id === asset.indexId
+          ? {
+              ...index,
+              assetIds: index.assetIds.includes(asset.id) ? index.assetIds : [...index.assetIds, asset.id],
+              status: "ready",
+              updatedAt: asset.updatedAt
+            }
+          : index
+      )
+    );
+  }
 
   async function createIndex(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -195,12 +220,17 @@ export default function App() {
       });
       const payload = await readJson<unknown>(response);
       if (!isAssetUploadPayload(payload)) throw new Error("Upload returned an invalid asset payload");
+      upsertUploadedAsset(payload.asset, payload.job);
+      setSelectedIndexId(payload.asset.indexId);
       setSelectedAssetId(payload.asset.id);
+      setSelectedSegmentId(null);
       setActiveTab("data");
       setAssetDetailTab("overview");
       form.reset();
       setDialogMode(null);
-      await refresh();
+      void refresh()
+        .catch((error) => setMessage(`Refresh warning: ${getFailureMessage(error)}`))
+        .finally(() => setSelectedAssetId(payload.asset.id));
     } catch (error) {
       setMessage(`Upload failed: ${getFailureMessage(error)}`);
     } finally {
@@ -239,7 +269,7 @@ export default function App() {
     setMessage("");
     try {
       const result = await api.post<DomainVlmBulkRefineResult>(`/api/indexes/${indexId}/domain-vlm/refine`, {});
-      setMessage(`Queued ${result.queued} VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
+      setMessage(`Queued ${result.queued} sports event VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
       await refresh();
     } finally {
       setBusy(false);
@@ -294,23 +324,19 @@ export default function App() {
       setQuery={setQuery}
       searching={searching}
       runSearch={runSearch}
-      filtersOpen={filtersOpen}
-      setFiltersOpen={setFiltersOpen}
-      activeSearchFilterCount={activeSearchFilterCount}
-      searchTag={searchTag}
-      setSearchTag={setSearchTag}
-      searchDomainGroup={searchDomainGroup}
-      setSearchDomainGroup={setSearchDomainGroup}
-      domainFilters={domainFilters}
-      setDomainFilters={setDomainFilters}
+      searchScopeMode={searchScopeMode}
+      setSearchScopeMode={setSearchScopeMode}
+      searchIndexId={searchIndexId}
+      setSearchIndexId={setSearchIndexId}
+      searchAssetId={searchAssetId}
+      setSearchAssetId={setSearchAssetId}
+      searchScopeLabel={searchScopeLabel}
       trustFilters={trustFilters}
-      setTrustFilters={setTrustFilters}
       useKnowledgeLayer={useKnowledgeLayer}
       setUseKnowledgeLayer={setUseKnowledgeLayer}
       searchConversation={searchConversation}
       buildAssetMomentUrl={buildAssetMomentUrl}
       askResponse={askResponse}
-      filterTags={filterTags}
       filteredSearchResults={filteredSearchResults}
       sportsAnswer={sportsAnswer}
       queryPlan={queryPlan}
@@ -331,4 +357,18 @@ export default function App() {
       message={message}
     />
   );
+}
+
+function isNewerAssetRecord(current: AssetRecord, next: AssetRecord) {
+  const currentTime = Date.parse(current.updatedAt) || 0;
+  const nextTime = Date.parse(next.updatedAt) || 0;
+  if (currentTime !== nextTime) return currentTime > nextTime;
+  return current.progress > next.progress;
+}
+
+function isNewerJobRecord(current: JobRecord, next: JobRecord) {
+  const currentTime = Date.parse(current.updatedAt) || 0;
+  const nextTime = Date.parse(next.updatedAt) || 0;
+  if (currentTime !== nextTime) return currentTime > nextTime;
+  return current.progress > next.progress;
 }

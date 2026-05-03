@@ -22,6 +22,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       label: "Asset scope",
       owner: "platform",
       input: [
+        request.assetId ? `asset=${request.assetId}` : "",
         request.indexId ? `index=${request.indexId}` : request.domainGroup ? `domain=${request.domainGroup}` : "all indexes",
         request.tag ? `tag=${request.tag}` : "",
         request.modality ? `modality=${request.modality}` : ""
@@ -34,7 +35,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
         output: `${scopedAssets.length}/${assets.length} assets in scope`
       };
     });
-    const planningFilters = applyScopeDomainDefaults(request.explicitFilters, request, scoped.indexes);
+    const planningFilters = applyScopeDomainDefaults(request.explicitFilters, { ...request, indexId: request.indexId ?? (request.assetId ? scoped.scopedAssets[0]?.indexId : undefined) }, scoped.indexes);
 
     let queryPlan = await runAskStep(entry, {
       id: "plan",
@@ -45,11 +46,12 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       const plan = await planDomainQueryWithOpenAi(request.query, planningFilters);
       return {
         value: plan,
-        output: `${plan.intent.questionType ?? "moment_retrieval"} · ${plan.rewrittenQuery} · ${Math.round(plan.confidence * 100)}%`
+        output: `${plan.route.replace(/_/g, " ")} · ${plan.rewrittenQuery} · ${Math.round(plan.confidence * 100)}%`
       };
     });
 
-    const sportsAnswer = request.useKnowledgeLayer
+    const shouldRunSportsKnowledgeAnswer = request.useKnowledgeLayer && queryPlan.route === "sports_stat_qa";
+    const sportsAnswer = shouldRunSportsKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
           label: "Sports knowledge answer",
@@ -63,14 +65,22 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
             status: answer.applicable && answer.status !== "answered" ? "fallback" : "succeeded"
           };
         })
-      : disabledSportsKnowledgeAnswer(queryPlan);
-    if (!request.useKnowledgeLayer) {
+      : disabledSportsKnowledgeAnswer(
+          queryPlan,
+          request.useKnowledgeLayer
+            ? "Sports knowledge direct answer is skipped for non-stat video retrieval."
+            : "Sports knowledge layer is disabled for this search.",
+          request.useKnowledgeLayer
+            ? "Sports knowledge direct answer was skipped because the route is not sports_stat_qa."
+            : "Sports knowledge layer was disabled by the search option."
+        );
+    if (!shouldRunSportsKnowledgeAnswer) {
       skipAskStep(entry, {
         id: "knowledge_answer",
         label: "Sports knowledge answer",
         owner: "knowledge",
         input: queryPlan.rewrittenQuery,
-        output: "Disabled by search option."
+        output: request.useKnowledgeLayer ? "Skipped because this route does not need a direct sports-stat answer." : "Disabled by search option."
       });
     }
 
@@ -96,7 +106,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       };
     });
 
-    if (sportsAnswer.applicable && sportsAnswer.route === "stat_qa" && !continueWithRetrieval) {
+    if (queryPlan.route === "sports_stat_qa" && sportsAnswer.applicable && sportsAnswer.route === "stat_qa" && !continueWithRetrieval) {
       skipAskStep(entry, {
         id: "retrieve",
         label: "Moment retrieval",
@@ -124,6 +134,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       assets: scoped.assets,
       indexes: scoped.indexes,
       indexId: request.indexId,
+      assetId: request.assetId,
       domainGroup: request.domainGroup,
       tag: request.tag,
       modality: request.modality,
@@ -141,7 +152,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
           const nextAnswer = buildAskAnalysisAnswer(results, queryPlan, orchestrationPlan);
           return {
             value: nextAnswer,
-            output: results.length > 0 ? "Generated a local pattern summary from retrieved moments." : "Skipped because retrieval returned no moments.",
+            output: results.length > 0 ? analysisOutputForRoute(queryPlan.route) : "Skipped because retrieval returned no moments.",
             status: results.length > 0 ? "succeeded" : "skipped"
           };
         })
@@ -163,11 +174,21 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
   }
 }
 
-function disabledSportsKnowledgeAnswer(queryPlan: Parameters<typeof answerSportsKnowledgeQuestion>[0]): ReturnType<typeof answerSportsKnowledgeQuestion> {
+function analysisOutputForRoute(route: Parameters<typeof buildAskAnalysisAnswer>[1]["route"]) {
+  if (route === "video_summary") return "Generated a local video summary from retrieved evidence.";
+  if (route === "sports_analysis") return "Generated a local sports pattern summary from retrieved moments.";
+  return "Generated a local grounded answer from retrieved moments.";
+}
+
+function disabledSportsKnowledgeAnswer(
+  queryPlan: Parameters<typeof answerSportsKnowledgeQuestion>[0],
+  answer: string,
+  warning: string
+): ReturnType<typeof answerSportsKnowledgeQuestion> {
   return {
     applicable: false,
     route: "unsupported",
-    answer: "Sports knowledge layer is disabled for this search.",
+    answer,
     confidence: 0,
     subject: {
       player: queryPlan.intent.player,
@@ -179,6 +200,6 @@ function disabledSportsKnowledgeAnswer(queryPlan: Parameters<typeof answerSports
     status: "unsupported",
     evidence: [],
     fallback: null,
-    warnings: ["Sports knowledge layer was disabled by the search option."]
+    warnings: [warning]
   };
 }

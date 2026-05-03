@@ -63,16 +63,7 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
         status: scopeDecision.status,
         trigger: "Competition or season is present in the query."
       },
-      {
-        id: "ground",
-        label: "Knowledge grounding",
-        owner: "knowledge",
-        action: "Fetch structured roster, player profile, competition, and video-scope evidence before moment retrieval.",
-        input: queryPlan.rewrittenQuery,
-        output: "Grounded entity evidence for retrieval expansion and result attribution",
-        status: "ready",
-        trigger: "Queries that need information beyond the video pixels, ASR, or OCR."
-      },
+      buildGroundingStep(queryPlan),
       {
         id: "retrieve",
         label: mode === "stat_qa" ? "Stats retrieval" : "Moment retrieval",
@@ -100,7 +91,7 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       }
     ],
     retrieval: {
-      engine: mode === "stat_qa" ? "structured_domain" : queryPlan.intent.domain ? "hybrid" : "semantic_retrieval",
+      engine: retrievalEngineForRoute(queryPlan),
       filters: queryPlan.domainFilters,
       fallback: retrievalFallback
     },
@@ -108,20 +99,56 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       required: mode !== "search" && mode !== "stat_qa",
       model: mode === "search" || mode === "stat_qa" ? "none" : "pattern_analysis_generate",
       prompt: buildAnalysisPrompt(queryPlan),
-      inputs: ["retrieved_segments", "domain_events", "knowledge_evidence", "identity_resolution", "scope_metadata"]
+      inputs: analysisInputsForRoute(queryPlan)
     },
     warnings
   };
 }
 
 function inferMode(queryPlan: DomainQueryPlan): OrchestrationPlan["mode"] {
-  if (queryPlan.intent.questionType === "stat_qa") return "stat_qa";
-  const normalized = queryPlan.originalQuery.toLowerCase();
-  const asksAnalysis = /분석|요약|비교|패턴|리포트|decision|pattern|analy[sz]e|summari[sz]e|compare/.test(normalized);
-  const asksSearch = /찾|검색|find|show|moments|장면|구간/.test(normalized);
-  if (asksAnalysis && asksSearch) return "search_and_analysis";
-  if (asksAnalysis) return "analysis";
-  return "search";
+  switch (queryPlan.route) {
+    case "sports_stat_qa":
+      return "stat_qa";
+    case "video_summary":
+    case "sports_analysis":
+      return "analysis";
+    case "sports_moment_retrieval":
+    case "generic_video_qa":
+    case "asset_lookup":
+    case "unsupported":
+      return "search";
+  }
+}
+
+function retrievalEngineForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["retrieval"]["engine"] {
+  if (queryPlan.route === "sports_stat_qa") return "structured_domain";
+  if (isSportsRoute(queryPlan.route)) return "hybrid";
+  return "semantic_retrieval";
+}
+
+function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["steps"][number] {
+  if (!isSportsRoute(queryPlan.route)) {
+    return {
+      id: "ground",
+      label: "Knowledge grounding",
+      owner: "knowledge",
+      action: "Skip sports knowledge grounding and keep retrieval scoped to indexed video evidence.",
+      input: queryPlan.rewrittenQuery,
+      output: "No sports knowledge expansion required",
+      status: "ready",
+      trigger: "Non-sports routes use ASR, OCR, visual, title, and metadata evidence only."
+    };
+  }
+  return {
+    id: "ground",
+    label: "Knowledge grounding",
+    owner: "knowledge",
+    action: "Fetch structured roster, player profile, competition, and video-scope evidence before moment retrieval.",
+    input: queryPlan.rewrittenQuery,
+    output: "Grounded entity evidence for retrieval expansion and result attribution",
+    status: "ready",
+    trigger: "Sports routes need information beyond the video pixels, ASR, or OCR."
+  };
 }
 
 function collectIdentityCandidates(player: string | null, assets: AssetRecord[]): DomainScopeValue[] {
@@ -255,6 +282,19 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
 }
 
 function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], assets: AssetRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
+  if (!isSportsRoute(queryPlan.route)) {
+    return {
+      id: "route",
+      label: "Route",
+      value: routeLabel(queryPlan.route),
+      confidence: assets.length > 0 ? 0.86 : 0.42,
+      status: assets.length > 0 ? "ready" : "fallback",
+      reason:
+        assets.length > 0
+          ? "This route uses indexed video evidence without sports knowledge expansion."
+          : "No assets are available in the selected scope."
+    };
+  }
   const requestedDomain = isSupportedSportsDomain(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
   const scopedIndexIds = new Set(assets.map((asset) => asset.indexId));
   const scopedIndexes = scopedIndexIds.size > 0 ? indexes.filter((index) => scopedIndexIds.has(index.id)) : indexes;
@@ -263,7 +303,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
     return {
       id: "route",
       label: "Route",
-      value: "Knowledge stats QA",
+      value: routeLabel(queryPlan.route),
       confidence: 0.86,
       status: "ready",
       reason: "This query asks for an aggregate statistic, so it should be answered from sports knowledge."
@@ -272,7 +312,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
   return {
     id: "route",
     label: "Route",
-    value: mode === "search" ? "Moment retrieval" : "Moment retrieval + Pattern analysis",
+    value: routeLabel(queryPlan.route),
     confidence: domainIndexes.length > 0 ? 0.82 : 0.58,
     status: domainIndexes.length > 0 ? "ready" : "fallback",
     reason:
@@ -287,6 +327,9 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
 }
 
 function buildAnalysisPrompt(queryPlan: DomainQueryPlan) {
+  if (queryPlan.route === "video_summary") {
+    return "Summarize only from retrieved indexed video evidence. Prefer ASR/OCR text when present, include key time ranges, and report evidence gaps.";
+  }
   return [
     "Answer only from retrieved evidence.",
     queryPlan.intent.player ? `Focus player: ${queryPlan.intent.player}.` : "",
@@ -299,6 +342,30 @@ function buildAnalysisPrompt(queryPlan: DomainQueryPlan) {
     .join(" ");
 }
 
+function analysisInputsForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["analysis"]["inputs"] {
+  if (!isSportsRoute(queryPlan.route)) return ["retrieved_segments", "asr_text", "ocr_text", "visual_evidence", "asset_metadata"];
+  return ["retrieved_segments", "domain_events", "knowledge_evidence", "identity_resolution", "scope_metadata"];
+}
+
+function routeLabel(route: DomainQueryPlan["route"]) {
+  switch (route) {
+    case "video_summary":
+      return "Video summary";
+    case "generic_video_qa":
+      return "Generic video QA";
+    case "sports_moment_retrieval":
+      return "Sports moment retrieval";
+    case "sports_analysis":
+      return "Sports analysis";
+    case "sports_stat_qa":
+      return "Sports stats QA";
+    case "asset_lookup":
+      return "Asset lookup";
+    case "unsupported":
+      return "Unsupported";
+  }
+}
+
 function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
 }
@@ -309,4 +376,8 @@ function splitRequestedValues(value: string) {
 
 function isSupportedSportsDomain(value: string | null): value is "sports.football" | "sports.american_football" {
   return value === "sports.football" || value === "sports.american_football";
+}
+
+function isSportsRoute(route: DomainQueryPlan["route"]) {
+  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }

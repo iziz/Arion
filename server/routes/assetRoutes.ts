@@ -10,7 +10,7 @@ import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { createJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
 import { getTrackingSummary, listTrackingRecords } from "../trackingStore";
 import { isVlmWorkerEnabled } from "../vlmWorkerClient";
-import { createAssetFromUpload, enqueueDomainVlmRefinement, normalizeWorkflowStage, runIndexingJob, runSpeakerDiarizationJob } from "../workflows/indexingWorkflow";
+import { createAssetFromUpload, enqueueDomainVlmRefinement, normalizeWorkflowStage, runAudioExtractionJob, runIndexingJob, runSpeakerDiarizationJob } from "../workflows/indexingWorkflow";
 import { getAsset, getIndex, listAssets, listIndexes } from "../store";
 import type { JobRecord } from "../../shared/types";
 
@@ -115,10 +115,17 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const queuedJob = requestedStage
       ? (await updateJob(job.id, {}, `Retry requested from workflow card: ${requestedStage}`)) ?? job
       : job;
+    const sourcePath = getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey);
     if (requestedStage === "speakers") {
       enqueueLocalTask(job.id, () =>
         traceJobAsync("job.diarization", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: "speakers" }, () =>
           runSpeakerDiarizationJob(job.id, asset.id)
+        )
+      );
+    } else if (requestedStage === "audio" || requestedStage === "vad") {
+      enqueueLocalTask(job.id, () =>
+        traceJobAsync("job.audio_retry", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: requestedStage }, () =>
+          runAudioExtractionJob(job.id, asset.id, sourcePath)
         )
       );
     } else {
@@ -127,11 +134,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
         job.id,
         () =>
           traceJobAsync("job.indexing", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex" }, () =>
-            runIndexingJob(
-              job.id,
-              asset.id,
-              getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey)
-            )
+            runIndexingJob(job.id, asset.id, sourcePath)
           )
       );
     }
@@ -144,7 +147,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const index = await getIndex(asset.indexId);
     if (!index) return sendNotFound(res, "Index not found");
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      res.status(409).json({ error: "Sports domain indexing is not enabled for this asset group." });
+      res.status(409).json({ error: "Sports event VLM refinement requires Sports domain indexing for this asset group." });
       return;
     }
     if (!isVlmWorkerEnabled()) {
@@ -153,7 +156,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     }
     const activeJob = await getActiveAssetJob(asset.id);
     if (activeJob) {
-      logJson("info", "job.domain_vlm.duplicate", "Domain VLM refinement ignored because an active asset job already exists", {
+      logJson("info", "job.domain_vlm.duplicate", "Sports event VLM refinement ignored because an active asset job already exists", {
         assetId: asset.id,
         activeJobId: activeJob.id,
         activeStage: activeJob.stage,
@@ -172,7 +175,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const index = await getIndex(String(req.params.id));
     if (!index) return sendNotFound(res, "Index not found");
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      res.status(409).json({ error: "Sports domain indexing is not enabled for this asset group." });
+      res.status(409).json({ error: "Sports event VLM refinement requires Sports domain indexing for this asset group." });
       return;
     }
     if (!isVlmWorkerEnabled()) {

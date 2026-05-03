@@ -30,7 +30,8 @@ export function searchAssets(
     return searchPlayerInventoryResults(assets, indexes, options);
   }
 
-  const domainProfile = expandDomainQuery(options.queryPlan?.semanticQuery ?? query);
+  const queryText = options.queryPlan ? [options.queryPlan.originalQuery, options.queryPlan.semanticQuery].filter(Boolean).join(" ") : query;
+  const domainProfile = expandDomainQuery(queryText);
   const queryTerms = extractKeywords(domainProfile.expandedText);
   const knowledgeProfile = buildKnowledgeSearchProfile(options.knowledgeEvidence ?? []);
   const knowledgeTerms = extractKeywords(knowledgeProfile.searchText);
@@ -50,19 +51,19 @@ export function searchAssets(
       const assetText = `${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`;
       const assetLexicalScore = scoreText(assetText, queryTerms);
       const assetKnowledgeScore = scoreText(assetText, knowledgeTerms);
+      const assetMetadataScore = Math.max(assetLexicalScore, assetKnowledgeScore);
       const segmentCandidates = asset.timeline
         .filter((segment) => !options.modality || segment.modalities.includes(options.modality as TimelineSegment["modalities"][number]))
         .filter((segment) => matchesSegmentDomainFilters(asset, segment, options.domainFilters))
         .map((segment) => {
           const segmentText = segmentSearchText(segment);
           const lexicalScore = scoreText(segmentText, queryTerms);
-            const knowledgeScore = scoreText([assetText, segmentText, isTrustedDomainSegment(segment.domain) ? segment.domain?.searchText : ""].filter(Boolean).join(" "), knowledgeTerms);
+          const knowledgeScore = scoreText([assetText, segmentText, isTrustedDomainSegment(segment.domain) ? segment.domain?.searchText : ""].filter(Boolean).join(" "), knowledgeTerms);
           const domainScore = scoreDomainMatch(segment, domainProfile);
           const filterScore = scoreDomainFilterMatch(asset, segment, options.domainFilters);
-          const semanticScore = Math.max(
-            queryVector.length === segment.embedding.length ? cosineSimilarity(queryVector, segment.embedding) : 0,
-            options.vectorHitsBySegment?.get(segment.id) ?? 0
-          );
+          const storedSemanticScore = queryVector.length === segment.embedding.length ? cosineSimilarity(queryVector, segment.embedding) : 0;
+          const vectorSemanticScore = options.vectorHitsBySegment?.get(segment.id) ?? 0;
+          const semanticScore = Math.max(storedSemanticScore, vectorSemanticScore);
           const visualScore = options.visualHitsBySegment?.get(segment.id) ?? 0;
           const sourceScore = scoreSources(segment.sources);
           const confidenceScore = segment.confidence;
@@ -80,6 +81,7 @@ export function searchAssets(
             knowledgeScore,
             score:
               lexicalScore * 3 +
+              assetMetadataScore * 1.2 +
               domainScore * 5 +
               filterScore * 6 +
               knowledgeScore * 4.5 +
@@ -90,15 +92,18 @@ export function searchAssets(
               vlmQualityScore
           };
         })
-        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : item.lexicalScore > 0 || item.domainScore > 0 || item.knowledgeScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
+        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : assetMetadataScore > 0 || item.lexicalScore > 0 || item.domainScore > 0 || item.knowledgeScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
       const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
       const knowledgeSegmentMatches = segmentCandidates.filter((item) => item.knowledgeScore > 0);
+      const assetMetadataSegmentMatches = assetMetadataScore > 0 ? segmentCandidates : [];
       const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore > 0.72 || item.visualScore > 0.25);
       const matchingSegments = (hasDomainFilters
         ? segmentCandidates
         : lexicalSegmentMatches.length > 0 || domainSegmentMatches.length > 0 || knowledgeSegmentMatches.length > 0
           ? [...lexicalSegmentMatches, ...domainSegmentMatches, ...knowledgeSegmentMatches]
+          : assetMetadataSegmentMatches.length > 0
+            ? assetMetadataSegmentMatches
           : semanticSegmentMatches)
         .filter((item, index, items) => items.findIndex((candidate) => candidate.segment.id === item.segment.id) === index)
         .sort((a, b) => b.score - a.score);

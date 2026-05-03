@@ -14,7 +14,7 @@ async function main() {
   for (const asset of indexedAssets) {
     const index = indexes.find((item) => item.id === asset.indexId) ?? createDefaultIndex();
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      console.log(`skip ${asset.id} ${asset.title} - sports domain indexing is disabled`);
+      console.log(`skip ${asset.id} ${asset.title} - sports event VLM refinement requires Sports domain indexing`);
       continue;
     }
     console.log(`refine ${asset.id} ${asset.title}`);

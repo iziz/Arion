@@ -21,6 +21,7 @@ export async function executeSearchPipeline({
   assets,
   indexes,
   indexId,
+  assetId,
   domainGroup,
   tag,
   modality,
@@ -28,9 +29,10 @@ export async function executeSearchPipeline({
   useKnowledgeLayer,
   askEntry
 }: SearchPipelineRequest): Promise<SearchResult[]> {
-  const scopedAssets = scopeAssetsForQuery(assets, { query, explicitFilters, indexId, domainGroup, tag, modality, limit, useKnowledgeLayer }, indexes);
-  const vectorScopeIndexId = resolveVectorScopeIndexId(indexes, indexId, domainGroup);
-  const useSportsKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseSportsKnowledgeLayer(queryPlan, indexes, indexId, domainGroup));
+  const scopedAssets = scopeAssetsForQuery(assets, { query, explicitFilters, indexId, assetId, domainGroup, tag, modality, limit, useKnowledgeLayer }, indexes);
+  const assetScopeIndexId = assetId ? scopedAssets[0]?.indexId : undefined;
+  const vectorScopeIndexId = resolveVectorScopeIndexId(indexes, indexId ?? assetScopeIndexId, domainGroup);
+  const useSportsKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseSportsKnowledgeLayer(queryPlan, indexes, indexId ?? assetScopeIndexId, domainGroup));
   const groundedQuery = await runOptionalAskStep(askEntry, {
     id: "ground",
     label: "Knowledge grounding",
@@ -57,7 +59,7 @@ export async function executeSearchPipeline({
       output: grounded.evidenceSummary
     };
   });
-  const expandedQuery = expandDomainQuery(groundedQuery.semanticQuery).expandedText;
+  const expandedQuery = expandDomainQuery([queryPlan.originalQuery, groundedQuery.semanticQuery].filter(Boolean).join(" ")).expandedText;
   const options = {
     indexId: vectorScopeIndexId,
     tag,
@@ -167,7 +169,7 @@ export async function executeSearchPipeline({
     id: "rank",
     label: "Rank and verify moments",
     owner: "retrieval",
-    input: formatSearchScope({ indexId, domainGroup, tag, modality })
+    input: formatSearchScope({ indexId, assetId, domainGroup, tag, modality })
   }, async () => {
     const results = searchAssets(scopedAssets, indexes, query, { ...options, knowledgeEvidence: combinedKnowledgeEvidence, queryVector: vectors.queryVector, vectorHitsBySegment, visualHitsBySegment }).map((result) => ({
       ...result,
@@ -192,13 +194,18 @@ function shouldUseSportsKnowledgeLayer(
   domainGroup: AskRequest["domainGroup"]
 ) {
   if (domainGroup) return true;
+  if (!isSportsRoute(queryPlan.route)) return false;
   const selectedIndex = indexId ? indexes.find((index) => index.id === indexId) : null;
   if (selectedIndex?.domainIndexing?.enabled && selectedIndex.domainIndexing.groups.length > 0) return true;
   const profile = expandDomainQuery(`${queryPlan.originalQuery} ${queryPlan.semanticQuery}`);
-  if (queryPlan.intent.questionType === "stat_qa" || queryPlan.intent.metric) return true;
+  if (queryPlan.route === "sports_stat_qa" || queryPlan.intent.metric) return true;
   if (queryPlan.intent.player || queryPlan.intent.eventType || queryPlan.intent.passType || queryPlan.intent.fieldZone || queryPlan.intent.role) return true;
   if (queryPlan.domainFilters.competition || queryPlan.domainFilters.player || queryPlan.domainFilters.eventType || queryPlan.domainFilters.passType || queryPlan.domainFilters.fieldZone || queryPlan.domainFilters.role) return true;
   return profile.domains.length > 0 || profile.labels.length > 0 || profile.football.playerRequired || profile.americanFootball.quarterbackRequired;
+}
+
+function isSportsRoute(route: SearchPipelineRequest["queryPlan"]["route"]) {
+  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }
 
 function dedupeKnowledgeEvidence(evidence: KnowledgeEvidence[]) {
@@ -213,7 +220,8 @@ function dedupeKnowledgeEvidence(evidence: KnowledgeEvidence[]) {
 
 export function scopeAssetsForQuery(assets: AssetRecord[], request: AskRequest, indexes: IndexRecord[] = []) {
   const indexById = new Map(indexes.map((index) => [index.id, index]));
-  return assets
+  const scoped = assets
+    .filter((asset) => !request.assetId || asset.id === request.assetId)
     .filter((asset) => !request.indexId || asset.indexId === request.indexId)
     .filter((asset) => {
       const domainGroup = request.domainGroup;
@@ -231,6 +239,8 @@ export function scopeAssetsForQuery(assets: AssetRecord[], request: AskRequest, 
           }
         : asset
     );
+  const referencedAssets = scopeByReferencedAsset(scoped, request.query);
+  return referencedAssets.length > 0 ? referencedAssets : scoped;
 }
 
 function resolveVectorScopeIndexId(indexes: IndexRecord[], indexId: string | undefined, domainGroup: AskRequest["domainGroup"]) {
@@ -238,4 +248,24 @@ function resolveVectorScopeIndexId(indexes: IndexRecord[], indexId: string | und
   if (!domainGroup) return undefined;
   const matching = indexes.filter((index) => index.domainIndexing?.groups.includes(domainGroup));
   return matching.length === 1 ? matching[0].id : undefined;
+}
+
+function scopeByReferencedAsset(assets: AssetRecord[], query: string) {
+  const references = extractAssetReferences(query);
+  if (references.length === 0) return [];
+  return assets.filter((asset) => {
+    const haystack = [asset.id, asset.title, asset.originalName, asset.storedName, asset.description].join(" ").toLowerCase();
+    return references.some((reference) => haystack.includes(reference));
+  });
+}
+
+function extractAssetReferences(query: string) {
+  const references = new Set<string>();
+  for (const match of query.matchAll(/\[([A-Za-z0-9_-]{6,})\]/g)) {
+    references.add(match[1].toLowerCase());
+  }
+  for (const match of query.matchAll(/\bvideo\s*id\s*[:=]?\s*([A-Za-z0-9_-]{6,})\b/gi)) {
+    references.add(match[1].toLowerCase());
+  }
+  return Array.from(references);
 }

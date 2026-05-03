@@ -1,12 +1,11 @@
-import type { Dispatch, SetStateAction } from "react";
-import type { AskOperation, AssetRecord, DomainQueryPlan, DomainSearchFilters, OrchestrationPlan, SearchResult, SportsDomainGroup, SportsKnowledgeAnswer } from "../../shared/types";
+import { useEffect, useState } from "react";
+import type { AskOperation, AssetRecord, DomainQueryPlan, OrchestrationPlan, SearchResult, SportsKnowledgeAnswer } from "../../shared/types";
+import type { SearchScopeMode } from "../consoleTypes";
 import {
   buildEvidenceLedger,
   labelForTrustPreset,
   trustPresetFor,
-  TRUST_PRESETS,
-  type SearchTrustFilters,
-  type TrustPreset
+  type SearchTrustFilters
 } from "../searchTrust";
 
 export type SearchConversationTurn = {
@@ -25,277 +24,110 @@ type MomentOpenOptions = {
   label?: string;
 };
 
-export function SearchDomainSelector({
-  value,
-  onChange
+export function SearchScopeSelector({
+  mode,
+  onModeChange,
+  indexes,
+  assets,
+  indexId,
+  onIndexChange,
+  assetId,
+  onAssetChange
 }: {
-  value: SportsDomainGroup | "";
-  onChange: (domainGroup: SportsDomainGroup | "") => void;
+  mode: SearchScopeMode;
+  onModeChange: (mode: SearchScopeMode) => void;
+  indexes: Array<{ id: string; name: string }>;
+  assets: AssetRecord[];
+  indexId: string;
+  onIndexChange: (indexId: string) => void;
+  assetId: string;
+  onAssetChange: (assetId: string) => void;
 }) {
-  const options: Array<{ value: SportsDomainGroup | ""; label: string; detail: string }> = [
-    { value: "", label: "All", detail: "all indexed domains" },
-    { value: "sports.football", label: "Football", detail: "goals, passes, zones" },
-    { value: "sports.american_football", label: "American football", detail: "QB, pressure, pocket" }
+  const selectedIndex = indexes.find((index) => index.id === indexId) ?? null;
+  const selectedAsset = assets.find((asset) => asset.id === assetId) ?? null;
+  const groupAssetCount = selectedIndex ? assets.filter((asset) => asset.indexId === selectedIndex.id).length : 0;
+  const assetGroups = indexes
+    .map((index) => ({ index, assets: assets.filter((asset) => asset.indexId === index.id) }))
+    .filter((group) => group.assets.length > 0);
+  const ungroupedAssets = assets.filter((asset) => !indexes.some((index) => index.id === asset.indexId));
+  const options: Array<{ mode: SearchScopeMode; label: string; detail: string; disabled?: boolean }> = [
+    { mode: "all", label: "All videos", detail: `${assets.length} videos` },
+    { mode: "group", label: "Asset group", detail: selectedIndex ? `${selectedIndex.name} · ${groupAssetCount} videos` : "Select asset group", disabled: indexes.length === 0 },
+    { mode: "asset", label: "Video", detail: selectedAsset ? selectedAsset.title : "Select video", disabled: assets.length === 0 }
   ];
   return (
-    <div className="search-domain-selector" aria-label="Search domain">
-      {options.map((option) => (
-        <button
-          key={option.value || "all"}
-          type="button"
-          className={value === option.value ? "active" : ""}
-          onClick={() => onChange(option.value)}
-        >
-          <strong>{option.label}</strong>
-          <span>{option.detail}</span>
-        </button>
-      ))}
+    <div className="search-scope-control" aria-label="Search scope">
+      <div className="search-scope-selector">
+        {options.map((option) => (
+          <button
+            key={option.mode}
+            type="button"
+            className={mode === option.mode ? "active" : ""}
+            disabled={option.disabled}
+            onClick={() => onModeChange(option.mode)}
+          >
+            <strong>{option.label}</strong>
+            <span>{option.detail}</span>
+          </button>
+        ))}
+      </div>
+      {mode === "group" && (
+        <label className="search-scope-picker">
+          <span>Asset group</span>
+          <select value={indexId} onChange={(event) => onIndexChange(event.target.value)} disabled={indexes.length === 0}>
+            <option value="">Select an asset group</option>
+            {indexes.map((index) => (
+              <option key={index.id} value={index.id}>{index.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {mode === "asset" && (
+        <label className="search-scope-picker">
+          <span>Video</span>
+          <select value={assetId} onChange={(event) => onAssetChange(event.target.value)} disabled={assets.length === 0}>
+            <option value="">Select a video</option>
+            {assetGroups.map((group) => (
+              <optgroup key={group.index.id} label={group.index.name}>
+                {group.assets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>{asset.title}</option>
+                ))}
+              </optgroup>
+            ))}
+            {ungroupedAssets.length > 0 && (
+              <optgroup label="Ungrouped">
+                {ungroupedAssets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>{asset.title}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </label>
+      )}
     </div>
   );
 }
 
 export function SearchScopeSummary({
-  domainGroup,
-  tag,
-  domainFilters,
+  scopeLabel,
   trustFilters,
   useKnowledgeLayer
 }: {
-  domainGroup: SportsDomainGroup | "";
-  tag: string;
-  domainFilters: DomainSearchFilters;
+  scopeLabel: string;
   trustFilters: SearchTrustFilters;
   useKnowledgeLayer: boolean;
 }) {
-  const entries = Object.entries(domainFilters).filter(([, value]) => Boolean(value));
   return (
     <div className="search-scope-summary" aria-label="Current search scope">
-      <span><b>Domain</b>{domainLabel(domainGroup)}</span>
-      <span><b>Tag</b>{tag || "Any"}</span>
+      <span><b>Scope</b>{compactLabel(scopeLabel)}</span>
       <span><b>Evidence</b>{labelForTrustPreset(trustPresetFor(trustFilters))}</span>
       <span><b>Knowledge</b>{useKnowledgeLayer ? "On" : "Off"}</span>
-      {entries.slice(0, 4).map(([key, value]) => (
-        <span key={key}><b>{key}</b>{String(value)}</span>
-      ))}
     </div>
   );
 }
 
-export function AdvancedSearchFilters({
-  open,
-  searchDomainGroup,
-  filterTags,
-  searchTag,
-  setSearchTag,
-  domainFilters,
-  setDomainFilters,
-  trustFilters,
-  setTrustFilters,
-  total,
-  visible
-}: {
-  open: boolean;
-  searchDomainGroup: SportsDomainGroup | "";
-  filterTags: string[];
-  searchTag: string;
-  setSearchTag: Dispatch<SetStateAction<string>>;
-  domainFilters: DomainSearchFilters;
-  setDomainFilters: Dispatch<SetStateAction<DomainSearchFilters>>;
-  trustFilters: SearchTrustFilters;
-  setTrustFilters: Dispatch<SetStateAction<SearchTrustFilters>>;
-  total: number;
-  visible: number;
-}) {
-  if (!open) return null;
-  return (
-    <section className="advanced-search-panel" aria-label="Advanced search filters">
-      <div className="advanced-search-header">
-        <strong>Advanced filters</strong>
-        <span>{domainLabel(searchDomainGroup)} · showing {visible}/{total} after evidence filters</span>
-      </div>
-      <div className="scope-filter-grid">
-        <label>
-          <span>Tag</span>
-          <select value={searchTag} onChange={(event) => setSearchTag(event.target.value)}>
-            <option value="">Any tag</option>
-            {filterTags.map((tag) => (
-              <option key={tag} value={tag}>{tag}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <DomainSearchControls domainGroup={searchDomainGroup} filters={domainFilters} onChange={setDomainFilters} />
-      <EvidencePresetControls filters={trustFilters} onChange={setTrustFilters} />
-      <details className="advanced-evidence-details">
-        <summary>Advanced evidence settings</summary>
-        <TrustSearchControls filters={trustFilters} onChange={setTrustFilters} total={total} visible={visible} />
-      </details>
-    </section>
-  );
-}
-
-export function DomainSearchControls({
-  domainGroup,
-  filters,
-  onChange
-}: {
-  domainGroup: SportsDomainGroup | "";
-  filters: DomainSearchFilters;
-  onChange: Dispatch<SetStateAction<DomainSearchFilters>>;
-}) {
-  const updateFilter = (key: keyof DomainSearchFilters, value: string) => {
-    onChange((current) => ({ ...current, [key]: value || undefined }));
-  };
-  const clearFilters = () => onChange({});
-  return (
-    <section className="domain-search-controls" aria-label="Domain event search filters">
-      <div className="domain-search-header">
-        <strong>Domain filters</strong>
-      </div>
-      <div className="domain-filter-grid">
-        <input value={filters.competition ?? ""} onChange={(event) => updateFilter("competition", event.target.value)} placeholder={domainGroup === "sports.american_football" ? "Competition e.g. NFL" : "Competition e.g. Premier League"} />
-        <input value={filters.season ?? ""} onChange={(event) => updateFilter("season", event.target.value)} placeholder="Season e.g. 2023-24" />
-        <input value={filters.player ?? ""} onChange={(event) => updateFilter("player", event.target.value)} placeholder={domainGroup === "sports.american_football" ? "Player or QB" : "Player"} />
-        {domainGroup === "sports.american_football" && (
-          <select value={filters.eventType ?? ""} onChange={(event) => updateFilter("eventType", event.target.value)}>
-            <option value="">Any play</option>
-            <option value="scramble">Scramble</option>
-            <option value="pressure">Pressure</option>
-            <option value="pocket_escape">Pocket escape</option>
-            <option value="throw_on_run">Throw on run</option>
-          </select>
-        )}
-        {domainGroup === "sports.football" && (
-          <>
-            <select value={filters.eventType ?? ""} onChange={(event) => updateFilter("eventType", event.target.value)}>
-              <option value="">Any event</option>
-              <option value="pass_receive">Receive</option>
-              <option value="shot">Shot</option>
-              <option value="dribble">Dribble</option>
-            </select>
-            <select value={filters.passType ?? ""} onChange={(event) => updateFilter("passType", event.target.value)}>
-              <option value="">Any pass</option>
-              <option value="through_ball">Through ball</option>
-              <option value="cross">Cross</option>
-              <option value="cutback">Cutback</option>
-              <option value="long_ball">Long ball</option>
-              <option value="short_pass">Short pass</option>
-            </select>
-            <select value={filters.fieldZone ?? ""} onChange={(event) => updateFilter("fieldZone", event.target.value)}>
-              <option value="">Any zone</option>
-              <option value="final_third">Final third</option>
-              <option value="penalty_area">Penalty area</option>
-              <option value="middle_third">Middle third</option>
-              <option value="defensive_third">Defensive third</option>
-            </select>
-            <select value={filters.role ?? ""} onChange={(event) => updateFilter("role", event.target.value)}>
-              <option value="">Any role</option>
-              <option value="receiver">Receiver</option>
-              <option value="passer">Passer</option>
-              <option value="shooter">Shooter</option>
-            </select>
-          </>
-        )}
-      </div>
-      <div className="domain-filter-actions">
-        <button type="button" className="small-button" onClick={clearFilters}>Clear filters</button>
-      </div>
-    </section>
-  );
-}
-
-function domainLabel(domainGroup: SportsDomainGroup | "") {
-  if (domainGroup === "sports.football") return "Football";
-  if (domainGroup === "sports.american_football") return "American football";
-  return "All domains";
-}
-
-export function EvidencePresetControls({
-  filters,
-  onChange
-}: {
-  filters: SearchTrustFilters;
-  onChange: Dispatch<SetStateAction<SearchTrustFilters>>;
-}) {
-  const selected = trustPresetFor(filters);
-  return (
-    <section className="evidence-preset-controls" aria-label="Evidence quality preset">
-      <div className="domain-search-header">
-        <strong>Evidence mode</strong>
-      </div>
-      <div className="evidence-mode-control">
-        {(["broad", "balanced", "strict"] as TrustPreset[]).map((preset) => (
-          <button
-            key={preset}
-            type="button"
-            className={selected === preset ? "active" : ""}
-            onClick={() => onChange(TRUST_PRESETS[preset])}
-          >
-            {labelForTrustPreset(preset)}
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-export function TrustSearchControls({
-  filters,
-  onChange,
-  total,
-  visible
-}: {
-  filters: SearchTrustFilters;
-  onChange: Dispatch<SetStateAction<SearchTrustFilters>>;
-  total: number;
-  visible: number;
-}) {
-  const update = <Key extends keyof SearchTrustFilters>(key: Key, value: SearchTrustFilters[Key]) => {
-    onChange((current) => ({ ...current, [key]: value }));
-  };
-  const reset = () =>
-    onChange(TRUST_PRESETS.balanced);
-  return (
-    <section className="trust-search-controls" aria-label="Trust filters">
-      <div className="domain-search-header">
-        <strong>Trust filters</strong>
-        <span>
-          Showing {visible}/{total} results after evidence quality filters.
-        </span>
-      </div>
-      <div className="trust-filter-grid">
-        <label className="inline-toggle">
-          <input type="checkbox" checked={filters.verifiedOnly} onChange={(event) => update("verifiedOnly", event.target.checked)} />
-          <span>Verified only</span>
-        </label>
-        <label className="inline-toggle">
-          <input type="checkbox" checked={filters.includeSoft} onChange={(event) => update("includeSoft", event.target.checked)} />
-          <span>Include soft matches</span>
-        </label>
-        <label className="inline-toggle">
-          <input type="checkbox" checked={filters.hideFailed} onChange={(event) => update("hideFailed", event.target.checked)} />
-          <span>Hide failed evidence</span>
-        </label>
-        <label className="inline-toggle">
-          <input type="checkbox" checked={filters.requireHardPlayer} onChange={(event) => update("requireHardPlayer", event.target.checked)} />
-          <span>Hard player evidence</span>
-        </label>
-        <label className="inline-toggle">
-          <input type="checkbox" checked={filters.requireHardFieldZone} onChange={(event) => update("requireHardFieldZone", event.target.checked)} />
-          <span>Hard field zone</span>
-        </label>
-        <label className="trust-score-filter">
-          <span>Minimum trust</span>
-          <input type="range" min="0" max="100" step="5" value={filters.minScore} onChange={(event) => update("minScore", Number(event.target.value))} />
-          <b>{filters.minScore}%</b>
-        </label>
-      </div>
-      <div className="domain-filter-actions">
-        <button type="button" className="small-button" onClick={() => update("minScore", 70)}>High trust preset</button>
-        <button type="button" className="small-button" onClick={reset}>Reset trust filters</button>
-      </div>
-    </section>
-  );
+function compactLabel(value: string) {
+  return value.length > 56 ? `${value.slice(0, 53)}...` : value;
 }
 
 export function ResultTrustSummary({ total, visible, trustFilters }: { total: number; visible: number; trustFilters: SearchTrustFilters }) {
@@ -364,73 +196,101 @@ export function SearchWorkflowTrace({
   totalResults: number;
   visibleResults: number;
 }) {
+  const [isExpanded, setIsExpanded] = useState(() => operation?.status === "queued" || operation?.status === "running" || operation?.status === "failed");
+
+  useEffect(() => {
+    if (operation?.status === "queued" || operation?.status === "running" || operation?.status === "failed") {
+      setIsExpanded(true);
+    }
+  }, [operation?.id, operation?.status]);
+
   if (!operation && !queryPlan && !orchestrationPlan) return null;
   const items = buildWorkflowItems(operation, queryPlan, orchestrationPlan, totalResults, visibleResults);
-  const route = operation?.route === "pending" ? "running" : operation?.route.replace(/_/g, " ") ?? queryPlan?.intent.questionType?.replace(/_/g, " ") ?? "search";
+  const route = operation?.route === "pending" ? "running" : queryPlan?.route.replace(/_/g, " ") ?? operation?.route.replace(/_/g, " ") ?? "search";
+  const summaryChips = buildWorkflowSummaryChips(operation, queryPlan, orchestrationPlan, totalResults, visibleResults, items.length);
+
   return (
-    <section className={`search-workflow ${operation?.status ?? "succeeded"}`} aria-label="Search workflow">
+    <section className={`search-workflow ${operation?.status ?? "succeeded"} ${isExpanded ? "expanded" : "collapsed"}`} aria-label="Search workflow">
       <div className="search-workflow-header">
         <div>
           <span>Search workflow</span>
           <strong>{route}</strong>
           <p>{queryPlan?.rewrittenQuery ?? operation?.query ?? orchestrationPlan?.query}</p>
         </div>
-        {operation && <em>{operation.id.slice(0, 8)} · {operation.status}</em>}
+        <div className="search-workflow-actions">
+          {operation && <em>{operation.id.slice(0, 8)} · {operation.status}</em>}
+          <button type="button" className="workflow-collapse-button" aria-expanded={isExpanded} onClick={() => setIsExpanded((current) => !current)}>
+            {isExpanded ? "Hide" : "Show"}
+          </button>
+        </div>
       </div>
-      <div className="search-workflow-meta">
-        {queryPlan && (
-          <span>
-            <b>plan</b>
-            {Math.round(queryPlan.confidence * 100)}%
-          </span>
-        )}
-        {orchestrationPlan && (
-          <span>
-            <b>engine</b>
-            {orchestrationPlan.retrieval.engine.replace(/_/g, " ")}
-          </span>
-        )}
-        {totalResults > 0 && (
-          <span>
-            <b>results</b>
-            {visibleResults}/{totalResults}
-          </span>
-        )}
-      </div>
-      <div className="search-workflow-flow">
-        {items.map((item, index) => (
-          <article key={item.id} className={`workflow-step ${item.status}`}>
-            <div className="workflow-step-marker" aria-hidden="true">
-              {index + 1}
-            </div>
-            <div className="workflow-step-card">
-              <div className="workflow-step-heading">
-                <div>
-                  <span>{ownerLabel(item.owner)}</span>
-                  <strong>{item.title}</strong>
+      {isExpanded ? (
+        <>
+          <div className="search-workflow-meta">
+            {queryPlan && (
+              <span>
+                <b>plan</b>
+                {Math.round(queryPlan.confidence * 100)}%
+              </span>
+            )}
+            {orchestrationPlan && (
+              <span>
+                <b>engine</b>
+                {orchestrationPlan.retrieval.engine.replace(/_/g, " ")}
+              </span>
+            )}
+            {totalResults > 0 && (
+              <span>
+                <b>results</b>
+                {visibleResults}/{totalResults}
+              </span>
+            )}
+          </div>
+          <div className="search-workflow-flow">
+            {items.map((item, index) => (
+              <article key={item.id} className={`workflow-step ${item.status}`}>
+                <div className="workflow-step-marker" aria-hidden="true">
+                  {index + 1}
                 </div>
-                <em>
-                  {formatWorkflowStatus(item.status)}
-                  {typeof item.durationMs === "number" ? ` · ${item.durationMs}ms` : ""}
-                </em>
-              </div>
-              <p>{item.summary}</p>
-              {item.chips.length > 0 && (
-                <div className="workflow-chip-row">
-                  {item.chips.map((chip) => (
-                    <span key={`${item.id}-${chip.label}-${chip.value}`}>
-                      <b>{chip.label}</b>
-                      {chip.value}
-                    </span>
-                  ))}
+                <div className="workflow-step-card">
+                  <div className="workflow-step-heading">
+                    <div>
+                      <span>{ownerLabel(item.owner)}</span>
+                      <strong>{item.title}</strong>
+                    </div>
+                    <em>
+                      {formatWorkflowStatus(item.status)}
+                      {typeof item.durationMs === "number" ? ` · ${item.durationMs}ms` : ""}
+                    </em>
+                  </div>
+                  <p>{item.summary}</p>
+                  {item.chips.length > 0 && (
+                    <div className="workflow-chip-row">
+                      {item.chips.map((chip) => (
+                        <span key={`${item.id}-${chip.label}-${chip.value}`}>
+                          <b>{chip.label}</b>
+                          {chip.value}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {item.detail && <small>{item.detail}</small>}
                 </div>
-              )}
-              {item.detail && <small>{item.detail}</small>}
-            </div>
-          </article>
-        ))}
-      </div>
-      {operation?.error && <p className="ask-trace-error">{operation.error}</p>}
+              </article>
+            ))}
+          </div>
+          {operation?.error && <p className="ask-trace-error">{operation.error}</p>}
+        </>
+      ) : (
+        <div className="search-workflow-compact" aria-label="Collapsed workflow summary">
+          {summaryChips.map((chip) => (
+            <span key={`${chip.label}-${chip.value}`}>
+              <b>{chip.label}</b>
+              {chip.value}
+            </span>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -509,6 +369,24 @@ export function SearchConversation({
   );
 }
 
+function buildWorkflowSummaryChips(
+  operation: AskOperation | null,
+  queryPlan: DomainQueryPlan | null,
+  orchestrationPlan: OrchestrationPlan | null,
+  totalResults: number,
+  visibleResults: number,
+  itemCount: number
+) {
+  return [
+    { label: "steps", value: String(itemCount) },
+    operation ? { label: "status", value: formatWorkflowStatus(operation.status) } : null,
+    queryPlan ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
+    queryPlan ? { label: "plan", value: `${Math.round(queryPlan.confidence * 100)}%` } : null,
+    orchestrationPlan ? { label: "engine", value: orchestrationPlan.retrieval.engine.replace(/_/g, " ") } : null,
+    totalResults > 0 ? { label: "results", value: `${visibleResults}/${totalResults}` } : null
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+}
+
 function buildWorkflowItems(
   operation: AskOperation | null,
   queryPlan: DomainQueryPlan | null,
@@ -559,7 +437,7 @@ function buildWorkflowItems(
 function buildQueryPlanWorkflowItem(queryPlan: DomainQueryPlan | null, step: AskOperation["steps"][number] | undefined): WorkflowItem {
   const filterEntries = Object.entries(queryPlan?.domainFilters ?? {}).filter(([, value]) => Boolean(value));
   const intentChips = [
-    queryPlan?.intent.questionType ? { label: "intent", value: queryPlan.intent.questionType.replace(/_/g, " ") } : null,
+    queryPlan?.route ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
     queryPlan?.intent.eventType ? { label: "event", value: queryPlan.intent.eventType } : null,
     queryPlan?.intent.passType ? { label: "pass", value: queryPlan.intent.passType } : null,
     queryPlan?.intent.fieldZone ? { label: "zone", value: queryPlan.intent.fieldZone } : null

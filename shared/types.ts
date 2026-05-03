@@ -535,11 +535,21 @@ export type DomainSearchFilters = {
   role?: "receiver" | "passer" | "shooter" | "any";
 };
 
+export type QueryRoute =
+  | "video_summary"
+  | "generic_video_qa"
+  | "sports_moment_retrieval"
+  | "sports_analysis"
+  | "sports_stat_qa"
+  | "asset_lookup"
+  | "unsupported";
+
 export type DomainQueryPlan = {
   originalQuery: string;
   semanticQuery: string;
   rewrittenQuery: string;
   domainFilters: DomainSearchFilters;
+  route: QueryRoute;
   intent: {
     domain: string | null;
     questionType?: "moment_retrieval" | "stat_qa";
@@ -895,6 +905,17 @@ export type JobLog = {
   message: string;
 };
 
+export type RuntimeStageRecord = {
+  stage: string;
+  status: "running" | "succeeded" | "failed";
+  message: string;
+  progress: number;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
 export type JobRecord = {
   id: string;
   type: JobType;
@@ -903,6 +924,7 @@ export type JobRecord = {
   progress: number;
   indexId: string | null;
   assetId: string | null;
+  runtimeStages?: Record<string, RuntimeStageRecord>;
   logs: JobLog[];
   error: string | null;
   createdAt: string;

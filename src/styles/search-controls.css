@@ -15,14 +15,19 @@
   margin-top: 12px;
 }
 
-.search-domain-selector {
+.search-scope-control {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   width: min(760px, 100%);
 }
 
-.search-domain-selector button {
+.search-scope-selector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.search-scope-selector button {
   display: grid;
   justify-items: start;
   gap: 2px;
@@ -36,29 +41,54 @@
   text-align: left;
 }
 
-.search-domain-selector button.active {
+.search-scope-selector button.active {
   border-color: rgba(43, 139, 112, 0.62);
   background: #edf6f2;
   color: #0d7d65;
 }
 
-.search-domain-selector strong,
-.search-domain-selector span {
+.search-scope-selector button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.search-scope-selector strong,
+.search-scope-selector span {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.search-domain-selector strong {
+.search-scope-selector strong {
   font-size: 12px;
   font-weight: 950;
 }
 
-.search-domain-selector span {
+.search-scope-selector span {
   color: #647871;
   font-size: 10px;
   font-weight: 820;
+}
+
+.search-scope-picker {
+  display: grid;
+  grid-template-columns: 94px minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.search-scope-picker > span {
+  color: #2b8b70;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.search-scope-picker select {
+  min-width: 0;
+  min-height: 36px;
 }
 
 .search-option-actions {
@@ -428,9 +458,16 @@
     flex-direction: column;
   }
 
-  .search-domain-selector {
-    grid-template-columns: 1fr;
+  .search-scope-control {
     width: 100%;
+  }
+
+  .search-scope-selector {
+    grid-template-columns: 1fr;
+  }
+
+  .search-scope-picker {
+    grid-template-columns: 1fr;
   }
 
   .filter-toggle {
@@ -721,6 +758,10 @@
   background: #fff7f5;
 }
 
+.search-workflow.collapsed {
+  gap: 10px;
+}
+
 .search-workflow-header {
   display: flex;
   align-items: flex-start;
@@ -765,13 +806,51 @@
   white-space: nowrap;
 }
 
+.search-workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workflow-collapse-button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: #e6f4ef;
+  padding: 7px 13px;
+  color: #0d7d66;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.workflow-collapse-button:hover {
+  background: #d6eee6;
+  color: #075f4e;
+}
+
+.workflow-collapse-button:focus-visible {
+  outline: 3px solid rgba(43, 139, 112, 0.22);
+  outline-offset: 2px;
+}
+
 .search-workflow-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
+.search-workflow-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .search-workflow-meta span,
+.search-workflow-compact span,
 .workflow-chip-row span {
   display: inline-grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -788,6 +867,7 @@
 }
 
 .search-workflow-meta b,
+.search-workflow-compact b,
 .workflow-chip-row b {
   color: #2b8b70;
   font-size: 10px;
@@ -929,6 +1009,10 @@
   .search-workflow-header em,
   .workflow-step-heading em {
     white-space: normal;
+  }
+
+  .search-workflow-actions {
+    justify-content: flex-start;
   }
 
   .workflow-step {

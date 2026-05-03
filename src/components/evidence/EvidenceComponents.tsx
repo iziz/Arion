@@ -416,7 +416,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
         <article className="evidence-card domain-evidence-card">
           <div className="evidence-title">
             <strong>Domain events</strong>
-            <span>{domainEvents.length} candidates · {vlmSegments.length} VLM checks</span>
+            <span>{domainEvents.length} candidates · {vlmSegments.length} sports-event VLM checks</span>
           </div>
           <div className="domain-event-list">
             {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
@@ -450,7 +450,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
                   <summary>Evidence and limitations</summary>
                   {segment.domain?.vlm && (
                     <p>
-                      VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
+                      Sports-event VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
                       {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
                     </p>
                   )}
@@ -466,7 +466,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
               .map((segment) => (
                 <article key={`${segment.id}-vlm-quality`} className="domain-event-row">
                   <div>
-                    <strong>VLM quality check</strong>
+                    <strong>Sports-event VLM check</strong>
                     <span>
                       {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.domain?.vlm?.status} · {Math.round((segment.domain?.vlm?.confidence ?? 0) * 100)}%
                     </span>

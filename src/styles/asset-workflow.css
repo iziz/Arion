@@ -140,6 +140,84 @@
   min-width: 0;
 }
 
+.workflow-node-details {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.workflow-node-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workflow-node-section h4 {
+  margin: 0;
+  color: #2b8b70;
+  font-size: 11px;
+  font-weight: 950;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.workflow-used-by {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.workflow-used-by span {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf7f3;
+  color: #247b64;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-raw-details {
+  min-width: 0;
+  border-radius: 10px;
+  background: #f3f7f5;
+  padding: 8px 10px;
+}
+
+.workflow-raw-details summary {
+  color: #526660;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.workflow-raw-details > div {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.workflow-raw-details > .workflow-technical-strip {
+  display: flex;
+}
+
+.workflow-raw-details code {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #405851;
+  padding: 7px 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .workflow-result-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -154,6 +232,7 @@
   display: grid;
   gap: 5px;
   min-width: 0;
+  border: 1px solid transparent;
   border-radius: 12px;
   background: #eef5f2;
   color: #25352f;
@@ -162,6 +241,25 @@
   font-weight: 850;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.workflow-result-metric.good {
+  border-color: #bce0d1;
+  background: #eef9f4;
+}
+
+.workflow-result-metric.warning {
+  border-color: #f0d99a;
+  background: #fff8e7;
+}
+
+.workflow-result-metric.bad {
+  border-color: #efbbb4;
+  background: #fff0ee;
+}
+
+.workflow-result-metric.neutral {
+  border-color: transparent;
 }
 
 .workflow-result-metric b {

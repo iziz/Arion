@@ -5,10 +5,13 @@ import { enqueueLocalTask } from "../localQueue";
 import { embedTimelineSegments, getEmbeddingModelName } from "../localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../keyframes";
-import { runLocalModelRuntime } from "../localModelRuntime";
+import { runLocalModelRuntime, type LocalRuntimePartial } from "../localModelRuntime";
+import { extractAudioAndVad } from "../modelRuntime/audioRuntime";
+import { toPublicMediaPath } from "../modelRuntime/mediaPath";
+import { runRuntimeStage } from "../modelRuntime/stageReporter";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../modelCapabilities";
 import { applyEventClassification } from "../eventClassifier";
-import { getObjectPath, putUploadedObject } from "../localObjectStorage";
+import { getObjectPath, getPublicMediaRoot, putUploadedObject } from "../localObjectStorage";
 import { upsertAssetVectors } from "../localVectorStore";
 import { upsertAssetVisualVectors } from "../localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
@@ -18,7 +21,7 @@ import { upsertAssetTracking } from "../trackingStore";
 import { getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync, traceJobAsync } from "../observability";
 import { normalizeUploadedText } from "../textEncoding";
-import { createDefaultIndex, getAsset, getIndex, saveAsset, saveIndex, saveVideo } from "../store";
+import { createDefaultIndex, getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
 import { createJob, updateAsset, updateJob } from "../services/jobState";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
@@ -129,7 +132,11 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     const intelligence = await traceAsync(
       "stage.local_model_runtime",
       { jobId, assetId },
-      () => runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event), { whisperXDiarization: runtimePolicy.whisperXDiarization }),
+      () =>
+        runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event), {
+          whisperXDiarization: runtimePolicy.whisperXDiarization,
+          onPartial: (_stage, partial) => mergeLocalRuntimePartial(assetId, partial)
+        }),
       "stage.local_model_runtime"
     );
     assertCapabilityAvailable(
@@ -266,7 +273,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         (isVlmWorkerEnabled() || isCapabilityRequired(embeddingIndex, "domainVlmRefinement"));
       if (shouldRunDomainVlm) {
         assertCapabilityAvailable(embeddingIndex, "domainVlmRefinement", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
-        await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports domain events with ${getVlmWorkerModelName()}`);
+        await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports event metadata with ${getVlmWorkerModelName()}`);
         const vlmRefinement = await traceAsync(
           "model.vlm.sports_domain",
           { jobId, assetId, segments: timelineForDomain.length, model: getVlmWorkerModelName() },
@@ -286,10 +293,10 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         await updateJob(
           jobId,
           { stage: "domain-vlm", progress: 83 },
-          `VLM sports domain refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
+          `Sports event VLM refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
         );
         if (vlmRefinement.errors.length > 0) {
-          logJson("warn", "model.vlm.sports_domain.partial", "VLM sports domain refinement had partial failures", {
+          logJson("warn", "model.vlm.sports_domain.partial", "Sports event VLM refinement had partial failures", {
             jobId,
             assetId,
             errors: vlmRefinement.errors
@@ -386,6 +393,46 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
   }
 }
 
+export async function runAudioExtractionJob(jobId: string, assetId: string, filePath: string) {
+  try {
+    const asset = await getAsset(assetId);
+    if (!asset) return;
+    await updateJob(jobId, { status: "running", stage: "runtime-audio", progress: 40 }, "Running audio extraction retry");
+    await updateAsset(assetId, { status: "scanning", progress: 40, error: null });
+    const audio = await runRuntimeStage(
+      (event) => updateRuntimeStage(jobId, event),
+      "audio",
+      "Extracting audio and detecting speech regions",
+      () => traceAsync("model.audio_extract_vad", { assetId }, () => extractAudioAndVad(filePath, asset.id, asset.duration), "model.audio_extract_vad")
+    );
+    await mergeLocalRuntimePartial(assetId, { audio: buildAudioRuntimePartial(audio) });
+    const refreshed = await getAsset(assetId);
+    const hasSearchArtifacts = Boolean(refreshed?.timeline.length);
+    await updateAsset(assetId, {
+      status: hasSearchArtifacts ? "indexed" : "failed",
+      progress: hasSearchArtifacts ? 100 : Math.max(refreshed?.progress ?? 42, 42),
+      error: hasSearchArtifacts ? null : "Audio extraction retry completed; run full reindex to rebuild downstream search artifacts."
+    });
+    await updateJob(
+      jobId,
+      { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
+      "Audio extraction retry complete"
+    );
+    await emitForAsset("asset.indexing.progress", "Audio extraction retry complete", assetId, jobId, { progress: 42 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Audio extraction retry failed";
+    logJson("error", "job.audio_retry.failed", message, { jobId, assetId });
+    await updateAsset(assetId, { status: "failed", error: message });
+    await updateJob(
+      jobId,
+      { status: "failed", stage: "failed", error: message, completedAt: new Date().toISOString() },
+      message,
+      "error"
+    );
+    await emitForAsset("asset.indexing.failed", "Audio extraction retry failed", assetId, jobId, { error: message });
+  }
+}
+
 export function normalizeWorkflowStage(value: unknown) {
   const stage = typeof value === "string" ? value.trim().toLowerCase() : "";
   const allowed = new Set(["input", "probe", "audio", "vad", "asr", "speakers", "ocr", "visual", "timeline", "domain", "vector", "ready"]);
@@ -408,13 +455,53 @@ async function updateRuntimeStage(
   const stage = event.status === "running" ? `runtime-${event.stage}` : `runtime-${event.stage}-${event.status}`;
   const level = event.status === "failed" ? "warn" : "info";
   const message = event.error ? `${event.message}: ${event.error}` : event.message;
-  const updated = await updateJob(jobId, { stage, progress }, `[runtime:${event.stage}:${event.status}] ${message}`, level);
+  const currentJob = await getJob(jobId);
+  const previousStage = currentJob?.runtimeStages?.[event.stage];
+  const now = new Date().toISOString();
+  const runtimeStages = {
+    ...(currentJob?.runtimeStages ?? {}),
+    [event.stage]: {
+      stage: event.stage,
+      status: event.status,
+      message,
+      progress,
+      error: event.error ?? null,
+      startedAt: previousStage?.startedAt ?? now,
+      updatedAt: now,
+      completedAt: event.status === "running" ? previousStage?.completedAt ?? null : now
+    }
+  };
+  const updated = await updateJob(jobId, { stage, progress, runtimeStages }, `[runtime:${event.stage}:${event.status}] ${message}`, level);
   if (updated?.assetId) {
     await updateAsset(updated.assetId, {
       status: event.stage === "asr" || event.stage === "diarization" ? "transcribing" : "scanning",
       progress
     });
   }
+}
+
+async function mergeLocalRuntimePartial(assetId: string, partial: LocalRuntimePartial) {
+  const current = await getAsset(assetId);
+  if (!current) return;
+  await saveAsset({
+    ...current,
+    intelligence: {
+      ...current.intelligence,
+      ...partial
+    },
+    updatedAt: new Date().toISOString()
+  });
+}
+
+function buildAudioRuntimePartial(audio: Awaited<ReturnType<typeof extractAudioAndVad>>): LocalIntelligence["audio"] {
+  return {
+    extractedPath: toPublicMediaPath(audio.extractedPath, getPublicMediaRoot()),
+    vad: audio.vad,
+    speechSegments: audio.speechSegments,
+    musicSegments: audio.musicSegments,
+    hasSpeech: audio.vad.available && audio.speechSegments.length > 0,
+    hasMusic: audio.vad.available && audio.musicSegments.length > 0
+  };
 }
 
 async function emitForAsset(

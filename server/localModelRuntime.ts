@@ -10,11 +10,18 @@ import { logJson, recordLatency, traceAsync } from "./observability";
 
 export { applyDiarizationToAsrSegments, runWhisperXDiarizationForAsset } from "./modelRuntime/speechRuntime";
 
+export type LocalRuntimePartial = Partial<Pick<LocalIntelligence, "audio" | "asr" | "diarization" | "ocr" | "visual">>;
+
+type LocalModelRuntimeOptions = {
+  whisperXDiarization?: CapabilityMode;
+  onPartial?: (stage: string, partial: LocalRuntimePartial) => Promise<void> | void;
+};
+
 export async function runLocalModelRuntime(
   filePath: string,
   asset: AssetRecord,
   reportStage?: RuntimeStageReporter,
-  options: { whisperXDiarization?: CapabilityMode } = {}
+  options: LocalModelRuntimeOptions = {}
 ): Promise<LocalIntelligence> {
   const languageHints = inferLanguageHints(asset);
   const audio = await runRuntimeStage(
@@ -23,6 +30,8 @@ export async function runLocalModelRuntime(
     "Extracting audio and detecting speech regions",
     () => traceAsync("model.audio_extract_vad", { assetId: asset.id }, () => extractAudioAndVad(filePath, asset.id, asset.duration), "model.audio_extract_vad")
   );
+  const audioIntelligence = buildAudioIntelligence(audio);
+  await publishRuntimePartial(options, "audio", { audio: audioIntelligence });
   const asrInput = audio.speechFocusedPath || audio.extractedPath || filePath;
   const [visual, waveform, paddle, speech] = await Promise.all([
     runRuntimeStage(
@@ -31,7 +40,10 @@ export async function runLocalModelRuntime(
       "Sampling visual frames",
       () => traceAsync("model.visual_sampler", { assetId: asset.id }, () => inspectVisualFrames(filePath), "model.visual_sampler"),
       (result) => (result.available ? null : (result.error ?? "Visual sampler returned no usable frames"))
-    ),
+    ).then(async (result) => {
+      await publishRuntimePartial(options, "visual", { visual: buildVisualIntelligence(result) });
+      return result;
+    }),
     runRuntimeStage(
       reportStage,
       "audio-probe",
@@ -50,8 +62,15 @@ export async function runLocalModelRuntime(
           "model.ocr.paddle"
         ),
       (result) => (result.available ? null : (result.error ?? "PaddleOCR returned no OCR result"))
-    ),
-    runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage, { diarizationMode: options.whisperXDiarization })
+    ).then(async (result) => {
+      await publishRuntimePartial(options, "ocr", { ocr: buildOcrIntelligence(result) });
+      return result;
+    }),
+    runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage, { diarizationMode: options.whisperXDiarization }).then(async (result) => {
+      const speechIntelligence = buildSpeechIntelligence(result.whisper, result.diarization);
+      await publishRuntimePartial(options, "asr", speechIntelligence);
+      return result;
+    })
   ]);
   const { whisper, diarization } = speech;
   if (!whisper.available) {
@@ -72,9 +91,11 @@ export async function runLocalModelRuntime(
   }
   const terms = extractTerms(`${asset.title} ${asset.description} ${asset.originalName}`);
   const metadataTerms = unique([...terms.filter((term) => /[a-z0-9가-힣]/i.test(term)), asset.originalName.replace(/\.[^.]+$/, "")]).slice(0, 12);
-  const transcript = whisper.available && whisper.transcript.trim() ? whisper.transcript.trim() : "";
-  const asrSegments = applyDiarizationToAsrSegments(whisper.segments, diarization.segments);
-  const ocrTokens = paddle.available && paddle.tokens.length > 0 ? paddle.tokens : [];
+  const speechIntelligence = buildSpeechIntelligence(whisper, diarization);
+  const transcript = speechIntelligence.asr?.transcript ?? "";
+  const asrSegments = speechIntelligence.asr?.segments ?? [];
+  const ocrIntelligence = buildOcrIntelligence(paddle);
+  const ocrTokens = ocrIntelligence.tokens;
   const trace = [
     whisper.available ? `${whisper.provider}:${whisper.model ?? "default"}` : `whisper-unavailable:${whisper.error ?? "missing dependency"}`,
     whisper.language ? `asr-language:${whisper.language}` : "asr-language:unknown",
@@ -94,41 +115,69 @@ export async function runLocalModelRuntime(
   ];
 
   return {
-    audio: {
-      extractedPath: toPublicMediaPath(audio.extractedPath, getPublicMediaRoot()),
-      vad: audio.vad,
-      speechSegments: audio.speechSegments,
-      musicSegments: audio.musicSegments,
-      hasSpeech: audio.vad.available && audio.speechSegments.length > 0,
-      hasMusic: audio.vad.available && audio.musicSegments.length > 0
-    },
+    audio: audioIntelligence,
+    asr: speechIntelligence.asr,
+    diarization: speechIntelligence.diarization,
+    ocr: ocrIntelligence,
+    visual: buildVisualIntelligence(visual),
+    modelTrace: trace
+  };
+}
+
+function buildAudioIntelligence(audio: Awaited<ReturnType<typeof extractAudioAndVad>>): LocalIntelligence["audio"] {
+  return {
+    extractedPath: toPublicMediaPath(audio.extractedPath, getPublicMediaRoot()),
+    vad: audio.vad,
+    speechSegments: audio.speechSegments,
+    musicSegments: audio.musicSegments,
+    hasSpeech: audio.vad.available && audio.speechSegments.length > 0,
+    hasMusic: audio.vad.available && audio.musicSegments.length > 0
+  };
+}
+
+function buildOcrIntelligence(paddle: Awaited<ReturnType<typeof runPaddleOcr>>): LocalIntelligence["ocr"] {
+  const tokens = paddle.available && paddle.tokens.length > 0 ? paddle.tokens : [];
+  return {
+    tokens,
+    confidence: tokens.length > 0 ? paddle.confidence : 0,
+    frames: paddle.frames
+  };
+}
+
+function buildSpeechIntelligence(
+  whisper: Awaited<ReturnType<typeof runSpeechRuntime>>["whisper"],
+  diarization: Awaited<ReturnType<typeof runSpeechRuntime>>["diarization"]
+): Pick<LocalIntelligence, "asr" | "diarization"> {
+  const transcript = whisper.available && whisper.transcript.trim() ? whisper.transcript.trim() : "";
+  return {
     asr: {
       transcript,
       language: whisper.language || (/[가-힣]/.test(transcript) ? "ko" : "en"),
       confidence: transcript ? whisper.confidence : 0,
-      segments: asrSegments
+      segments: applyDiarizationToAsrSegments(whisper.segments, diarization.segments)
     },
     diarization: {
       provider: diarization.available ? diarization.provider : "none",
       speakers: diarization.speakers,
       segments: diarization.segments,
       error: diarization.error ?? null
-    },
-    ocr: {
-      tokens: ocrTokens,
-      confidence: ocrTokens.length > 0 ? paddle.confidence : 0,
-      frames: paddle.frames
-    },
-    visual: {
-      available: visual.available,
-      labels: visual.labels,
-      dominantColor: visual.dominantColor,
-      brightness: visual.brightness,
-      motionScore: visual.motionScore,
-      error: visual.error
-    },
-    modelTrace: trace
+    }
   };
+}
+
+function buildVisualIntelligence(visual: Awaited<ReturnType<typeof inspectVisualFrames>>): LocalIntelligence["visual"] {
+  return {
+    available: visual.available,
+    labels: visual.labels,
+    dominantColor: visual.dominantColor,
+    brightness: visual.brightness,
+    motionScore: visual.motionScore,
+    error: visual.error
+  };
+}
+
+async function publishRuntimePartial(options: LocalModelRuntimeOptions, stage: string, partial: LocalRuntimePartial) {
+  await options.onPartial?.(stage, partial);
 }
 
 function inferLanguageHints(asset: AssetRecord) {

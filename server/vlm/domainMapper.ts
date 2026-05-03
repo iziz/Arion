@@ -81,7 +81,7 @@ export function mergeVlmResponse(asset: AssetRecord, segment: TimelineSegment, r
         confidence: Number(Math.max(base?.confidence ?? 0, event.confidence).toFixed(2)),
         generatedBy: base?.generatedBy ? `${base.generatedBy}+vlm:${response.model ?? modelName}` : `vlm:${response.model ?? modelName}`,
         trust: "detected",
-        vlm: buildVlmQuality(response, "refined", "VLM event structure accepted.", null, modelName)
+        vlm: buildVlmQuality(response, "refined", "Sports event VLM structure accepted.", null, modelName)
       },
     tags: unique([...segment.tags, ...labels]).slice(0, 32),
     sources: unique([...segment.sources, "domain" as const])

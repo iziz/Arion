@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getAsset, getJob, listJobs, saveAsset, saveJob } from "../store";
 import { logJson } from "../observability";
 import type { AssetRecord, JobRecord } from "../../shared/types";
+import { cleanupStaleRuntimeProcesses } from "./runtimeProcessCleanup";
 
 export async function createJob(type: JobRecord["type"], indexId: string | null, assetId: string | null) {
   const now = new Date().toISOString();
@@ -13,6 +14,7 @@ export async function createJob(type: JobRecord["type"], indexId: string | null,
     progress: 0,
     indexId,
     assetId,
+    runtimeStages: {},
     logs: [{ at: now, level: "info", message: "Job queued" }],
     error: null,
     createdAt: now,
@@ -84,5 +86,9 @@ export async function recoverDetachedLocalJobs() {
   }
   if (detachedJobs.length > 0) {
     logJson("warn", "jobs.detached.recovered", "Recovered detached local jobs after server restart", { count: detachedJobs.length });
+  }
+  const cleaned = await cleanupStaleRuntimeProcesses(await listJobs());
+  if (cleaned.terminated > 0) {
+    logJson("warn", "jobs.detached.runtime_cleanup", "Cleaned stale runtime processes after job recovery", cleaned);
   }
 }

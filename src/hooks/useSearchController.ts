@@ -1,34 +1,41 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   AskResponse,
+  AssetRecord,
   DomainQueryPlan,
-  DomainSearchFilters,
+  IndexRecord,
   OrchestrationPlan,
   SearchResult,
-  SportsDomainGroup,
   SportsKnowledgeAnswer
 } from "../../shared/types";
 import { api, sleep } from "../api";
+import type { SearchScopeMode } from "../consoleTypes";
 import {
   buildSearchAssistantAnswer,
   filterSearchResultsByTrust,
-  trustPresetFor,
   TRUST_PRESETS,
   type SearchTrustFilters
 } from "../searchTrust";
 import type { SearchConversationTurn } from "../components/SearchPanels";
 
 export function useSearchController({
+  indexes,
+  assets,
+  selectedIndexId,
+  selectedAssetId,
   setMessage
 }: {
+  indexes: IndexRecord[];
+  assets: AssetRecord[];
+  selectedIndexId: string | null;
+  selectedAssetId: string | null;
   setMessage: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [searchTag, setSearchTag] = useState("");
-  const [searchDomainGroup, setSearchDomainGroupState] = useState<SportsDomainGroup | "">("");
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [domainFilters, setDomainFilters] = useState<DomainSearchFilters>({});
-  const [trustFilters, setTrustFilters] = useState<SearchTrustFilters>(TRUST_PRESETS.balanced);
+  const [searchScopeMode, setSearchScopeModeState] = useState<SearchScopeMode>("all");
+  const [searchIndexId, setSearchIndexIdState] = useState(selectedIndexId ?? "");
+  const [searchAssetId, setSearchAssetIdState] = useState(selectedAssetId ?? "");
+  const trustFilters: SearchTrustFilters = TRUST_PRESETS.balanced;
   const [useKnowledgeLayer, setUseKnowledgeLayer] = useState(true);
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
   const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
@@ -39,31 +46,83 @@ export function useSearchController({
   const [searching, setSearching] = useState(false);
 
   const filteredSearchResults = useMemo(() => filterSearchResultsByTrust(searchResults, trustFilters), [searchResults, trustFilters]);
-  const activeSearchFilterCount =
-    Object.values(domainFilters).filter(Boolean).length +
-    (searchTag ? 1 : 0) +
-    (trustPresetFor(trustFilters) === "balanced" ? 0 : 1) +
-    (useKnowledgeLayer ? 0 : 1);
+  const searchAsset = useMemo(() => assets.find((asset) => asset.id === searchAssetId) ?? null, [assets, searchAssetId]);
+  const searchIndex = useMemo(() => {
+    const scopedIndexId = searchScopeMode === "asset" ? searchAsset?.indexId : searchIndexId;
+    return indexes.find((index) => index.id === scopedIndexId) ?? null;
+  }, [indexes, searchAsset, searchIndexId, searchScopeMode]);
+  const searchScopeLabel = useMemo(() => {
+    if (searchScopeMode === "all") return `All videos (${assets.length})`;
+    if (searchScopeMode === "asset") return searchAsset?.title ?? "Select video";
+    if (!searchIndex) return "Select asset group";
+    const groupAssetCount = assets.filter((asset) => asset.indexId === searchIndex.id).length;
+    return `${searchIndex.name} (${groupAssetCount})`;
+  }, [assets, searchAsset, searchIndex, searchScopeMode]);
 
-  function setSearchDomainGroup(domainGroup: SportsDomainGroup | "") {
-    setSearchDomainGroupState(domainGroup);
-    setDomainFilters((current) => sanitizeFiltersForDomain(current, domainGroup));
+  useEffect(() => {
+    if (indexes.length === 0) {
+      if (searchIndexId) setSearchIndexIdState("");
+      return;
+    }
+    if (indexes.some((index) => index.id === searchIndexId)) return;
+    const selectedIndexIsValid = selectedIndexId ? indexes.some((index) => index.id === selectedIndexId) : false;
+    setSearchIndexIdState(selectedIndexIsValid && selectedIndexId ? selectedIndexId : indexes[0]?.id ?? "");
+  }, [indexes, searchIndexId, selectedIndexId]);
+
+  useEffect(() => {
+    if (assets.length === 0) {
+      if (searchAssetId) setSearchAssetIdState("");
+      return;
+    }
+    if (!searchAssetId || assets.some((asset) => asset.id === searchAssetId)) return;
+    const selectedAssetIsValid = selectedAssetId ? assets.some((asset) => asset.id === selectedAssetId) : false;
+    setSearchAssetIdState(selectedAssetIsValid && selectedAssetId ? selectedAssetId : "");
+  }, [assets, searchAssetId, selectedAssetId]);
+
+  function setSearchScopeMode(mode: SearchScopeMode) {
+    setSearchScopeModeState(mode);
+    if (mode === "group" && !indexes.some((index) => index.id === searchIndexId)) {
+      setSearchIndexIdState(selectedIndexId && indexes.some((index) => index.id === selectedIndexId) ? selectedIndexId : indexes[0]?.id ?? "");
+    }
+    if (mode === "asset" && !assets.some((asset) => asset.id === searchAssetId)) {
+      const fallbackAsset =
+        (selectedAssetId ? assets.find((asset) => asset.id === selectedAssetId) : null) ??
+        assets.find((asset) => asset.indexId === searchIndexId) ??
+        assets[0] ??
+        null;
+      setSearchAssetIdState(fallbackAsset?.id ?? "");
+      if (fallbackAsset) setSearchIndexIdState(fallbackAsset.indexId);
+    }
+  }
+
+  function setSearchIndexId(indexId: string) {
+    setSearchIndexIdState(indexId);
+    const selectedAssetBelongsToGroup = searchAssetId ? assets.some((asset) => asset.id === searchAssetId && asset.indexId === indexId) : false;
+    if (searchScopeMode === "asset" && !selectedAssetBelongsToGroup) {
+      setSearchAssetIdState(assets.find((asset) => asset.indexId === indexId)?.id ?? "");
+    }
+  }
+
+  function setSearchAssetId(assetId: string) {
+    setSearchAssetIdState(assetId);
+    const asset = assets.find((item) => item.id === assetId);
+    if (asset) setSearchIndexIdState(asset.indexId);
   }
 
   async function runSearch(event: FormEvent) {
     event.preventDefault();
     const submittedQuery = query.trim();
-    if (!submittedQuery && !searchTag && !Object.values(domainFilters).some(Boolean)) return;
+    if (!submittedQuery) return;
     setSearching(true);
     setMessage("");
     setSportsAnswer(null);
     setAskResponse(null);
+    const searchScope = resolveSearchScope(searchScopeMode, searchIndexId, searchAssetId, assets);
     try {
       const started = await api.post<AskResponse>("/api/ask", {
         q: submittedQuery,
-        domainGroup: searchDomainGroup || undefined,
-        tag: searchTag || undefined,
-        domainFilters,
+        indexId: searchScope.indexId,
+        assetId: searchScope.assetId,
         useKnowledgeLayer
       });
       setAskResponse(started);
@@ -151,16 +210,14 @@ export function useSearchController({
   return {
     query,
     setQuery,
-    searchTag,
-    setSearchTag,
-    searchDomainGroup,
-    setSearchDomainGroup,
-    filtersOpen,
-    setFiltersOpen,
-    domainFilters,
-    setDomainFilters,
+    searchScopeMode,
+    setSearchScopeMode,
+    searchIndexId,
+    setSearchIndexId,
+    searchAssetId,
+    setSearchAssetId,
+    searchScopeLabel,
     trustFilters,
-    setTrustFilters,
     useKnowledgeLayer,
     setUseKnowledgeLayer,
     queryPlan,
@@ -172,37 +229,17 @@ export function useSearchController({
     setSearchResults,
     filteredSearchResults,
     searching,
-    activeSearchFilterCount,
     runSearch,
     buildAssetMomentUrl
   };
 }
 
-function sanitizeFiltersForDomain(filters: DomainSearchFilters, domainGroup: SportsDomainGroup | ""): DomainSearchFilters {
-  const next: DomainSearchFilters = { ...filters };
-  if (!domainGroup) {
-    delete next.eventType;
-    delete next.passType;
-    delete next.fieldZone;
-    delete next.role;
-    return compactFilters(next);
-  }
-  if (domainGroup === "sports.american_football") {
-    if (next.competition && next.competition !== "NFL") delete next.competition;
-    if (next.eventType && !["scramble", "pressure", "pocket_escape", "throw_on_run"].includes(next.eventType)) delete next.eventType;
-    delete next.passType;
-    delete next.fieldZone;
-    delete next.role;
-  }
-  if (domainGroup === "sports.football") {
-    if (next.competition === "NFL") delete next.competition;
-    if (next.eventType && !["pass_receive", "shot", "dribble"].includes(next.eventType)) delete next.eventType;
-  }
-  return compactFilters(next);
-}
-
-function compactFilters(filters: DomainSearchFilters): DomainSearchFilters {
-  return Object.fromEntries(
-    Object.entries(filters).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
-  ) as DomainSearchFilters;
+function resolveSearchScope(scopeMode: SearchScopeMode, indexId: string, assetId: string, assets: AssetRecord[]) {
+  if (scopeMode === "all") return {};
+  if (scopeMode === "group") return { indexId: indexId || undefined };
+  const asset = assets.find((item) => item.id === assetId);
+  return {
+    indexId: asset?.indexId,
+    assetId: asset?.id
+  };
 }

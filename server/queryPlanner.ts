@@ -100,16 +100,18 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const domainFilters = compactFilters({ ...inferred, ...compactFilters(explicitFilters) });
   const semanticQuery = playerInventory ? "mentioned player names" : buildSemanticQuery(originalQuery, domainFilters);
   const rewrittenQuery = playerInventory ? "Extract mentioned player names from indexed timeline text and domain scopes." : buildRewrittenQuery(domainFilters, semanticQuery);
+  const route = inferQueryRoute(originalQuery, statQuestion, domainFilters, playerInventory);
 
   return {
     originalQuery,
     semanticQuery,
     rewrittenQuery,
     domainFilters,
+    route,
     intent: {
       domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
-      questionType: statQuestion ? "stat_qa" : "moment_retrieval",
-      metric: statMetric,
+      questionType: route === "sports_stat_qa" ? "stat_qa" : "moment_retrieval",
+      metric: route === "sports_stat_qa" ? statMetric : null,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -119,6 +121,28 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence: Number(Math.min(0.92, confidence).toFixed(2)),
     warnings
   };
+}
+
+function inferQueryRoute(
+  query: string,
+  statQuestion: boolean,
+  domainFilters: DomainSearchFilters,
+  playerInventory: boolean
+): DomainQueryPlan["route"] {
+  if (statQuestion) return "sports_stat_qa";
+  if (playerInventory) return "asset_lookup";
+  if (hasSportsRouteEvidence(domainFilters)) {
+    return /분석|비교|패턴|리포트|analy[sz]e|compare|pattern|report/i.test(query)
+      ? "sports_analysis"
+      : "sports_moment_retrieval";
+  }
+  if (/요약|정리|summari[sz]e|summary|recap/i.test(query)) return "video_summary";
+  if (/영상|비디오|asset|video|clip|있|찾|검색|보여|질문|what|where|when|does|is there/i.test(query)) return "generic_video_qa";
+  return "generic_video_qa";
+}
+
+function hasSportsRouteEvidence(filters: DomainSearchFilters) {
+  return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
 }
 
 export function isPlayerInventoryQuery(query: string) {
@@ -212,7 +236,7 @@ function inferStatMetric(normalized: string, competition?: string): DomainQueryP
   if (hasAny(normalized, ["touchdown", "touchdowns", "td", "tds", "터치다운"])) return "touchdowns";
   if (hasAny(normalized, ["sack", "sacks", "색"])) return "sacks";
   if (hasAny(normalized, ["interception", "interceptions", "pick", "picks", "인터셉션"])) return "interceptions";
-  if (americanFootball && hasAny(normalized, ["point", "points", "scored", "score", "득점", "점수"])) return "points";
+  if (americanFootball && hasAny(normalized, ["point", "points", "scored", "score", "goal", "goals", "득점", "점수", "골"])) return "points";
   if (hasAny(normalized, ["goal", "goals", "scored", "score", "득점", "골"])) return "goals";
   if (hasAny(normalized, ["assist", "assists", "도움", "어시스트"])) return "assists";
   if (hasAny(normalized, ["appearance", "appearances", "apps", "출전"])) return "appearances";

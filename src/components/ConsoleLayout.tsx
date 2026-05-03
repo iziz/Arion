@@ -9,7 +9,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  SlidersHorizontal,
   UploadCloud,
   X
 } from "lucide-react";
@@ -19,7 +18,6 @@ import type {
   AssetRecord,
   ClipDetailResult,
   DomainQueryPlan,
-  DomainSearchFilters,
   EventRecord,
   IndexRecord,
   JobRecord,
@@ -32,7 +30,7 @@ import type {
   SportsKnowledgeSnapshot
 } from "../../shared/types";
 import type { DatabaseStatus, ObservabilitySnapshot } from "../api";
-import type { ConsoleTab, DialogMode } from "../consoleTypes";
+import type { ConsoleTab, DialogMode, SearchScopeMode } from "../consoleTypes";
 import { formatDuration, mediaPath } from "../displayUtils";
 import { buildEvidenceLedger, type SearchTrustFilters } from "../searchTrust";
 import {
@@ -55,10 +53,9 @@ import {
   type AssetDetailTab
 } from "./ConsoleComponents";
 import {
-  AdvancedSearchFilters,
   ResultTrustSummary,
   SearchConversation,
-  SearchDomainSelector,
+  SearchScopeSelector,
   SearchScopeSummary,
   SearchWorkflowTrace,
   SportsAnswerCard,
@@ -98,23 +95,19 @@ export type ConsoleLayoutProps = {
   setQuery: Dispatch<SetStateAction<string>>;
   searching: boolean;
   runSearch: (event: FormEvent) => Promise<void>;
-  filtersOpen: boolean;
-  setFiltersOpen: Dispatch<SetStateAction<boolean>>;
-  activeSearchFilterCount: number;
-  searchTag: string;
-  setSearchTag: Dispatch<SetStateAction<string>>;
-  searchDomainGroup: SportsDomainGroup | "";
-  setSearchDomainGroup: (domainGroup: SportsDomainGroup | "") => void;
-  domainFilters: DomainSearchFilters;
-  setDomainFilters: Dispatch<SetStateAction<DomainSearchFilters>>;
+  searchScopeMode: SearchScopeMode;
+  setSearchScopeMode: (mode: SearchScopeMode) => void;
+  searchIndexId: string;
+  setSearchIndexId: (indexId: string) => void;
+  searchAssetId: string;
+  setSearchAssetId: (assetId: string) => void;
+  searchScopeLabel: string;
   trustFilters: SearchTrustFilters;
-  setTrustFilters: Dispatch<SetStateAction<SearchTrustFilters>>;
   useKnowledgeLayer: boolean;
   setUseKnowledgeLayer: Dispatch<SetStateAction<boolean>>;
   searchConversation: SearchConversationTurn[];
   buildAssetMomentUrl: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   askResponse: AskResponse | null;
-  filterTags: string[];
   filteredSearchResults: SearchResult[];
   sportsAnswer: SportsKnowledgeAnswer | null;
   queryPlan: DomainQueryPlan | null;
@@ -146,8 +139,9 @@ type SearchVideoPreview = {
 type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
 type ObservabilityLog = ObservabilitySnapshot["recentLogs"][number];
 
+const dataTechStack = ["React", "Express", "Multer", "FFmpeg/ffprobe", "Whisper", "PaddleOCR", "OpenCLIP", "pgvector"] as const;
+
 const sectionTechStacks = {
-  data: "React · Express · Multer · FFmpeg/ffprobe · Whisper · PaddleOCR · OpenCLIP · pgvector",
   search: "Query planner · multilingual-e5 · OpenCLIP visual vectors · pgvector HNSW · hybrid lexical ranking",
   knowledge: "Sports registry · Football-Data · StatBunker · StatsBomb · nflverse · knowledge vectors",
   system: "TypeScript · Vite · Node.js/Express · PostgreSQL · OpenTelemetry · local queue · NDJSON logs"
@@ -221,23 +215,19 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setQuery,
     searching,
     runSearch,
-    filtersOpen,
-    setFiltersOpen,
-    activeSearchFilterCount,
-    searchTag,
-    setSearchTag,
-    searchDomainGroup,
-    setSearchDomainGroup,
-    domainFilters,
-    setDomainFilters,
+    searchScopeMode,
+    setSearchScopeMode,
+    searchIndexId,
+    setSearchIndexId,
+    searchAssetId,
+    setSearchAssetId,
+    searchScopeLabel,
     trustFilters,
-    setTrustFilters,
     useKnowledgeLayer,
     setUseKnowledgeLayer,
     searchConversation,
     buildAssetMomentUrl,
     askResponse,
-    filterTags,
     filteredSearchResults,
     sportsAnswer,
     queryPlan,
@@ -266,6 +256,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   const succeededJobCount = jobs.filter((job) => job.status === "succeeded").length;
   const visibleJobs = jobs.slice(0, 12);
   const visibleEvents = events.slice(0, 8);
+  const activeJobCount = Math.max(runningJobCount, metrics.runningJobs);
 
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
@@ -305,7 +296,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           </div>
           <div>
             <span>Queue</span>
-            <strong>{runningJobCount > 0 ? `${runningJobCount} active` : "clear"}</strong>
+            <strong>{activeJobCount > 0 ? `${activeJobCount} active` : "clear"}</strong>
           </div>
         </section>
         <button className="ghost-button icon-only" type="button" aria-label="Refresh" onClick={() => void refresh()}>
@@ -416,7 +407,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "system"}
           icon={<Activity size={17} />}
           label="시스템"
-          meta={runningJobCount > 0 ? `${runningJobCount} active` : `${metrics.indexedAssets}/${metrics.assets} indexed`}
+          meta={activeJobCount > 0 ? `${activeJobCount} active` : `${metrics.indexedAssets}/${metrics.assets} indexed`}
           onClick={() => setActiveTab("system")}
         />
       </nav>
@@ -426,7 +417,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Data</p>
-            <h2 className="section-stack-title">{sectionTechStacks.data}</h2>
+            <h2 className="section-stack-title tech-stack-tags" aria-label={dataTechStack.join(", ")}>
+              {dataTechStack.map((item) => (
+                <span key={item} className="tech-stack-tag">
+                  {item}
+                </span>
+              ))}
+            </h2>
           </div>
         </div>
         <AssetGroupSummary
@@ -563,36 +560,25 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </button>
           </form>
           <div className="search-under-input">
-            <SearchDomainSelector value={searchDomainGroup} onChange={setSearchDomainGroup} />
+            <SearchScopeSelector
+              mode={searchScopeMode}
+              onModeChange={setSearchScopeMode}
+              indexes={indexes}
+              assets={assets}
+              indexId={searchIndexId}
+              onIndexChange={setSearchIndexId}
+              assetId={searchAssetId}
+              onAssetChange={setSearchAssetId}
+            />
             <div className="search-option-actions">
               <label className={`knowledge-layer-toggle ${useKnowledgeLayer ? "active" : ""}`}>
                 <input type="checkbox" checked={useKnowledgeLayer} onChange={(event) => setUseKnowledgeLayer(event.target.checked)} />
                 <span>Knowledge layer</span>
               </label>
-              <button type="button" className={`filter-toggle ${filtersOpen ? "active" : ""}`} onClick={() => setFiltersOpen((open) => !open)}>
-                <SlidersHorizontal size={16} />
-                Filters
-                {activeSearchFilterCount > 0 && <span>{activeSearchFilterCount}</span>}
-              </button>
             </div>
           </div>
-          <AdvancedSearchFilters
-            open={filtersOpen}
-            searchDomainGroup={searchDomainGroup}
-            filterTags={filterTags}
-            searchTag={searchTag}
-            setSearchTag={setSearchTag}
-            domainFilters={domainFilters}
-            setDomainFilters={setDomainFilters}
-            trustFilters={trustFilters}
-            setTrustFilters={setTrustFilters}
-            total={searchResults.length}
-            visible={filteredSearchResults.length}
-          />
           <SearchScopeSummary
-            domainGroup={searchDomainGroup}
-            tag={searchTag}
-            domainFilters={domainFilters}
+            scopeLabel={searchScopeLabel}
             trustFilters={trustFilters}
             useKnowledgeLayer={useKnowledgeLayer}
           />
@@ -617,7 +603,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
               <article className="result-card search-loading-card" aria-live="polite">
                 <div>
                   <strong>Searching indexed moments</strong>
-                  <span>Embedding query, matching vectors, and applying domain filters.</span>
+                  <span>Planning query filters, matching vectors, and ranking evidence.</span>
                 </div>
                 <span className="search-loading-bar" />
               </article>
@@ -672,11 +658,11 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 )}
               </article>
             ))}
-            {!searching && !sportsAnswer && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
+            {!searching && !sportsAnswer && query && searchResults.length === 0 && (
               <EmptyState text="No indexed moment matched the query." />
             )}
             {!searching && searchResults.length > 0 && filteredSearchResults.length === 0 && (
-              <EmptyState text="No results match the trust filters. Lower the minimum score or include soft matches." />
+              <EmptyState text="No results passed the evidence threshold. Try a more specific query." />
             )}
           </div>
         </section>
@@ -949,7 +935,7 @@ function formatJobTypeLabel(type: JobRecord["type"]) {
   const labels: Record<JobRecord["type"], string> = {
     "asset.index": "Index asset",
     "asset.reindex": "Reindex asset",
-    "asset.domain-vlm.refine": "Domain VLM",
+    "asset.domain-vlm.refine": "Sports event VLM",
     "webhook.test": "Webhook test"
   };
   return labels[type] ?? type;

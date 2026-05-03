@@ -16,7 +16,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
   const competition = queryPlan.domainFilters.competition ?? matchCompetition(queryPlan.originalQuery)?.value ?? playerMatch?.league ?? null;
   const season = queryPlan.domainFilters.season ?? null;
 
-  if (queryPlan.intent.questionType !== "stat_qa" || !metric) {
+  if (queryPlan.route !== "sports_stat_qa" || !metric) {
     return emptyAnswer("unsupported", "This query is not a supported sports statistics question.", { player: playerMatch?.canonical ?? null, competition, season, metric });
   }
   if (!playerMatch) {

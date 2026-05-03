@@ -12,6 +12,7 @@ export type AskRequest = {
   query: string;
   explicitFilters: DomainSearchFilters;
   indexId?: string;
+  assetId?: string;
   domainGroup?: SportsDomainGroup;
   tag?: string;
   modality?: string;

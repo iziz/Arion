@@ -3,8 +3,9 @@ import { trustedDomainEvents } from "../../evidenceTrust";
 import { isPlayerInventoryQuery } from "../../queryPlanner";
 import type { AskRequest } from "./types";
 
-export function formatSearchScope({ indexId, domainGroup, tag, modality }: Pick<AskRequest, "indexId" | "domainGroup" | "tag" | "modality">) {
+export function formatSearchScope({ indexId, assetId, domainGroup, tag, modality }: Pick<AskRequest, "indexId" | "assetId" | "domainGroup" | "tag" | "modality">) {
   return [
+    assetId ? `asset=${assetId}` : "",
     indexId ? `index=${indexId}` : domainGroup ? `domain=${domainGroup}` : "all indexes",
     tag ? `tag=${tag}` : "",
     modality ? `modality=${modality}` : ""
@@ -54,6 +55,9 @@ export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: Domai
   const top = results[0];
   const topMoments = top.segments.slice(0, 3).map((segment) => `${formatClock(segment.start)}-${formatClock(segment.end)}`).join(", ");
   const sourceProfile = summarizeResultSources(results);
+  if (isGenericVideoSummaryRequest(queryPlan)) {
+    return buildGenericVideoSummaryAnswer(results, queryPlan, topMoments, sourceProfile, korean);
+  }
   const features = collectMomentFeatures(results);
   const subject = queryPlan.intent.player ?? topGroup(features.map((feature) => feature.player).filter(Boolean) as string[])?.value ?? "the requested player";
   const headline = korean ? buildStyleHeadlineKo(features) : buildStyleHeadlineEn(features);
@@ -83,6 +87,94 @@ export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: Domai
     sourceProfile ? `Sources: ${sourceProfile}.` : "",
     orchestrationPlan.analysis.required ? "This conclusion is grounded only in the retrieved indexed moments and should not be generalized to all games or external statistics." : ""
   ].filter(Boolean).join(" ");
+}
+
+function isGenericVideoSummaryRequest(queryPlan: DomainQueryPlan) {
+  if (queryPlan.route === "video_summary") return true;
+  return /요약|정리|summari[sz]e|summary|recap/i.test(queryPlan.originalQuery) && !hasSportsIntent(queryPlan);
+}
+
+function hasSportsIntent(queryPlan: DomainQueryPlan) {
+  if (queryPlan.route === "sports_moment_retrieval" || queryPlan.route === "sports_analysis" || queryPlan.route === "sports_stat_qa") return true;
+  return Boolean(
+    queryPlan.intent.domain ||
+      queryPlan.intent.metric ||
+      queryPlan.intent.player ||
+      queryPlan.intent.eventType ||
+      queryPlan.intent.passType ||
+      queryPlan.intent.fieldZone ||
+      queryPlan.intent.role ||
+      queryPlan.domainFilters.competition ||
+      queryPlan.domainFilters.player ||
+      queryPlan.domainFilters.eventType ||
+      queryPlan.domainFilters.passType ||
+      queryPlan.domainFilters.fieldZone ||
+      queryPlan.domainFilters.role
+  );
+}
+
+function buildGenericVideoSummaryAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean) {
+  const top = results[0];
+  const totalSegments = results.reduce((sum, result) => sum + result.segments.length, 0);
+  const snippets = collectSummarySnippets(top);
+  const evidenceScope = korean
+    ? `${totalSegments}개 moment/${results.length}개 asset`
+    : `${totalSegments} moments across ${results.length} assets`;
+  if (korean) {
+    return [
+      `"${top.asset.title}" 요약입니다.`,
+      snippets.length > 0
+        ? `검색된 indexed moments 기준 핵심 흐름은 ${joinSummarySnippetsKo(snippets)}입니다.`
+        : "현재 index에는 제목/metadata 중심의 근거만 있고, 요약에 쓸 충분한 ASR/OCR 문장이 제한적입니다.",
+      `주요 근거 구간은 ${topMoments || "retrieved timeline"}입니다.`,
+      sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
+      `주의: 이 요약은 최종 검색된 ${evidenceScope}의 ASR/OCR/visual evidence에 한정됩니다.`
+    ].filter(Boolean).join(" ");
+  }
+  return [
+    `Summary for "${top.asset.title}".`,
+    snippets.length > 0
+      ? `From the retrieved indexed moments, the main evidence says: ${joinSummarySnippetsEn(snippets)}.`
+      : "The current index has title/metadata evidence, but limited ASR/OCR text for a fuller summary.",
+    `The strongest retrieved moments are ${topMoments || "the retrieved timeline"}.`,
+    sourceProfile ? `Sources: ${sourceProfile}.` : "",
+    `This summary is limited to the retrieved ${evidenceScope} and their ASR/OCR/visual evidence.`
+  ].filter(Boolean).join(" ");
+}
+
+function collectSummarySnippets(result: SearchResult) {
+  const seen = new Set<string>();
+  const snippets: string[] = [];
+  for (const segment of result.segments) {
+    const text = cleanSummaryText(segment.sceneData?.text.speech || segment.transcript || segment.label);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    snippets.push(truncateSentence(text, 120));
+    if (snippets.length >= 4) break;
+  }
+  return snippets;
+}
+
+function cleanSummaryText(value: string) {
+  return value
+    .replace(/\s*OCR:\s*.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateSentence(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1).trim()}...`;
+}
+
+function joinSummarySnippetsKo(snippets: string[]) {
+  if (snippets.length === 1) return `"${snippets[0]}"`;
+  return snippets.map((snippet) => `"${snippet}"`).join(", ");
+}
+
+function joinSummarySnippetsEn(snippets: string[]) {
+  if (snippets.length === 1) return `"${snippets[0]}"`;
+  return snippets.map((snippet) => `"${snippet}"`).join("; ");
 }
 
 type MomentFeature = {

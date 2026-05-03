@@ -3,6 +3,7 @@ import { isStatLeaderboardQuery, planDomainQuery } from "./queryPlanner";
 import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./sportsKnowledge";
 
 type OpenAiPlan = {
+  route?: DomainQueryPlan["route"];
   questionType?: "moment_retrieval" | "stat_qa";
   metric?: DomainQueryPlan["intent"]["metric"];
   competition?: string | null;
@@ -19,6 +20,15 @@ type OpenAiPlan = {
 
 const planCache = new Map<string, { expiresAt: number; plan: DomainQueryPlan }>();
 const allowedQuestionTypes = new Set(["moment_retrieval", "stat_qa"]);
+const allowedRoutes = new Set<DomainQueryPlan["route"]>([
+  "video_summary",
+  "generic_video_qa",
+  "sports_moment_retrieval",
+  "sports_analysis",
+  "sports_stat_qa",
+  "asset_lookup",
+  "unsupported"
+]);
 const allowedMetrics = new Set([
   "goals",
   "assists",
@@ -87,7 +97,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
           {
             role: "system",
             content:
-              "You are a domain query planner for a sports video intelligence platform. Return only JSON. Extract structured constraints for retrieval and stats QA. Do not invent statistics or facts. Use null when uncertain."
+              "You are a query router for a video intelligence platform with optional sports knowledge. Return only JSON. Choose the route from the allowed route contract, extract structured sports constraints only when the route is sports-specific, and do not invent statistics or facts. Use null when uncertain."
           },
           {
             role: "user",
@@ -95,6 +105,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               currentDate: new Date().toISOString().slice(0, 10),
               defaultFootballSeasonRule: "For Premier League, current season is YYYY-YY starting in July. In May 2026 this is 2025-26.",
               allowed: {
+                route: Array.from(allowedRoutes),
                 questionType: ["moment_retrieval", "stat_qa"],
                 metric: Array.from(allowedMetrics),
                 eventType: Array.from(allowedEventTypes),
@@ -107,6 +118,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               explicitFilters,
               query,
               outputShape: {
+                route: "video_summary | generic_video_qa | sports_moment_retrieval | sports_analysis | sports_stat_qa | asset_lookup | unsupported",
                 questionType: "moment_retrieval | stat_qa",
                 metric: "goals | assists | appearances | minutes | cards | points | touchdowns | passing_yards | passing_touchdowns | rushing_yards | receiving_yards | sacks | interceptions | null",
                 competition: "string | null",
@@ -151,14 +163,18 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     fieldZone: allowedValue(llm.fieldZone, allowedFieldZones),
     role: allowedValue(llm.role, allowedRoles) as DomainSearchFilters["role"] | undefined
   });
-  const metric = (allowedValue(llm.metric, allowedMetrics) as DomainQueryPlan["intent"]["metric"] | undefined) ?? base.intent.metric ?? null;
+  const metric = normalizeMetricForCompetition(
+    (allowedValue(llm.metric, allowedMetrics) as DomainQueryPlan["intent"]["metric"] | undefined) ?? base.intent.metric ?? null,
+    llmFilters.competition ?? explicit.competition ?? base.domainFilters.competition
+  );
   const wantsLeaderboardGrounding = Boolean(metric && isStatLeaderboardQuery(base.originalQuery) && !llmFilters.player && !base.domainFilters.player);
-  const questionType =
-    wantsLeaderboardGrounding ? "stat_qa" : allowedQuestionTypes.has(String(llm.questionType)) && (llm.questionType !== "stat_qa" || metric)
-      ? (llm.questionType as DomainQueryPlan["intent"]["questionType"])
-      : base.intent.questionType;
+  let route = (allowedValue(llm.route, allowedRoutes) as DomainQueryPlan["route"] | undefined) ?? routeFromLegacyQuestionType(llm.questionType, metric) ?? base.route;
+  if (wantsLeaderboardGrounding) route = "sports_stat_qa";
+  if (hasActiveSportsFilters(explicit) && !isSportsRoute(route)) route = base.route;
+  if (route === "sports_stat_qa" && !metric) route = base.route === "sports_stat_qa" ? "sports_stat_qa" : "generic_video_qa";
+  const questionType = questionTypeForRoute(route);
   const rawDomainFilters = compactFilters(
-    questionType === "stat_qa"
+    route === "sports_stat_qa"
       ? {
           ...base.domainFilters,
           ...llmFilters,
@@ -168,9 +184,11 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
           fieldZone: undefined,
           role: undefined
         }
-      : { ...base.domainFilters, ...llmFilters, ...explicit }
+      : isSportsRoute(route)
+        ? { ...base.domainFilters, ...llmFilters, ...explicit }
+        : { ...explicit }
   );
-  const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, questionType, explicit);
+  const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, route, explicit);
   const semanticQuery = stringOrUndefined(llm.semanticQuery) ?? base.semanticQuery;
   const confidence = Math.max(base.confidence, Math.min(0.94, Number(llm.confidence ?? 0)));
   const llmWarnings = Array.isArray(llm.warnings)
@@ -181,11 +199,12 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     semanticQuery,
     rewrittenQuery: buildRewrittenQuery(domainFilters, semanticQuery),
     domainFilters,
+    route,
     intent: {
       ...base.intent,
-      domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : base.intent.domain,
+      domain: isSportsRoute(route) && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
       questionType,
-      metric: questionType === "stat_qa" ? metric : null,
+      metric: route === "sports_stat_qa" ? metric : null,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -204,15 +223,41 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
 function sanitizeInferredFilters(
   filters: DomainSearchFilters,
   query: string,
-  questionType: DomainQueryPlan["intent"]["questionType"],
+  route: DomainQueryPlan["route"],
   explicitFilters: DomainSearchFilters
 ) {
-  if (questionType !== "moment_retrieval") return filters;
+  if (!isSportsRoute(route) || route === "sports_stat_qa") return filters;
   const next = { ...filters };
   if (!explicitFilters.season && !hasExplicitSeason(query)) delete next.season;
   if (!explicitFilters.fieldZone && !hasExplicitFieldZone(query)) delete next.fieldZone;
   if (!explicitFilters.competition && !hasExplicitCompetition(query)) delete next.competition;
   return compactFilters(next);
+}
+
+function routeFromLegacyQuestionType(questionType: OpenAiPlan["questionType"], metric: DomainQueryPlan["intent"]["metric"]) {
+  if (!allowedQuestionTypes.has(String(questionType))) return undefined;
+  if (questionType === "stat_qa" && metric) return "sports_stat_qa" as const;
+  return undefined;
+}
+
+function questionTypeForRoute(route: DomainQueryPlan["route"]): DomainQueryPlan["intent"]["questionType"] {
+  return route === "sports_stat_qa" ? "stat_qa" : "moment_retrieval";
+}
+
+function isSportsRoute(route: DomainQueryPlan["route"]) {
+  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
+}
+
+function hasActiveSportsFilters(filters: DomainSearchFilters) {
+  return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
+}
+
+function normalizeMetricForCompetition(
+  metric: DomainQueryPlan["intent"]["metric"] | null,
+  competition: string | undefined
+): DomainQueryPlan["intent"]["metric"] | null {
+  if (competition === "NFL" && metric === "goals") return "points";
+  return metric;
 }
 
 function parseOpenAiJson(text: string): OpenAiPlan {

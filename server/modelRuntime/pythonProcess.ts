@@ -1,10 +1,20 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
+const execFileAsync = promisify(execFile);
+const activePythonPids = new Set<number>();
+let shutdownHandlersInstalled = false;
 
 export type PythonScriptResult = {
   stdout: string;
   stderr: string;
+};
+
+export type ProcessTableEntry = {
+  pid: number;
+  ppid: number;
+  command: string;
 };
 
 export function runPythonScriptOnExit(
@@ -16,6 +26,8 @@ export function runPythonScriptOnExit(
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    if (child.pid) activePythonPids.add(child.pid);
+    installShutdownHandlers();
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -26,6 +38,7 @@ export function runPythonScriptOnExit(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (child.pid) activePythonPids.delete(child.pid);
       fn();
     };
 
@@ -33,14 +46,16 @@ export function runPythonScriptOnExit(
       if (kind === "stdout") stdout += chunk.toString();
       else stderr += chunk.toString();
       if (stdout.length + stderr.length > maxBuffer) {
-        child.kill("SIGKILL");
+        if (child.pid) void terminateProcessTree(child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
         finish(() => reject(new Error(`Python script output exceeded ${maxBuffer} bytes: ${pythonBin} ${args.join(" ")}`)));
       }
     };
 
     if (options.timeout && options.timeout > 0) {
       timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        if (child.pid) void terminateProcessTree(child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
         finish(() => reject(new Error(`Python script exceeded safety limit after ${options.timeout}ms: ${pythonBin} ${args.join(" ")}`)));
       }, options.timeout);
     }
@@ -60,6 +75,50 @@ export function runPythonScriptOnExit(
   });
 }
 
+export async function terminateActivePythonChildren(signal: NodeJS.Signals = "SIGTERM") {
+  const pids = Array.from(activePythonPids);
+  await Promise.allSettled(pids.map((pid) => terminateProcessTree(pid, signal)));
+}
+
+export async function terminateProcessTree(rootPid: number, signal: NodeJS.Signals = "SIGTERM") {
+  const table = await listProcessTable().catch(() => []);
+  const descendants = collectDescendantPids(table, rootPid);
+  const targets = [...descendants.reverse(), rootPid];
+  for (const pid of targets) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Process already exited.
+    }
+  }
+  return targets;
+}
+
+export async function listProcessTable(): Promise<ProcessTableEntry[]> {
+  const { stdout } = await execFileAsync("ps", ["-axo", "pid=,ppid=,command="], {
+    maxBuffer: 1024 * 1024 * 2
+  });
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trimStart().match(/^(\d+)\s+(\d+)\s+(.*)$/))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .map((match) => ({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      command: match[3]
+    }))
+    .filter((entry) => Number.isFinite(entry.pid) && Number.isFinite(entry.ppid) && entry.command.length > 0);
+}
+
+export function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function parsePythonJson<T>(stdout: string): T {
   try {
     return JSON.parse(stdout) as T;
@@ -77,5 +136,35 @@ export function parsePythonJson<T>(stdout: string): T {
       }
     }
     throw new Error(`Python script did not return parseable JSON. Last output: ${lines.at(-1)?.slice(0, 240) ?? "empty"}`);
+  }
+}
+
+function collectDescendantPids(table: ProcessTableEntry[], rootPid: number) {
+  const childrenByParent = new Map<number, number[]>();
+  for (const entry of table) {
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(entry.pid);
+    childrenByParent.set(entry.ppid, children);
+  }
+  const descendants: number[] = [];
+  const stack = [...(childrenByParent.get(rootPid) ?? [])];
+  while (stack.length > 0) {
+    const pid = stack.pop();
+    if (!pid || descendants.includes(pid)) continue;
+    descendants.push(pid);
+    stack.push(...(childrenByParent.get(pid) ?? []));
+  }
+  return descendants;
+}
+
+function installShutdownHandlers() {
+  if (shutdownHandlersInstalled) return;
+  shutdownHandlersInstalled = true;
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      void terminateActivePythonChildren("SIGTERM").finally(() => {
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+    });
   }
 }

@@ -60,7 +60,7 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
           <CapabilitySelect name="capabilityVisionDetector" label="Vision detector" value={policy?.visionDetector ?? "optional"} />
           <CapabilitySelect name="capabilityVisionTracker" label="Vision tracker" value={policy?.visionTracker ?? "optional"} />
           <CapabilitySelect name="capabilitySoccerNetAction" label="SoccerNet action spotting" value={policy?.soccerNetActionSpotting ?? "optional"} />
-          <CapabilitySelect name="capabilityDomainVlm" label="Domain VLM refinement" value={policy?.domainVlmRefinement ?? "optional"} />
+          <CapabilitySelect name="capabilityDomainVlm" label="Sports event VLM refinement" value={policy?.domainVlmRefinement ?? "optional"} />
         </div>
       </div>
       <button type="submit">
@@ -128,7 +128,7 @@ export function AssetGroupSummary({
             {capabilityText}
           </span>
           <span>
-            <b>VLM</b>
+            <b>Sports event VLM</b>
             {vlmSummary}
           </span>
         </div>
@@ -139,10 +139,10 @@ export function AssetGroupSummary({
           className="asset-group-refine"
           disabled={!canRefineVlm || busy}
           onClick={() => index && onRefineVlm(index.id)}
-          title="Run Qwen VLM domain refinement for indexed assets in this asset group"
+          title="Run Qwen VLM refinement for sports event metadata in this asset group"
         >
           <BrainCircuit size={17} />
-          <span>VLM refine</span>
+          <span>Event VLM refine</span>
         </button>
         <span className="asset-group-status-pill">{index?.status ?? "empty"}</span>
       </div>
@@ -231,7 +231,7 @@ export function AssetFlow({
     },
     {
       label: "4. Domain evidence",
-      detail: "Apply trusted sports action spotting, domain event construction, and optional VLM refinement.",
+      detail: "Apply trusted sports action spotting, sports event construction, and optional event-level VLM refinement.",
       steps: flow.filter((step) => step.id === "soccernet" || step.id === "domain" || step.id === "domainVlm")
     },
     {
@@ -277,7 +277,7 @@ export function AssetFlow({
                     onToggle={(nextStep) => setExpandedStepId((current) => (current === nextStep.id ? null : nextStep.id))}
                     onRetry={retryNode}
                   >
-                    <WorkflowResultContent asset={asset} stepId={step.id} onOpenMoment={onOpenMoment} />
+                    <WorkflowResultContent asset={asset} step={step} onOpenMoment={onOpenMoment} />
                   </FlowNode>
                 ))}
               </div>
@@ -346,7 +346,10 @@ export function FlowNode({
             server {step.serverProgress.status} · {step.serverProgress.stage} · {step.serverProgress.progress}%
           </span>
         )}
-        {step.trace && <em>{step.trace}</em>}
+        <div className="node-badge-row" aria-label={`${step.label} quality and search impact`}>
+          <span className={`node-quality ${qualityToneForStep(step)}`}>Quality: {qualityLabelForStep(step)}</span>
+          <span>{searchImpactForStep(step)}</span>
+        </div>
         <div className="node-progress" aria-label={`${step.label} ${progressLabel}`}>
           <span style={{ width: `${step.progress ?? 0}%` }} />
         </div>
@@ -375,17 +378,150 @@ export function FlowNode({
   );
 }
 
-function WorkflowResultContent({ asset, stepId, onOpenMoment }: { asset: AssetRecord; stepId: string; onOpenMoment?: OpenMomentHandler }) {
-  if (stepId === "input" || stepId === "probe") return <TechnicalResult asset={asset} />;
-  if (stepId === "audio" || stepId === "vad") return <AudioResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "asr") return <AsrResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "speakers") return <SpeakerResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "ocr") return <OcrResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "visual" || stepId === "keyframes") return <VisualResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "detector" || stepId === "tracker" || stepId === "soccernet") return <ModelTraceResult asset={asset} stepId={stepId} />;
-  if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} onOpenMoment={onOpenMoment} />;
-  if (stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} />;
+type NodeMetricTone = "good" | "warning" | "bad" | "neutral";
+
+type NodeMetric = {
+  label: string;
+  value: string;
+  tone?: NodeMetricTone;
+};
+
+function WorkflowNodeDetails({
+  produced,
+  usedBy,
+  quality,
+  inspect,
+  rawDetails
+}: {
+  produced: NodeMetric[];
+  usedBy: string[];
+  quality: NodeMetric[];
+  inspect?: ReactNode;
+  rawDetails?: string[];
+}) {
+  const normalizedRaw = (rawDetails ?? []).filter(Boolean);
+  return (
+    <div className="workflow-node-details">
+      <WorkflowMetricSection title="Produced" metrics={produced} />
+      <WorkflowUsageSection items={usedBy} />
+      <WorkflowMetricSection title="Quality" metrics={quality} />
+      {inspect && (
+        <section className="workflow-node-section inspect">
+          <h4>Inspect</h4>
+          {inspect}
+        </section>
+      )}
+      {normalizedRaw.length > 0 && (
+        <details className="workflow-raw-details">
+          <summary>Raw details</summary>
+          <div>
+            {normalizedRaw.map((detail) => (
+              <code key={detail}>{detail}</code>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function WorkflowMetricSection({ title, metrics }: { title: string; metrics: NodeMetric[] }) {
+  if (metrics.length === 0) return null;
+  return (
+    <section className="workflow-node-section">
+      <h4>{title}</h4>
+      <div className="workflow-result-grid compact">
+        {metrics.map((metric) => (
+          <ResultMetric key={`${title}-${metric.label}-${metric.value}`} label={metric.label} value={metric.value} tone={metric.tone} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WorkflowUsageSection({ items }: { items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="workflow-node-section">
+      <h4>Used by</h4>
+      <div className="workflow-used-by">
+        {items.map((item) => (
+          <span key={item}>{item}</span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function qualityToneForStep(step: FlowStep) {
+  if (step.state === "done") return "good";
+  if (step.state === "error") return "bad";
+  if (step.state === "skipped") return "warning";
+  return "neutral";
+}
+
+function qualityLabelForStep(step: FlowStep) {
+  if (step.state === "done") return "ready";
+  if (step.state === "error") return "failed";
+  if (step.state === "skipped") return "skipped";
+  if (step.state === "active") return "running";
+  return "pending";
+}
+
+function searchImpactForStep(step: FlowStep) {
+  const stepId = step.id;
+  if (step.state === "error") return "Search impact: failed";
+  if (step.state === "skipped") {
+    const skippedImpacts: Record<string, string> = {
+      visual: "Search impact: visual unavailable",
+      keyframes: "Search impact: thumbnails unavailable",
+      detector: "Search impact: detector not used",
+      tracker: "Search impact: tracker not used",
+      domain: "Search impact: domain layer unavailable",
+      domainVlm: "Search impact: sports-event refinement not applied",
+      visualEmbedding: "Search impact: visual ranking not used",
+      textEmbedding: "Search impact: semantic ranking not used",
+      vector: "Search impact: vector write unavailable"
+    };
+    return skippedImpacts[stepId] ?? "Search impact: not used";
+  }
+  const impacts: Record<string, string> = {
+    input: "Search impact: eligibility",
+    probe: "Search impact: eligibility",
+    audio: "Search impact: ASR input",
+    vad: "Search impact: ASR coverage",
+    asr: "Search impact: text searchable",
+    speakers: "Search impact: speaker context",
+    ocr: "Search impact: screen text searchable",
+    visual: "Search impact: visual searchable",
+    scene: "Search impact: moment boundaries",
+    timeline: "Search impact: moment retrieval",
+    keyframes: "Search impact: thumbnails",
+    detector: "Search impact: object evidence",
+    tracker: "Search impact: motion evidence",
+    soccernet: "Search impact: football actions",
+    domain: "Search impact: domain-aware",
+    domainVlm: "Search impact: sports-event refinement",
+    textEmbedding: "Search impact: semantic ranking",
+    visualEmbedding: "Search impact: visual ranking",
+    vector: "Search impact: vector DB",
+    ready: "Search impact: searchable"
+  };
+  return impacts[stepId] ?? "Search impact: diagnostic";
+}
+
+function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  const stepId = step.id;
+  if (stepId === "input" || stepId === "probe") return <TechnicalResult asset={asset} step={step} />;
+  if (stepId === "audio" || stepId === "vad") return <AudioResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "asr") return <AsrResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "speakers") return <SpeakerResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "ocr") return <OcrResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "visual" || stepId === "keyframes") return <VisualResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "detector" || stepId === "tracker" || stepId === "soccernet") return <ModelTraceResult asset={asset} step={step} />;
+  if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
 }
 
@@ -425,207 +561,357 @@ function openAssetMoment(
   });
 }
 
-function TechnicalResult({ asset }: { asset: AssetRecord }) {
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "Unknown";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function sumWindowDuration(windows: Array<{ start: number; end: number }>) {
+  return windows.reduce((sum, window) => sum + Math.max(0, window.end - window.start), 0);
+}
+
+function formatCoverage(numerator: number, denominator: number | null | undefined) {
+  if (!denominator || denominator <= 0) return "Unknown";
+  return `${Math.round(Math.max(0, Math.min(1, numerator / denominator)) * 100)}%`;
+}
+
+function metricTone(ok: boolean, warning = false): NodeMetricTone {
+  if (ok) return "good";
+  return warning ? "warning" : "bad";
+}
+
+function rawStepDetails(step: FlowStep, extra: string[] = []) {
+  return [step.trace, ...extra].filter(Boolean) as string[];
+}
+
+function TechnicalResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+  const hasDuration = Boolean(asset.duration && asset.duration > 0);
+  const hasFrame = Boolean(asset.width && asset.height);
+  const hasVideoCodec = Boolean(asset.technicalMetadata.videoCodec);
+  const hasAudioCodec = Boolean(asset.technicalMetadata.audioCodec);
   return (
-    <div className="workflow-result-grid">
-      <ResultMetric label="Original" value={asset.originalName} />
-      <ResultMetric label="Stored" value={asset.storedName} />
-      <ResultMetric label="Duration" value={formatDuration(asset.duration ?? 0)} />
-      <ResultMetric label="Frame" value={asset.width && asset.height ? `${asset.width}x${asset.height}` : "No dimensions"} />
-      <ResultMetric label="Video codec" value={asset.technicalMetadata.videoCodec ?? "No video codec"} />
-      <ResultMetric label="Audio codec" value={asset.technicalMetadata.audioCodec ?? "No audio codec"} />
-      <ResultMetric label="Frame rate" value={asset.technicalMetadata.frameRate ? `${Math.round(asset.technicalMetadata.frameRate)}fps` : "Unknown"} />
-      <ResultMetric label="Checksum" value={asset.technicalMetadata.checksum ?? "Not stored"} />
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Duration", value: hasDuration ? formatDuration(asset.duration ?? 0) : "Missing", tone: metricTone(hasDuration) },
+        { label: "Resolution", value: hasFrame ? `${asset.width}x${asset.height}` : "Missing", tone: metricTone(hasFrame) },
+        { label: "FPS", value: asset.technicalMetadata.frameRate ? `${Math.round(asset.technicalMetadata.frameRate)}fps` : "Unknown", tone: metricTone(Boolean(asset.technicalMetadata.frameRate), true) },
+        { label: "File size", value: formatBytes(asset.size), tone: metricTone(asset.size > 0) },
+        { label: "Checksum", value: asset.technicalMetadata.checksum ? "Stored" : "Missing", tone: metricTone(Boolean(asset.technicalMetadata.checksum), true) },
+        { label: "Codecs", value: `${asset.technicalMetadata.videoCodec ?? "video unknown"} / ${asset.technicalMetadata.audioCodec ?? "audio unknown"}`, tone: metricTone(hasVideoCodec && hasAudioCodec, true) }
+      ]}
+      usedBy={["audio extraction", "visual sampling", "metadata filters", "vector record"]}
+      quality={[
+        { label: "Video", value: hasVideoCodec ? "codec known" : "codec unknown", tone: metricTone(hasVideoCodec, true) },
+        { label: "Audio", value: hasAudioCodec ? "codec known" : "audio unavailable", tone: metricTone(hasAudioCodec, true) },
+        { label: "Duration", value: hasDuration ? "usable" : "duration 0 or missing", tone: metricTone(hasDuration) },
+        { label: "Frame", value: hasFrame ? "dimensions stored" : "dimensions missing", tone: metricTone(hasFrame, true) }
+      ]}
+      inspect={
+        <div className="workflow-result-grid">
+          <ResultMetric label="Original" value={asset.originalName} />
+          <ResultMetric label="Stored" value={asset.storedName} />
+          <ResultMetric label="Storage" value={`${asset.technicalMetadata.storageProvider} · ${asset.technicalMetadata.bucket}`} />
+          <ResultMetric label="Object key" value={asset.technicalMetadata.objectKey} />
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [asset.technicalMetadata.checksum ? `checksum:${asset.technicalMetadata.checksum}` : ""])}
+    />
   );
 }
 
-function AudioResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function AudioResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const speechSegments = asset.intelligence.audio?.speechSegments ?? [];
   const musicSegments = asset.intelligence.audio?.musicSegments ?? [];
+  const speechDuration = sumWindowDuration(speechSegments);
+  const musicDuration = sumWindowDuration(musicSegments);
+  const mediaDuration = asset.duration ?? 0;
+  const noSpeechDuration = Math.max(0, mediaDuration - speechDuration);
+  const hasAudioArtifact = Boolean(asset.intelligence.audio?.extractedPath);
+  const speechCoverage = formatCoverage(speechDuration, asset.duration);
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Extracted audio" value={asset.intelligence.audio?.extractedPath ?? "No audio artifact"} />
-        <ResultMetric label="Speech regions" value={speechSegments.length.toString()} />
-        <ResultMetric label="Music regions" value={musicSegments.length.toString()} />
-        <ResultMetric label="Provider" value={asset.intelligence.audio?.vad?.provider ?? "local"} />
-      </div>
-      <div className="segment-list compact-list">
-        {[...speechSegments.map((segment) => ({ ...segment, kind: "speech" })), ...musicSegments.map((segment) => ({ ...segment, kind: "music/noise" }))].map((segment) => (
-          <button
-            key={`${segment.kind}-${segment.start}-${segment.end}`}
-            type="button"
-            className="time-chip"
-            aria-label={`Play ${segment.kind} from ${formatDuration(segment.start)}`}
-            onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.kind} region` })}
-          >
-            {segment.kind} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {Math.round(segment.confidence * 100)}%
-          </button>
-        ))}
-        {speechSegments.length + musicSegments.length === 0 && <span>No speech or music regions are stored.</span>}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Audio artifact", value: hasAudioArtifact ? "16kHz mono WAV" : "Missing", tone: metricTone(hasAudioArtifact, true) },
+        { label: "Speech coverage", value: speechCoverage, tone: metricTone(speechSegments.length > 0, true) },
+        { label: "Speech duration", value: formatDuration(speechDuration), tone: speechSegments.length > 0 ? "good" : "warning" },
+        { label: "Music/noise duration", value: formatDuration(musicDuration), tone: "neutral" },
+        { label: "No-speech gap", value: mediaDuration > 0 ? formatDuration(noSpeechDuration) : "Unknown", tone: "neutral" },
+        { label: "Regions", value: `${speechSegments.length} speech · ${musicSegments.length} music/noise`, tone: "neutral" }
+      ]}
+      usedBy={["ASR", "speaker diarization", "speech-aware timeline", "text search coverage"]}
+      quality={[
+        { label: "Artifact", value: hasAudioArtifact ? "ready" : "no extracted audio", tone: metricTone(hasAudioArtifact, true) },
+        { label: "VAD", value: asset.intelligence.audio?.vad?.available === false ? "unavailable" : "available", tone: asset.intelligence.audio?.vad?.available === false ? "warning" : "good" },
+        { label: "Provider", value: asset.intelligence.audio?.vad?.provider ?? "local", tone: "neutral" },
+        { label: "Coverage", value: speechCoverage, tone: speechSegments.length > 0 ? "good" : "warning" }
+      ]}
+      inspect={
+        <div className="segment-list compact-list">
+          {[...speechSegments.map((segment) => ({ ...segment, kind: "speech" })), ...musicSegments.map((segment) => ({ ...segment, kind: "music/noise" }))].map((segment) => (
+            <button
+              key={`${segment.kind}-${segment.start}-${segment.end}`}
+              type="button"
+              className="time-chip"
+              aria-label={`Play ${segment.kind} from ${formatDuration(segment.start)}`}
+              onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.kind} region` })}
+            >
+              {segment.kind} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {Math.round(segment.confidence * 100)}%
+            </button>
+          ))}
+          {speechSegments.length + musicSegments.length === 0 && <span>No speech or music regions are stored.</span>}
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [asset.intelligence.audio?.vad?.error ? `vad-error:${asset.intelligence.audio.vad.error}` : ""])}
+    />
   );
 }
 
-function AsrResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  const segments = asset.intelligence.asr.segments;
+  const transcript = asset.intelligence.asr.transcript.trim();
+  const coverage = formatCoverage(sumWindowDuration(segments), asset.duration);
+  const confidence = asset.intelligence.asr.confidence;
+  const sample = segments.find((segment) => segment.text.trim().length > 0)?.text.trim() || transcript || "No speech text was extracted.";
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Language" value={asset.intelligence.asr.language || "Unknown"} />
-        <ResultMetric label="Confidence" value={`${Math.round(asset.intelligence.asr.confidence * 100)}%`} />
-        <ResultMetric label="Segments" value={asset.intelligence.asr.segments.length.toString()} />
-      </div>
-      <p className="transcript-box">{asset.intelligence.asr.transcript || "No speech text was extracted."}</p>
-      <div className="segment-list compact-list">
-        {asset.intelligence.asr.segments.map((segment) => (
-          <button
-            key={`${segment.start}-${segment.end}-${segment.text}`}
-            type="button"
-            className="time-chip"
-            aria-label={`Play ASR segment from ${formatDuration(segment.start)}`}
-            onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: "ASR segment" })}
-          >
-            {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
-          </button>
-        ))}
-        {asset.intelligence.asr.segments.length === 0 && <span>No timestamped ASR segments are stored.</span>}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Transcript", value: transcript ? `${transcript.length} chars` : "Empty", tone: metricTone(Boolean(transcript), true) },
+        { label: "Segments", value: segments.length.toString(), tone: metricTone(segments.length > 0, true) },
+        { label: "Coverage", value: coverage, tone: metricTone(segments.length > 0, true) },
+        { label: "Language", value: asset.intelligence.asr.language || "Unknown", tone: asset.intelligence.asr.language ? "good" : "warning" },
+        { label: "Confidence", value: `${Math.round(confidence * 100)}%`, tone: confidence >= 0.65 ? "good" : confidence > 0 ? "warning" : "bad" }
+      ]}
+      usedBy={["text search", "player/event inference", "domain planning", "play-style analysis grounding"]}
+      quality={[
+        { label: "Searchable text", value: transcript ? "available" : "missing", tone: metricTone(Boolean(transcript), true) },
+        { label: "Low confidence", value: confidence > 0 && confidence < 0.55 ? "review" : "not flagged", tone: confidence > 0 && confidence < 0.55 ? "warning" : "good" },
+        { label: "Empty windows", value: segments.length === 0 ? "all empty" : "timestamped samples available", tone: segments.length === 0 ? "warning" : "good" }
+      ]}
+      inspect={
+        <div className="workflow-result-stack">
+          <p className="transcript-box">{truncateText(sample, 520)}</p>
+          <div className="segment-list compact-list">
+            {segments.map((segment) => (
+              <button
+                key={`${segment.start}-${segment.end}-${segment.text}`}
+                type="button"
+                className="time-chip"
+                aria-label={`Play ASR segment from ${formatDuration(segment.start)}`}
+                onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: "ASR segment" })}
+              >
+                {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
+              </button>
+            ))}
+            {segments.length === 0 && <span>No timestamped ASR segments are stored.</span>}
+          </div>
+        </div>
+      }
+      rawDetails={rawStepDetails(step)}
+    />
   );
 }
 
-function SpeakerResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const diarization = asset.intelligence.diarization;
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Provider" value={diarization?.provider ?? "none"} />
-        <ResultMetric label="Speakers" value={(diarization?.speakers.length ?? 0).toString()} />
-        <ResultMetric label="Segments" value={(diarization?.segments.length ?? 0).toString()} />
-        <ResultMetric label="Error" value={diarization?.error ?? "None"} />
-      </div>
-      <div className="segment-list compact-list">
-        {(diarization?.segments ?? []).map((segment) => (
-          <button
-            key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}
-            type="button"
-            className="time-chip"
-            aria-label={`Play ${segment.speaker} from ${formatDuration(segment.start)}`}
-            onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.speaker} segment` })}
-          >
-            {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
-          </button>
-        ))}
-        {(diarization?.segments.length ?? 0) === 0 && <span>No speaker diarization segments are stored.</span>}
-      </div>
-    </div>
-  );
-}
-
-function OcrResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
-  return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Tokens" value={asset.intelligence.ocr.tokens.length.toString()} />
-        <ResultMetric label="Confidence" value={`${Math.round(asset.intelligence.ocr.confidence * 100)}%`} />
-        <ResultMetric label="Frames" value={asset.intelligence.ocr.frames.length.toString()} />
-      </div>
-      <div className="ocr-token-list">
-        {asset.intelligence.ocr.tokens.map((token) => <span key={token}>{token}</span>)}
-        {asset.intelligence.ocr.tokens.length === 0 && <span>No OCR text was extracted.</span>}
-      </div>
-      <div className="ocr-frame-list">
-        {asset.intelligence.ocr.frames.map((frame) => {
-          const src = mediaPath(frame.framePath);
-          const content = (
-            <>
-              {src && <img src={src} alt="" />}
-              <div>
-                <strong>{Math.round(frame.confidence * 100)}%{typeof frame.at === "number" ? ` · ${formatDuration(frame.at)}` : ""}</strong>
-                <OcrRoleSummary boxes={frame.boxes ?? []} fallback={frame.tokens} />
-              </div>
-            </>
-          );
-          return typeof frame.at === "number" ? (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Provider", value: diarization?.provider ?? "none", tone: diarization?.provider ? "good" : "warning" },
+        { label: "Speakers", value: (diarization?.speakers.length ?? 0).toString(), tone: (diarization?.speakers.length ?? 0) > 0 ? "good" : "warning" },
+        { label: "Segments", value: (diarization?.segments.length ?? 0).toString(), tone: (diarization?.segments.length ?? 0) > 0 ? "good" : "warning" }
+      ]}
+      usedBy={["speaker-aware review", "quote attribution", "analysis context"]}
+      quality={[
+        { label: "Optional stage", value: "not required for base search", tone: "neutral" },
+        { label: "Status", value: diarization?.error ? "skipped or failed" : (diarization?.segments.length ?? 0) > 0 ? "ready" : "no segments", tone: diarization?.error ? "warning" : (diarization?.segments.length ?? 0) > 0 ? "good" : "neutral" }
+      ]}
+      inspect={
+        <div className="segment-list compact-list">
+          {(diarization?.segments ?? []).map((segment) => (
             <button
-              key={frame.framePath || frame.tokens.join("-")}
+              key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}
               type="button"
-              className="ocr-frame-card"
-              aria-label={`Play OCR frame at ${formatDuration(frame.at)}`}
-              onClick={() => openAssetMoment(asset, onOpenMoment, { at: frame.at ?? 0, end: (frame.at ?? 0) + 2, label: "OCR frame" })}
+              className="time-chip"
+              aria-label={`Play ${segment.speaker} from ${formatDuration(segment.start)}`}
+              onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.speaker} segment` })}
             >
-              {content}
+              {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
             </button>
-          ) : (
-            <article key={frame.framePath || frame.tokens.join("-")} className="ocr-frame-card">
-              {content}
-            </article>
-          );
-        })}
-        {asset.intelligence.ocr.frames.length === 0 && <span>No OCR frames are stored.</span>}
-      </div>
-    </div>
+          ))}
+          {(diarization?.segments.length ?? 0) === 0 && <span>No speaker diarization segments are stored.</span>}
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [diarization?.error ? `diarization-error:${diarization.error}` : ""])}
+    />
   );
 }
 
-function VisualResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function OcrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  const frames = asset.intelligence.ocr.frames;
+  const boxes = frames.flatMap((frame) => frame.boxes ?? []);
+  const roleCounts = boxes.reduce<Record<string, number>>((counts, box) => {
+    counts[box.role] = (counts[box.role] ?? 0) + 1;
+    return counts;
+  }, {});
+  const scoreboardTokens = asset.intelligence.ocr.tokens.filter(isScoreboardLikeToken);
+  const hasClock = asset.intelligence.ocr.tokens.some((token) => /\b\d{1,2}:\d{2}\b/.test(token));
+  const hasScore = asset.intelligence.ocr.tokens.some((token) => /\b\d{1,3}\s*[-:]\s*\d{1,3}\b/.test(token));
+  const hasTeamText = asset.intelligence.ocr.tokens.some((token) => /[A-Z]{2,4}/.test(token) && token.length <= 8);
+  return (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Tokens", value: asset.intelligence.ocr.tokens.length.toString(), tone: metricTone(asset.intelligence.ocr.tokens.length > 0, true) },
+        { label: "Frames", value: frames.length.toString(), tone: metricTone(frames.length > 0, true) },
+        { label: "Subtitles", value: String(roleCounts.subtitle ?? 0), tone: "neutral" },
+        { label: "Overlays", value: String(roleCounts.overlay ?? 0), tone: "neutral" },
+        { label: "Watermarks", value: String(roleCounts.watermark ?? 0), tone: "neutral" },
+        { label: "Scoreboard-like", value: scoreboardTokens.length.toString(), tone: scoreboardTokens.length > 0 ? "good" : "neutral" }
+      ]}
+      usedBy={["screen-text search", "scoreboard/team inference", "ASR/OCR consistency", "domain planning"]}
+      quality={[
+        { label: "Confidence", value: `${Math.round(asset.intelligence.ocr.confidence * 100)}%`, tone: asset.intelligence.ocr.confidence >= 0.65 ? "good" : asset.intelligence.ocr.confidence > 0 ? "warning" : "bad" },
+        { label: "Clock text", value: hasClock ? "detected" : "not found", tone: hasClock ? "good" : "neutral" },
+        { label: "Score text", value: hasScore ? "detected" : "not found", tone: hasScore ? "good" : "neutral" },
+        { label: "Team text", value: hasTeamText ? "candidate" : "not found", tone: hasTeamText ? "good" : "neutral" }
+      ]}
+      inspect={
+        <div className="workflow-result-stack">
+          <div className="ocr-token-list">
+            {asset.intelligence.ocr.tokens.map((token) => <span key={token}>{token}</span>)}
+            {asset.intelligence.ocr.tokens.length === 0 && <span>No OCR text was extracted.</span>}
+          </div>
+          <div className="ocr-frame-list">
+            {frames.map((frame) => {
+              const src = mediaPath(frame.framePath);
+              const content = (
+                <>
+                  {src && <img src={src} alt="" />}
+                  <div>
+                    <strong>{Math.round(frame.confidence * 100)}%{typeof frame.at === "number" ? ` · ${formatDuration(frame.at)}` : ""}</strong>
+                    <OcrRoleSummary boxes={frame.boxes ?? []} fallback={frame.tokens} />
+                  </div>
+                </>
+              );
+              return typeof frame.at === "number" ? (
+                <button
+                  key={frame.framePath || frame.tokens.join("-")}
+                  type="button"
+                  className="ocr-frame-card"
+                  aria-label={`Play OCR frame at ${formatDuration(frame.at)}`}
+                  onClick={() => openAssetMoment(asset, onOpenMoment, { at: frame.at ?? 0, end: (frame.at ?? 0) + 2, label: "OCR frame" })}
+                >
+                  {content}
+                </button>
+              ) : (
+                <article key={frame.framePath || frame.tokens.join("-")} className="ocr-frame-card">
+                  {content}
+                </article>
+              );
+            })}
+            {frames.length === 0 && <span>No OCR frames are stored.</span>}
+          </div>
+        </div>
+      }
+      rawDetails={rawStepDetails(step)}
+    />
+  );
+}
+
+function isScoreboardLikeToken(token: string) {
+  const normalized = token.trim();
+  if (!normalized) return false;
+  return /\b\d{1,2}:\d{2}\b/.test(normalized) || /\b\d{1,3}\s*[-:]\s*\d{1,3}\b/.test(normalized) || /\b(Q[1-4]|1ST|2ND|3RD|4TH|OT|HT|FT)\b/i.test(normalized);
+}
+
+function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const usableKeyframes = asset.keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId).length;
   const visualTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("visual-embedding:") || trace.startsWith("visual-embedding-unavailable:"));
-  const visualVectorState = visualTrace?.startsWith("visual-embedding:") ? `${usableKeyframes} ready` : visualTrace ? "unavailable" : "pending";
+  const visualVectorState = visualTrace?.startsWith("visual-embedding:") ? `${usableKeyframes} ready` : visualTrace ? "unavailable" : usableKeyframes === 0 ? "no keyframes" : "pending";
   const detectorTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("vision-detector:") || trace.startsWith("vision-detector-unavailable:"));
   const trackerTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("vision-tracker:") || trace.startsWith("vision-tracker-unavailable:"));
   const visionSegments = asset.timeline.filter((segment) => segment.sceneData?.vision).length;
   const domainEvents = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
+  const visualAssessable = asset.intelligence.visual.available !== false && (usableKeyframes > 0 || asset.intelligence.visual.labels.length > 0 || asset.intelligence.visual.dominantColor !== "#000000");
+  const blankCandidate = visualAssessable && asset.intelligence.visual.brightness < 0.04;
+  const lowMotionCandidate = visualAssessable && asset.intelligence.visual.motionScore < 0.01;
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-usage-grid">
-        <VisualUsageCard
-          title="Timeline preview"
-          value={`${asset.keyframes.length} keyframes`}
-          detail="Used as thumbnails in timeline, search results, and workflow review."
-        />
-        <VisualUsageCard
-          title="Visual vector search"
-          value={visualVectorState}
-          detail={visualTrace ?? "Keyframes become image embeddings when the visual embedding stage runs."}
-        />
-        <VisualUsageCard
-          title="Detector and tracker input"
-          value={`${usableKeyframes} frames`}
-          detail={[detectorTrace ?? "detector pending", trackerTrace ?? "tracker pending"].join(" · ")}
-        />
-        <VisualUsageCard
-          title="Domain confidence support"
-          value={`${visionSegments} vision segments · ${domainEvents} events`}
-          detail="Motion, visual labels, player/ball evidence, and field cues support sports event confidence."
-        />
-      </div>
-      <div className="workflow-technical-strip" aria-label="Raw visual sampler summary">
-        <span><b>Sampler</b>{asset.intelligence.visual.available === false ? "unavailable" : "available"}</span>
-        <span><b>Dominant color</b>{asset.intelligence.visual.dominantColor}</span>
-        <span><b>Brightness</b>{asset.intelligence.visual.brightness.toFixed(2)}</span>
-        <span><b>Motion</b>{asset.intelligence.visual.motionScore.toFixed(2)}</span>
-      </div>
-      <div className="workflow-keyframe-grid">
-        {asset.keyframes.slice(0, 12).map((keyframe) => {
-          const src = mediaPath(keyframe.path);
-          return (
-            <button
-              key={keyframe.id}
-              type="button"
-              aria-label={`Play keyframe at ${formatDuration(keyframe.at)}`}
-              onClick={() => openAssetMoment(asset, onOpenMoment, { at: keyframe.at, end: keyframe.at + 2, label: "Keyframe", segmentId: keyframe.segmentId })}
-            >
-              {src ? <img src={src} alt="" /> : <i>No image</i>}
-              <b>{formatDuration(keyframe.at)}</b>
-            </button>
-          );
-        })}
-        {asset.keyframes.length === 0 && <span>No keyframes are stored.</span>}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Keyframes", value: asset.keyframes.length.toString(), tone: metricTone(asset.keyframes.length > 0, true) },
+        { label: "Usable keyframes", value: `${usableKeyframes}/${asset.keyframes.length}`, tone: metricTone(usableKeyframes > 0, true) },
+        { label: "Visual vectors", value: visualVectorState, tone: visualTrace?.startsWith("visual-embedding:") ? "good" : visualTrace || usableKeyframes === 0 ? "warning" : "neutral" },
+        { label: "Detector input", value: `${usableKeyframes} frames`, tone: usableKeyframes > 0 ? "good" : "warning" },
+        { label: "Vision segments", value: visionSegments.toString(), tone: visionSegments > 0 ? "good" : "neutral" },
+        { label: "Domain support", value: `${domainEvents} events`, tone: domainEvents > 0 ? "good" : "neutral" }
+      ]}
+      usedBy={["timeline thumbnails", "visual vector search", "detector/tracker input", "domain event confidence"]}
+      quality={[
+        { label: "Sampler", value: asset.intelligence.visual.available === false ? "unavailable" : "available", tone: asset.intelligence.visual.available === false ? "warning" : "good" },
+        { label: "Blank candidates", value: !visualAssessable ? "not assessed" : blankCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : blankCandidate ? "warning" : "good" },
+        { label: "Low-motion candidates", value: !visualAssessable ? "not assessed" : lowMotionCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : lowMotionCandidate ? "warning" : "good" },
+        { label: "Detector readiness", value: detectorTrace?.startsWith("vision-detector:") ? "done" : "pending/optional", tone: detectorTrace?.startsWith("vision-detector:") ? "good" : "neutral" }
+      ]}
+      inspect={
+        <div className="workflow-result-stack">
+          <div className="workflow-usage-grid">
+            <VisualUsageCard
+              title="Timeline preview"
+              value={`${asset.keyframes.length} keyframes`}
+              detail="Used as thumbnails in timeline, search results, and workflow review."
+            />
+            <VisualUsageCard
+              title="Visual vector search"
+              value={visualVectorState}
+              detail={visualTrace ?? "Keyframes become image embeddings when the visual embedding stage runs."}
+            />
+            <VisualUsageCard
+              title="Detector and tracker input"
+              value={`${usableKeyframes} frames`}
+              detail={[detectorTrace ?? "detector pending", trackerTrace ?? "tracker pending"].join(" · ")}
+            />
+            <VisualUsageCard
+              title="Domain confidence support"
+              value={`${visionSegments} vision segments · ${domainEvents} events`}
+              detail="Motion, visual labels, player/ball evidence, and field cues support sports event confidence."
+            />
+          </div>
+          <details className="workflow-raw-details">
+            <summary>Technical details</summary>
+            <div className="workflow-technical-strip" aria-label="Raw visual sampler summary">
+              <span><b>Sampler</b>{asset.intelligence.visual.available === false ? "unavailable" : "available"}</span>
+              <span><b>Dominant color</b>{asset.intelligence.visual.dominantColor}</span>
+              <span><b>Brightness</b>{asset.intelligence.visual.brightness.toFixed(2)}</span>
+              <span><b>Motion</b>{asset.intelligence.visual.motionScore.toFixed(2)}</span>
+            </div>
+          </details>
+          <div className="workflow-keyframe-grid">
+            {asset.keyframes.slice(0, 12).map((keyframe) => {
+              const src = mediaPath(keyframe.path);
+              return (
+                <button
+                  key={keyframe.id}
+                  type="button"
+                  aria-label={`Play keyframe at ${formatDuration(keyframe.at)}`}
+                  onClick={() => openAssetMoment(asset, onOpenMoment, { at: keyframe.at, end: keyframe.at + 2, label: "Keyframe", segmentId: keyframe.segmentId })}
+                >
+                  {src ? <img src={src} alt="" /> : <i>No image</i>}
+                  <b>{formatDuration(keyframe.at)}</b>
+                </button>
+              );
+            })}
+            {asset.keyframes.length === 0 && <span>No keyframes are stored.</span>}
+          </div>
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [asset.intelligence.visual.error ? `visual-error:${asset.intelligence.visual.error}` : ""])}
+    />
   );
 }
 
@@ -639,37 +925,56 @@ function VisualUsageCard({ title, value, detail }: { title: string; value: strin
   );
 }
 
-function TimelineResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function TimelineResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  const sceneDataCount = asset.timeline.filter((segment) => segment.sceneData).length;
+  const thumbnailCount = asset.timeline.filter((segment) => segment.thumbnailPath).length;
+  const averageDuration = asset.timeline.length > 0 ? asset.timeline.reduce((sum, segment) => sum + Math.max(0, segment.end - segment.start), 0) / asset.timeline.length : 0;
+  const allComparisons = asset.timeline.flatMap((segment) => getSearchSceneData(segment, "").text.comparisons ?? []);
+  const duplicateComparisonCount = Math.max(0, allComparisons.length - dedupeTextComparisons(allComparisons).length);
+  const shortSegments = asset.timeline.filter((segment) => segment.end - segment.start < 0.5).length;
+  const longSegments = asset.timeline.filter((segment) => segment.end - segment.start > 45).length;
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Moments" value={asset.timeline.length.toString()} />
-        <ResultMetric label="Scene data" value={asset.timeline.filter((segment) => segment.sceneData).length.toString()} />
-        <ResultMetric label="Thumbnails" value={asset.timeline.filter((segment) => segment.thumbnailPath).length.toString()} />
-      </div>
-      <div className="workflow-result-list">
-        {asset.timeline.slice(0, 10).map((segment) => (
-          <button
-            key={segment.id}
-            type="button"
-            aria-label={`Play timeline moment at ${formatDuration(segment.start)} for ${segment.label}`}
-            onClick={() => onOpenMoment?.(segment)}
-          >
-            <TimelineThumbnail path={segment.thumbnailPath} />
-            <div>
-              <strong>{segment.label}</strong>
-              <span>{formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.sources.join(", ")}</span>
-              <SceneDataSummary segment={segment} />
-            </div>
-          </button>
-        ))}
-        {asset.timeline.length === 0 && <EmptyState text="No timeline moments are stored." />}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Moments", value: asset.timeline.length.toString(), tone: metricTone(asset.timeline.length > 0, true) },
+        { label: "Avg duration", value: averageDuration > 0 ? formatDuration(averageDuration) : "Unknown", tone: averageDuration >= 0.5 && averageDuration <= 45 ? "good" : averageDuration > 0 ? "warning" : "neutral" },
+        { label: "Scene data", value: `${sceneDataCount}/${asset.timeline.length}`, tone: sceneDataCount > 0 ? "good" : "warning" },
+        { label: "Thumbnails", value: `${thumbnailCount}/${asset.timeline.length}`, tone: thumbnailCount > 0 ? "good" : "warning" }
+      ]}
+      usedBy={["moment retrieval", "search result clips", "video player seek points", "domain event windows"]}
+      quality={[
+        { label: "Short segments", value: shortSegments.toString(), tone: shortSegments > 0 ? "warning" : "good" },
+        { label: "Long segments", value: longSegments.toString(), tone: longSegments > 0 ? "warning" : "good" },
+        { label: "Thumbnail coverage", value: formatCoverage(thumbnailCount, asset.timeline.length), tone: thumbnailCount === asset.timeline.length && asset.timeline.length > 0 ? "good" : "warning" },
+        { label: "Duplicate ASR/OCR", value: duplicateComparisonCount.toString(), tone: duplicateComparisonCount > 0 ? "warning" : "good" }
+      ]}
+      inspect={
+        <div className="workflow-result-list">
+          {asset.timeline.slice(0, 10).map((segment) => (
+            <button
+              key={segment.id}
+              type="button"
+              aria-label={`Play timeline moment at ${formatDuration(segment.start)} for ${segment.label}`}
+              onClick={() => onOpenMoment?.(segment)}
+            >
+              <TimelineThumbnail path={segment.thumbnailPath} />
+              <div>
+                <strong>{segment.label}</strong>
+                <span>{formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.sources.join(", ")}</span>
+                <SceneDataSummary segment={segment} />
+              </div>
+            </button>
+          ))}
+          {asset.timeline.length === 0 && <EmptyState text="No timeline moments are stored." />}
+        </div>
+      }
+      rawDetails={rawStepDetails(step)}
+    />
   );
 }
 
-function ModelTraceResult({ asset, stepId }: { asset: AssetRecord; stepId: string }) {
+function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+  const stepId = step.id;
   const prefixes =
     stepId === "detector"
       ? ["vision-detector:"]
@@ -678,22 +983,64 @@ function ModelTraceResult({ asset, stepId }: { asset: AssetRecord; stepId: strin
         : ["soccernet-action:"];
   const unavailablePrefixes = prefixes.map((prefix) => prefix.replace(":", "-unavailable:"));
   const traces = asset.intelligence.modelTrace.filter((trace) => [...prefixes, ...unavailablePrefixes].some((prefix) => trace.startsWith(prefix)));
+  const visionSegments = asset.timeline.filter((segment) => segment.sceneData?.vision);
+  const playerDetected = visionSegments.filter((segment) => {
+    const status = segment.sceneData?.vision?.objects.players.status;
+    return status === "detected" || status === "estimated";
+  }).length;
+  const ballDetected = visionSegments.filter((segment) => {
+    const status = segment.sceneData?.vision?.objects.ball.status;
+    return status === "detected" || status === "estimated";
+  }).length;
+  const trackingSegments = visionSegments.filter((segment) => {
+    const status = segment.sceneData?.vision?.tracking?.status;
+    return status === "tracked" || status === "estimated";
+  }).length;
+  const averageTrackCoverage = averageNumber(visionSegments.map((segment) => segment.sceneData?.vision?.tracking?.trackCoverage ?? null).filter((value): value is number => typeof value === "number"));
+  const calibratedFields = visionSegments.filter((segment) => segment.sceneData?.vision?.fieldCalibration?.status === "calibrated").length;
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Stored traces" value={traces.length.toString()} />
-        <ResultMetric label="Vision segments" value={asset.timeline.filter((segment) => segment.sceneData?.vision).length.toString()} />
-        <ResultMetric label="Domain events" value={asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0).toString()} />
-      </div>
-      <div className="segment-list compact-list">
-        {traces.map((trace) => <span key={trace}>{trace}</span>)}
-        {traces.length === 0 && <span>No model trace is stored for this stage.</span>}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Stored traces", value: traces.length.toString(), tone: traces.length > 0 ? "good" : "warning" },
+        { label: "Vision segments", value: visionSegments.length.toString(), tone: visionSegments.length > 0 ? "good" : "warning" },
+        { label: "Players", value: formatCoverage(playerDetected, visionSegments.length), tone: playerDetected > 0 ? "good" : "warning" },
+        { label: "Ball", value: formatCoverage(ballDetected, visionSegments.length), tone: ballDetected > 0 ? "good" : "warning" },
+        { label: "Tracking", value: averageTrackCoverage === null ? formatCoverage(trackingSegments, visionSegments.length) : `${Math.round(averageTrackCoverage * 100)}% avg`, tone: trackingSegments > 0 ? "good" : "warning" },
+        { label: "Field calibration", value: calibratedFields > 0 ? `${calibratedFields} calibrated` : "estimated/not configured", tone: calibratedFields > 0 ? "good" : "neutral" }
+      ]}
+      usedBy={stepId === "soccernet" ? ["football action labels", "domain events", "search filters"] : ["domain events", "receiver/passer inference", "pressure/pocket judgment", "visual verification"]}
+      quality={[
+        { label: "Trace", value: traces.length > 0 ? "stored" : "missing", tone: traces.length > 0 ? "good" : "warning" },
+        { label: "Player evidence", value: playerDetected > 0 ? "available" : "not detected", tone: playerDetected > 0 ? "good" : "warning" },
+        { label: "Ball evidence", value: ballDetected > 0 ? "available" : "not detected", tone: ballDetected > 0 ? "good" : "warning" },
+        { label: "Search impact", value: stepId === "tracker" ? "motion/domain evidence" : stepId === "detector" ? "object/domain evidence" : "action spotting", tone: "neutral" }
+      ]}
+      inspect={
+        <div className="workflow-result-list">
+          {visionSegments.slice(0, 8).map((segment) => (
+            <article key={`${stepId}-${segment.id}`}>
+              <TimelineThumbnail path={segment.thumbnailPath} />
+              <div>
+                <strong>{segment.label}</strong>
+                <span>{formatDuration(segment.start)}-{formatDuration(segment.end)}</span>
+                <SceneDataSummary segment={segment} />
+              </div>
+            </article>
+          ))}
+          {visionSegments.length === 0 && <EmptyState text="No vision-backed timeline segments are stored." />}
+        </div>
+      }
+      rawDetails={rawStepDetails(step, traces)}
+    />
   );
 }
 
-function DomainResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMoment?: OpenMomentHandler }) {
+function averageNumber(values: number[]) {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const domainEvents = asset.timeline.flatMap((segment) =>
     (segment.domain?.events ?? []).map((event) => ({
       segment,
@@ -701,88 +1048,172 @@ function DomainResult({ asset, onOpenMoment }: { asset: AssetRecord; onOpenMomen
     }))
   );
   const vlmSegments = asset.timeline.filter((segment) => segment.domain?.vlm);
+  const refinedCount = vlmSegments.filter((segment) => segment.domain?.vlm?.status === "refined").length;
+  const invalidCount = vlmSegments.filter((segment) => segment.domain?.vlm?.status === "invalid").length;
+  const failedCount = vlmSegments.filter((segment) => segment.domain?.vlm?.status === "failed").length;
+  const skippedCount = vlmSegments.filter((segment) => segment.domain?.vlm?.status === "skipped").length;
+  const topTypes = topCounts(domainEvents.map(({ event }) => event.eventType)).slice(0, 3);
+  const identityCount = domainEvents.filter(({ event }) =>
+    Boolean(event.football?.receivingPlayer.identity || event.football?.passingPlayer.identity || event.americanFootball?.quarterback.identity)
+  ).length;
+  const averageConfidence = averageNumber(domainEvents.map(({ event }) => event.confidence));
+  const isVlmNode = step.id === "domainVlm";
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Events" value={domainEvents.length.toString()} />
-        <ResultMetric label="VLM checks" value={vlmSegments.length.toString()} />
-        <ResultMetric label="Refined" value={vlmSegments.filter((segment) => segment.domain?.vlm?.status === "refined").length.toString()} />
-      </div>
-      <div className="domain-event-list">
-        {domainEvents.slice(0, 12).map(({ segment, event }) => (
-          <article key={event.id} className="domain-event-row">
-            <div>
-              <strong>{event.caption}</strong>
-              <button
-                type="button"
-                className="time-link"
-                aria-label={`Play domain event at ${formatDuration(segment.start)} for ${event.caption}`}
-                onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: event.caption })}
-              >
-                {formatDuration(segment.start)}-{formatDuration(segment.end)} · {event.domain} · {Math.round(event.confidence * 100)}%
-              </button>
-            </div>
-            <div className="domain-chip-row">
-              {event.labels.slice(0, 8).map((label) => (
-                <em key={`${event.id}-${label}`}>{label}</em>
-              ))}
-            </div>
-            {event.football && (
-              <div className="domain-structured-grid">
-                {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
-                {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
-                <span><b>Event</b>{event.eventType}</span>
-                <span><b>Pass</b>{event.football.passType}</span>
-                <span><b>Zone</b>{event.football.fieldZone}</span>
-                <span><b>Receiver</b>{event.football.receivingPlayer.identity ? `${event.football.receivingPlayer.identity.name} · ${event.football.receivingPlayer.identity.source}` : event.football.receivingPlayer.trackingStatus}</span>
-                {event.football.passingPlayer.identity && <span><b>Passer</b>{event.football.passingPlayer.identity.name} · {event.football.passingPlayer.identity.source}</span>}
-                <span><b>Ball</b>{event.football.ball.state} · {event.football.ball.trackingStatus}</span>
-                <span><b>Field</b>{event.football.field.calibrationStatus} · {Math.round(event.football.field.zoneConfidence * 100)}% · {event.football.field.attackingDirection}</span>
-              </div>
-            )}
-            <details className="domain-event-details">
-              <summary>Evidence and limitations</summary>
-              {segment.domain?.vlm && (
-                <p>
-                  VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
-                  {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
-                </p>
-              )}
-              <p>{[...event.evidence.asr, ...event.evidence.ocr, ...event.evidence.visual].filter(Boolean).slice(0, 4).join(" · ") || "No direct evidence text stored."}</p>
-              {segment.domain?.vlm?.rawResponse && <p>Raw VLM: {truncateText(segment.domain.vlm.rawResponse, 360)}</p>}
-              <p>{[...event.evidence.heuristics, ...(event.football?.limitations ?? [])].filter(Boolean).slice(0, 5).join(" · ")}</p>
-            </details>
-          </article>
-        ))}
-        {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={isVlmNode
+        ? [
+            { label: "Refined", value: refinedCount.toString(), tone: refinedCount > 0 ? "good" : "neutral" },
+            { label: "Skipped", value: skippedCount.toString(), tone: skippedCount > 0 ? "warning" : "neutral" },
+            { label: "Failed", value: failedCount.toString(), tone: failedCount > 0 ? "bad" : "neutral" },
+            { label: "Invalid", value: invalidCount.toString(), tone: invalidCount > 0 ? "warning" : "neutral" },
+            { label: "Attempted", value: vlmSegments.length.toString(), tone: "neutral" }
+          ]
+        : [
+            { label: "Events", value: domainEvents.length.toString(), tone: domainEvents.length > 0 ? "good" : "warning" },
+            { label: "Top event types", value: topTypes.length ? topTypes.map(([type, count]) => `${type} ${count}`).join(" · ") : "None", tone: topTypes.length ? "good" : "warning" },
+            { label: "Identity resolved", value: `${identityCount}/${domainEvents.length}`, tone: identityCount > 0 ? "good" : "neutral" },
+            { label: "Avg confidence", value: averageConfidence === null ? "Unknown" : `${Math.round(averageConfidence * 100)}%`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" },
+            { label: "Sports-event VLM checks", value: vlmSegments.length.toString(), tone: vlmSegments.length > 0 ? "good" : "neutral" }
+          ]}
+      usedBy={isVlmNode ? ["sports event refinement", "evidence review", "confidence calibration"] : ["domain-aware search", "stat-seeded retrieval", "play-style analysis", "structured filters"]}
+      quality={isVlmNode
+        ? [
+            { label: "Optional stage", value: "not required for base search", tone: "neutral" },
+            { label: "Refinement", value: refinedCount > 0 ? "available" : "not applied", tone: refinedCount > 0 ? "good" : "neutral" },
+            { label: "Failures", value: failedCount > 0 ? `${failedCount} failed` : "none stored", tone: failedCount > 0 ? "bad" : "good" }
+          ]
+        : [
+            { label: "Sports structure", value: domainEvents.length > 0 ? "searchable" : "missing", tone: domainEvents.length > 0 ? "good" : "warning" },
+            { label: "Player identity", value: identityCount > 0 ? "resolved candidates" : "not resolved", tone: identityCount > 0 ? "good" : "neutral" },
+            { label: "Confidence", value: averageConfidence === null ? "unknown" : `${Math.round(averageConfidence * 100)}% avg`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" }
+          ]}
+      inspect={
+        <div className="domain-event-list">
+          {domainEvents.slice(0, 12).map(({ segment, event }) => (
+            <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
+          ))}
+          {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
+        </div>
+      }
+      rawDetails={rawStepDetails(step, vlmSegments.flatMap((segment) => segment.domain?.vlm?.rawResponse ? [`vlm:${truncateText(segment.domain.vlm.rawResponse, 360)}`] : []))}
+    />
   );
 }
 
-function VectorResult({ asset }: { asset: AssetRecord }) {
+function DomainEventRow({
+  segment,
+  event,
+  onOpenMoment
+}: {
+  segment: AssetRecord["timeline"][number];
+  event: NonNullable<AssetRecord["timeline"][number]["domain"]>["events"][number];
+  onOpenMoment?: OpenMomentHandler;
+}) {
+  return (
+    <article className="domain-event-row">
+      <div>
+        <strong>{event.caption}</strong>
+        <button
+          type="button"
+          className="time-link"
+          aria-label={`Play domain event at ${formatDuration(segment.start)} for ${event.caption}`}
+          onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: event.caption })}
+        >
+          {formatDuration(segment.start)}-{formatDuration(segment.end)} · {event.domain} · {Math.round(event.confidence * 100)}%
+        </button>
+      </div>
+      <div className="domain-chip-row">
+        {event.labels.slice(0, 8).map((label) => (
+          <em key={`${event.id}-${label}`}>{label}</em>
+        ))}
+      </div>
+      {event.football && (
+        <div className="domain-structured-grid">
+          {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
+          {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
+          <span><b>Event</b>{event.eventType}</span>
+          <span><b>Pass</b>{event.football.passType}</span>
+          <span><b>Zone</b>{event.football.fieldZone}</span>
+          <span><b>Receiver</b>{event.football.receivingPlayer.identity ? `${event.football.receivingPlayer.identity.name} · ${event.football.receivingPlayer.identity.source}` : event.football.receivingPlayer.trackingStatus}</span>
+          {event.football.passingPlayer.identity && <span><b>Passer</b>{event.football.passingPlayer.identity.name} · {event.football.passingPlayer.identity.source}</span>}
+          <span><b>Ball</b>{event.football.ball.state} · {event.football.ball.trackingStatus}</span>
+          <span><b>Field</b>{event.football.field.calibrationStatus} · {Math.round(event.football.field.zoneConfidence * 100)}% · {event.football.field.attackingDirection}</span>
+        </div>
+      )}
+      {event.americanFootball && (
+        <div className="domain-structured-grid">
+          {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
+          {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
+          <span><b>Event</b>{event.eventType}</span>
+          <span><b>Play type</b>{event.americanFootball.playType}</span>
+          <span><b>Phase</b>{event.americanFootball.phase}</span>
+          <span><b>QB</b>{event.americanFootball.quarterback.identity ? `${event.americanFootball.quarterback.identity.name} · ${event.americanFootball.quarterback.identity.source}` : event.americanFootball.quarterback.trackingStatus}</span>
+          <span><b>Pressure</b>{event.americanFootball.pressure.present ? `${Math.round(event.americanFootball.pressure.confidence * 100)}% · ${event.americanFootball.pressure.source}` : "not detected"}</span>
+          <span><b>Pocket</b>{event.americanFootball.pocket.status} · {Math.round(event.americanFootball.pocket.confidence * 100)}%</span>
+          <span><b>Decision</b>{event.americanFootball.decision.outcome} · {Math.round(event.americanFootball.decision.confidence * 100)}%</span>
+        </div>
+      )}
+      <details className="domain-event-details">
+        <summary>Evidence and limitations</summary>
+        {segment.domain?.vlm && (
+          <p>
+            Sports-event VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
+            {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
+          </p>
+        )}
+        <p>{[...event.evidence.asr, ...event.evidence.ocr, ...event.evidence.visual].filter(Boolean).slice(0, 4).join(" · ") || "No direct evidence text stored."}</p>
+        <p>{[...event.evidence.heuristics, ...(event.football?.limitations ?? []), ...(event.americanFootball?.limitations ?? [])].filter(Boolean).slice(0, 5).join(" · ")}</p>
+      </details>
+    </article>
+  );
+}
+
+function topCounts(values: string[]) {
+  const counts = new Map<string, number>();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function VectorResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
   const textEmbeddingCount = asset.timeline.filter((segment) => segment.embedding.length > 0).length;
   const visualTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("visual-embedding:") || trace.startsWith("visual-embedding-unavailable:"));
   const textTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("embedding:"));
+  const textDimensions = asset.timeline.find((segment) => segment.embedding.length > 0)?.embedding.length ?? 0;
+  const domainEvents = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
+  const domainLinks = asset.timeline.filter((segment) => Boolean(segment.domain?.scope?.competition || segment.domain?.scope?.season || (segment.domain?.scope?.players.length ?? 0) > 0)).length;
+  const visualVectorsReady = Boolean(visualTrace?.startsWith("visual-embedding:"));
   return (
-    <div className="workflow-result-stack">
-      <div className="workflow-result-grid compact">
-        <ResultMetric label="Timeline embeddings" value={`${textEmbeddingCount}/${asset.timeline.length}`} />
-        <ResultMetric label="Keyframes" value={asset.keyframes.length.toString()} />
-        <ResultMetric label="Asset status" value={`${asset.status} · ${asset.progress}%`} />
-      </div>
-      <div className="segment-list compact-list">
-        <span>{textTrace ?? "No text embedding trace is stored."}</span>
-        <span>{visualTrace ?? "No visual embedding trace is stored."}</span>
-        <span>{asset.status === "indexed" ? "Asset vectors are committed and searchable." : "Vector commit is not complete yet."}</span>
-      </div>
-    </div>
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Text vectors", value: `${textEmbeddingCount}/${asset.timeline.length}`, tone: textEmbeddingCount > 0 ? "good" : "warning" },
+        { label: "Text dimension", value: textDimensions > 0 ? `${textDimensions} dims` : "Unknown", tone: textDimensions > 0 ? "good" : "warning" },
+        { label: "Visual vectors", value: visualVectorsReady ? "stored" : visualTrace ? "unavailable" : "pending", tone: visualVectorsReady ? "good" : visualTrace ? "warning" : "neutral" },
+        { label: "Keyframes", value: asset.keyframes.length.toString(), tone: asset.keyframes.length > 0 ? "good" : "neutral" },
+        { label: "Domain events", value: domainEvents.toString(), tone: domainEvents > 0 ? "good" : "neutral" },
+        { label: "Knowledge links", value: domainLinks.toString(), tone: domainLinks > 0 ? "good" : "neutral" }
+      ]}
+      usedBy={["semantic retrieval", "visual retrieval", "hybrid ranking", "analysis grounding"]}
+      quality={[
+        { label: "Vector DB", value: asset.status === "indexed" ? "committed" : "not complete", tone: asset.status === "indexed" ? "good" : "warning" },
+        { label: "Text coverage", value: formatCoverage(textEmbeddingCount, asset.timeline.length), tone: textEmbeddingCount === asset.timeline.length && asset.timeline.length > 0 ? "good" : "warning" },
+        { label: "Visual coverage", value: visualVectorsReady ? "available" : "not used in ranking", tone: visualVectorsReady ? "good" : "neutral" },
+        { label: "Searchable moments", value: asset.status === "indexed" ? asset.timeline.length.toString() : "not ready", tone: asset.status === "indexed" ? "good" : "warning" }
+      ]}
+      inspect={
+        <div className="segment-list compact-list">
+          <span>{textTrace ?? "No text embedding trace is stored."}</span>
+          <span>{visualTrace ?? "No visual embedding trace is stored."}</span>
+          <span>{asset.status === "indexed" ? "Asset vectors are committed and searchable." : "Vector commit is not complete yet."}</span>
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [textTrace ?? "", visualTrace ?? ""])}
+    />
   );
 }
 
-function ResultMetric({ label, value }: { label: string; value: string }) {
+function ResultMetric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: NodeMetricTone }) {
   return (
-    <span className="workflow-result-metric">
+    <span className={`workflow-result-metric ${tone}`}>
       <b>{label}</b>
       {value}
     </span>
@@ -962,7 +1393,7 @@ export function SceneDataSummary({ segment }: { segment: AssetRecord["timeline"]
       )}
       {comparisonRows.slice(0, 2).map((row, index) => (
         <span key={`${row.kind}-${index}`} className={`timeline-comparison ${row.status}`}>
-          <b>Compare</b>
+          <b>ASR/OCR consistency</b>
           {Math.round(row.similarity * 100)}% · {row.status} · {truncateText(row.suggestedText, 150)}
         </span>
       ))}

@@ -30,15 +30,18 @@ export function registerAskRoutes(app: Express) {
     const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
     const domainGroup = domainGroupValue(req.query.domainGroup);
     const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
+    const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
+    const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
     const useKnowledgeLayer = req.query.useKnowledgeLayer !== "false";
-    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
     const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
-    if (useKnowledgeLayer && queryPlan.intent.questionType === "stat_qa") {
+    if (useKnowledgeLayer && queryPlan.route === "sports_stat_qa") {
       const sportsAnswer = answerSportsKnowledgeQuestion(queryPlan);
       const scopedAssets = scopeAssetsForQuery(assets, {
         query,
         explicitFilters,
         indexId,
+        assetId,
         domainGroup,
         tag: req.query.tag ? String(req.query.tag) : undefined,
         modality: req.query.modality ? String(req.query.modality) : undefined,
@@ -57,6 +60,7 @@ export function registerAskRoutes(app: Express) {
             assets,
             indexes,
             indexId,
+            assetId,
             domainGroup,
             tag: req.query.tag ? String(req.query.tag) : undefined,
             modality: req.query.modality ? String(req.query.modality) : undefined,
@@ -81,6 +85,7 @@ export function registerAskRoutes(app: Express) {
         assets,
         indexes,
         indexId,
+        assetId,
         domainGroup,
         tag: req.query.tag ? String(req.query.tag) : undefined,
         modality: req.query.modality ? String(req.query.modality) : undefined,
@@ -96,18 +101,22 @@ export function registerAskRoutes(app: Express) {
   });
 
   app.get("/api/search/plan", async (req, res) => {
-    const indexes = await listIndexes();
+    const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
     const domainGroup = domainGroupValue(req.query.domainGroup);
     const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
-    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
+    const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
     res.json(await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters));
   });
 
   app.get("/api/knowledge/sports/answer", async (req, res) => {
-    const indexes = await listIndexes();
+    const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
     const domainGroup = domainGroupValue(req.query.domainGroup);
     const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
-    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
+    const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
     const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters);
     res.json(answerSportsKnowledgeQuestion(queryPlan));
   });

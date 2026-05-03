@@ -117,12 +117,12 @@ export async function refineSportsDomainTimelineWithVlm(
           skippedSegments,
           segmentId: segment.id,
           status: "refined",
-          message: `VLM refined segment ${attemptedSegments}/${totalSegments}`,
+          message: `Sports event VLM refined segment ${attemptedSegments}/${totalSegments}`,
           progress: getProgress(attemptedSegments, totalSegments)
         });
       } else {
         invalidSegments += 1;
-        refined.push(markVlmQuality(segment, response, "invalid", "VLM response did not contain a usable caption and confidence.", null, model));
+        refined.push(markVlmQuality(segment, response, "invalid", "Sports event VLM response did not contain a usable caption and confidence.", null, model));
         await emitProgress(options, {
           totalSegments,
           attemptedSegments,
@@ -132,15 +132,15 @@ export async function refineSportsDomainTimelineWithVlm(
           skippedSegments,
           segmentId: segment.id,
           status: "invalid",
-          message: `VLM returned invalid structure for segment ${attemptedSegments}/${totalSegments}`,
+          message: `Sports event VLM returned invalid structure for segment ${attemptedSegments}/${totalSegments}`,
           progress: getProgress(attemptedSegments, totalSegments)
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "VLM refinement failed";
+      const message = error instanceof Error ? error.message : "Sports event VLM refinement failed";
       failedSegments += 1;
       errors.push(`${segment.id}: ${message}`);
-      refined.push(markVlmQuality(segment, null, "failed", "VLM refinement failed.", message, model));
+      refined.push(markVlmQuality(segment, null, "failed", "Sports event VLM refinement failed.", message, model));
       await emitProgress(options, {
         totalSegments,
         attemptedSegments,
@@ -150,7 +150,7 @@ export async function refineSportsDomainTimelineWithVlm(
         skippedSegments,
         segmentId: segment.id,
         status: "failed",
-        message: `VLM failed for segment ${attemptedSegments}/${totalSegments}: ${message}`,
+        message: `Sports event VLM failed for segment ${attemptedSegments}/${totalSegments}: ${message}`,
         progress: getProgress(attemptedSegments, totalSegments)
       });
     }
