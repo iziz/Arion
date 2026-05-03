@@ -66,14 +66,16 @@ export default function App() {
     setQuery,
     searchTag,
     setSearchTag,
-    searchModality,
-    setSearchModality,
+    searchDomainGroup,
+    setSearchDomainGroup,
     filtersOpen,
     setFiltersOpen,
     domainFilters,
     setDomainFilters,
     trustFilters,
     setTrustFilters,
+    useKnowledgeLayer,
+    setUseKnowledgeLayer,
     queryPlan,
     orchestrationPlan,
     sportsAnswer,
@@ -84,13 +86,11 @@ export default function App() {
     searching,
     activeSearchFilterCount,
     runSearch,
-    applySearchPreset,
     buildAssetMomentUrl
-  } = useSearchController({ selectedIndex, setMessage });
-  const { registerKnowledgePlayer, deleteKnowledgePlayer, importFootballData, importStatbunker } = useKnowledgeActions({
+  } = useSearchController({ setMessage });
+  const { deleteKnowledgePlayer } = useKnowledgeActions({
     setSportsKnowledge,
-    setMessage,
-    setBusy
+    setMessage
   });
   const visibleAssets = assets.filter((asset) => !selectedIndex || asset.indexId === selectedIndex.id);
   const visibleIndexedAssets = visibleAssets.filter((asset) => asset.status === "indexed").length;
@@ -101,7 +101,16 @@ export default function App() {
   const selectedAssetJob = selectedAsset ? getLatestAssetJob(jobs, selectedAsset.id) : null;
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null;
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
-  const filterTags = useMemo(() => Array.from(new Set(visibleAssets.flatMap((asset) => asset.tags))).sort(), [visibleAssets]);
+  const filterTags = useMemo(() => {
+    const indexById = new Map(indexes.map((index) => [index.id, index]));
+    const scopedAssets = assets.filter((asset) => {
+      if (!searchDomainGroup) return true;
+      const index = indexById.get(asset.indexId);
+      if (index?.domainIndexing?.groups.includes(searchDomainGroup)) return true;
+      return asset.timeline.some((segment) => segment.domain?.groups.includes(searchDomainGroup));
+    });
+    return Array.from(new Set(scopedAssets.flatMap((asset) => asset.tags))).sort();
+  }, [assets, indexes, searchDomainGroup]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const assetId = params.get("asset");
@@ -124,16 +133,21 @@ export default function App() {
   }, [assets, selectedAssetId, selectedIndexId]);
 
   useEffect(() => {
-    if (!selectedAssetId) return;
     const url = new URL(window.location.href);
-    url.searchParams.set("asset", selectedAssetId);
+    if (selectedAssetId) {
+      url.searchParams.set("asset", selectedAssetId);
+    } else {
+      url.searchParams.delete("asset");
+      url.searchParams.delete("segment");
+      url.searchParams.delete("t");
+    }
     window.history.replaceState(null, "", url.toString());
   }, [selectedAssetId]);
 
   useEffect(() => {
     if (!pendingSeek || selectedAsset?.id !== pendingSeek.assetId || !playerRef.current) return;
     playerRef.current.currentTime = pendingSeek.at;
-    void playerRef.current.play().catch(() => undefined);
+    playerRef.current.pause();
     setPendingSeek(null);
   }, [pendingSeek, selectedAsset]);
 
@@ -233,13 +247,13 @@ export default function App() {
 
   function selectIndex(indexId: string) {
     setSelectedIndexId(indexId);
-    const firstAsset = assets.find((asset) => asset.indexId === indexId) ?? null;
-    setSelectedAssetId(firstAsset?.id ?? null);
-    setSelectedSegmentId(firstAsset?.timeline[0]?.id ?? null);
+    setSelectedAssetId(null);
+    setSelectedSegmentId(null);
     setAssetDetailTab("overview");
   }
 
   function selectAsset(asset: AssetRecord) {
+    playerRef.current?.pause();
     setSelectedAssetId(asset.id);
     setSelectedSegmentId(asset.timeline[0]?.id ?? null);
     setAssetDetailTab("overview");
@@ -273,26 +287,24 @@ export default function App() {
       playerRef={playerRef}
       retryAssetStage={retryAssetStage}
       selectSegment={selectSegment}
-      registerKnowledgePlayer={registerKnowledgePlayer}
       deleteKnowledgePlayer={deleteKnowledgePlayer}
-      importFootballData={importFootballData}
-      importStatbunker={importStatbunker}
       query={query}
       setQuery={setQuery}
       searching={searching}
       runSearch={runSearch}
-      applySearchPreset={applySearchPreset}
       filtersOpen={filtersOpen}
       setFiltersOpen={setFiltersOpen}
       activeSearchFilterCount={activeSearchFilterCount}
       searchTag={searchTag}
       setSearchTag={setSearchTag}
-      searchModality={searchModality}
-      setSearchModality={setSearchModality}
+      searchDomainGroup={searchDomainGroup}
+      setSearchDomainGroup={setSearchDomainGroup}
       domainFilters={domainFilters}
       setDomainFilters={setDomainFilters}
       trustFilters={trustFilters}
       setTrustFilters={setTrustFilters}
+      useKnowledgeLayer={useKnowledgeLayer}
+      setUseKnowledgeLayer={setUseKnowledgeLayer}
       searchConversation={searchConversation}
       buildAssetMomentUrl={buildAssetMomentUrl}
       askResponse={askResponse}

@@ -207,22 +207,27 @@ export function AssetFlow({
       steps: flow.filter((step) => step.id === "input" || step.id === "probe" || step.id === "audio" || step.id === "vad")
     },
     {
-      label: "2. Speech intelligence",
-      detail: "Run ASR from VAD-focused audio, then align speaker labels from ASR segments.",
-      steps: flow.filter((step) => step.id === "asr" || step.id === "speakers")
+      label: "2. Speech and text extraction",
+      detail: "Run ASR, optional speaker alignment, and OCR before timeline assembly.",
+      steps: flow.filter((step) => step.id === "asr" || step.id === "speakers" || step.id === "ocr")
     },
     {
-      label: "3. Visual and text extraction",
-      detail: "Sample visual frames and extract on-screen text from subtitle and full-frame lanes.",
-      steps: flow.filter((step) => step.id === "ocr" || step.id === "visual")
+      label: "3. Scene and vision evidence",
+      detail: "Build scene windows, keyframes, detector evidence, and tracker evidence.",
+      steps: flow.filter((step) => step.id === "visual" || step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "detector" || step.id === "tracker")
     },
     {
-      label: "4. Search index",
-      detail: "Merge ASR, OCR, scene data, domain events, and visual signals into searchable timeline vectors.",
-      steps: flow.filter((step) => step.id === "timeline" || step.id === "domain" || step.id === "vector")
+      label: "4. Domain evidence",
+      detail: "Apply trusted sports action spotting, domain event construction, and optional VLM refinement.",
+      steps: flow.filter((step) => step.id === "soccernet" || step.id === "domain" || step.id === "domainVlm")
     },
     {
-      label: "5. Serve",
+      label: "5. Vector index",
+      detail: "Write text embeddings, visual embeddings, and vector records.",
+      steps: flow.filter((step) => step.id === "textEmbedding" || step.id === "visualEmbedding" || step.id === "vector")
+    },
+    {
+      label: "6. Serve",
       detail: "Expose the indexed asset for search and focused analysis.",
       steps: flow.filter((step) => step.id === "ready")
     }
@@ -307,6 +312,7 @@ export function FlowNode({
           server {step.serverProgress.status} · {step.serverProgress.stage} · {step.serverProgress.progress}%
         </span>
       )}
+      {step.trace && <em>{step.trace}</em>}
       <div className="node-progress" aria-label={`${step.label} ${progressLabel}`}>
         <span style={{ width: `${step.progress ?? 0}%` }} />
       </div>

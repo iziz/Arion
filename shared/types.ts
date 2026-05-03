@@ -501,7 +501,7 @@ export type KnowledgeEvidence = {
   kind: "roster" | "player_profile" | "match_activity" | "competition_scope" | "video_scope" | "team_stat" | "attendance";
   entityType: "player" | "team" | "competition" | "season" | "event";
   entityName: string;
-  source: "sports_knowledge" | "football-data" | "kaggle" | "statbunker" | "video_index" | "query";
+  source: "sports_knowledge" | "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref" | "video_index" | "query";
   confidence: number;
   evidenceText: string;
   competition?: string;
@@ -530,7 +530,21 @@ export type DomainQueryPlan = {
   intent: {
     domain: string | null;
     questionType?: "moment_retrieval" | "stat_qa";
-    metric?: "goals" | "assists" | "appearances" | "minutes" | "cards" | null;
+    metric?:
+      | "goals"
+      | "assists"
+      | "appearances"
+      | "minutes"
+      | "cards"
+      | "points"
+      | "touchdowns"
+      | "passing_yards"
+      | "passing_touchdowns"
+      | "rushing_yards"
+      | "receiving_yards"
+      | "sacks"
+      | "interceptions"
+      | null;
     eventType: string | null;
     passType: string | null;
     fieldZone: string | null;
@@ -555,7 +569,21 @@ export type SportsKnowledgeAnswer = {
     player: string | null;
     competition: string | null;
     season: string | null;
-    metric: "goals" | "assists" | "appearances" | "minutes" | "cards" | null;
+    metric:
+      | "goals"
+      | "assists"
+      | "appearances"
+      | "minutes"
+      | "cards"
+      | "points"
+      | "touchdowns"
+      | "passing_yards"
+      | "passing_touchdowns"
+      | "rushing_yards"
+      | "receiving_yards"
+      | "sacks"
+      | "interceptions"
+      | null;
   };
   value: number | null;
   status: "answered" | "missing_stat" | "unsupported" | "needs_clarification";
@@ -728,8 +756,18 @@ export type ClipDetailResult = {
 };
 
 export type SportsKnowledgeSnapshot = {
-  competitions: Array<{ value: string; aliases: string[] }>;
-  teams: Array<{ value: string; aliases: string[] }>;
+  domains?: Array<{
+    id: SportsDomainGroup;
+    label: string;
+    sport: "football" | "american_football";
+    competitions: string[];
+    teams: number;
+    players: number;
+    matchActivities: number;
+    facts: number;
+  }>;
+  competitions: Array<{ value: string; aliases: string[]; domainGroup?: SportsDomainGroup; sport?: "football" | "american_football" }>;
+  teams: Array<{ value: string; aliases: string[]; domainGroup?: SportsDomainGroup; league?: string }>;
   players: Array<{
     id: string;
     canonical: string;
@@ -738,14 +776,14 @@ export type SportsKnowledgeSnapshot = {
     league: string;
     activeSeasons: string[];
     teamsBySeason: Record<string, string>;
-    provider?: "local" | "football-data" | "kaggle" | "statbunker";
+    provider?: "local" | "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref";
     externalIds?: Record<string, string | number>;
     position?: string | null;
     shirtNumber?: number | null;
   }>;
   matchActivities?: Array<{
     id: string;
-    provider: "football-data" | "kaggle" | "statbunker";
+    provider: "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref";
     competition: string;
     season: string;
     matchId: number;
@@ -763,7 +801,7 @@ export type SportsKnowledgeSnapshot = {
   }>;
   facts?: Array<{
     id: string;
-    provider: "football-data" | "kaggle" | "statbunker";
+    provider: "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref";
     kind: "league_table" | "team_offense" | "team_defense" | "attendance" | "nationality_distribution" | "team_stat";
     competition: string;
     season: string;

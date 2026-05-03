@@ -1,4 +1,5 @@
 import type { DomainQueryPlan, SportsKnowledgeAnswer, SportsKnowledgeSnapshot } from "../shared/types";
+import { isStatLeaderboardQuery } from "./queryPlanner";
 import { getKnowledgePlayer, getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, playerTeamForSeason } from "./sportsKnowledge";
 
 type MatchActivity = NonNullable<SportsKnowledgeSnapshot["matchActivities"]>[number];
@@ -19,10 +20,46 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
     return emptyAnswer("unsupported", "This query is not a supported sports statistics question.", { player: playerMatch?.canonical ?? null, competition, season, metric });
   }
   if (!playerMatch) {
+    const leader = resolveLeaderboardSubject(queryPlan, metric, competition, season);
+    if (leader) {
+      return {
+        applicable: true,
+        route: "stat_qa",
+        answer: `${leader.player} leads ${formatScope(leader.competition, leader.season)} with ${leader.value} ${metric} according to imported sports knowledge.`,
+        confidence: leader.rows.length > 0 ? 0.82 : 0.68,
+        subject: { player: leader.player, competition: leader.competition, season: leader.season, metric },
+        value: leader.value,
+        status: "answered",
+        evidence: leader.rows.map(evidenceFromActivity).slice(0, 6),
+        fallback: null,
+        warnings: [
+          "Resolved the ranking subject from imported sports knowledge.",
+          competition ? "" : "Competition was not explicit; the leader was selected from available imported sports knowledge.",
+          season ? "" : "Season was not explicit; the answer may be broad."
+        ].filter(Boolean)
+      };
+    }
+    if (isStatLeaderboardQuery(queryPlan.originalQuery)) {
+      return {
+        applicable: true,
+        route: "stat_qa",
+        answer: `I do not have imported ${metric} leaderboard data for ${formatScope(competition, season)}.`,
+        confidence: 0.34,
+        subject: { player: null, competition, season, metric },
+        value: null,
+        status: "missing_stat",
+        evidence: [],
+        fallback: null,
+        warnings: [
+          "No imported leaderboard rows matched this scoped statistics question.",
+          "Video retrieval may still use indexed asset metadata as a scoped fallback."
+        ]
+      };
+    }
     return {
       applicable: true,
       route: "stat_qa",
-      answer: "I could not identify the player for this statistics question. Try a full player name such as Son Heung-min or Erling Haaland.",
+      answer: "I could not identify the player for this statistics question. Try a full player name from the knowledge base or indexed metadata.",
       confidence: 0.22,
       subject: { player: null, competition, season, metric },
       value: null,
@@ -98,7 +135,7 @@ function emptyAnswer(status: SportsKnowledgeAnswer["status"], answer: string, su
 
 function matchesScope(activity: MatchActivity, competition: string | null, season: string | null) {
   if (competition && normalize(activity.competition) !== normalize(competition)) return false;
-  if (season && normalize(activity.season) !== normalize(season)) return false;
+  if (season && !seasonMatchesRequest(activity.season, season)) return false;
   return true;
 }
 
@@ -134,6 +171,74 @@ function aggregateMetric(rows: MatchActivity[], metric: Metric) {
   return { value: null, aggregateRows: [] };
 }
 
+function resolveLeaderboardSubject(queryPlan: DomainQueryPlan, metric: Metric, competition: string | null, season: string | null) {
+  if (!isStatLeaderboardQuery(queryPlan.originalQuery)) return null;
+  const snapshot = getSportsKnowledgeSnapshot();
+  const scopedActivities = (snapshot.matchActivities ?? []).filter((activity) => matchesScope(activity, competition, season));
+  const metricRows = selectBestMetricRows(scopedActivities.filter((activity) => activity.role === "STAT"), metric);
+  const leaders = aggregateMetricRowsByPlayer(metricRows);
+  if (leaders.length > 0) return leaders[0];
+  if (metric === "goals") {
+    const goalRows = dedupeActivities(scopedActivities.filter((activity) => activity.role === "GOAL"));
+    const goalLeaders = aggregateActivityCountsByPlayer(goalRows);
+    if (goalLeaders.length > 0) return goalLeaders[0];
+  }
+  if (metric === "assists") {
+    const assistRows = dedupeActivities(scopedActivities.filter((activity) => activity.role === "ASSIST"));
+    const assistLeaders = aggregateActivityCountsByPlayer(assistRows);
+    if (assistLeaders.length > 0) return assistLeaders[0];
+  }
+  return null;
+}
+
+function aggregateMetricRowsByPlayer(rows: MetricRow[]) {
+  const grouped = new Map<string, { player: string; value: number; rows: MatchActivity[]; competition: string | null; season: string | null; providerRank: number }>();
+  for (const row of rows) {
+    const key = normalize(row.activity.player);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.value += row.value;
+      existing.rows.push(row.activity);
+      existing.providerRank = Math.max(existing.providerRank, row.providerRank);
+      if (!existing.competition || existing.competition === row.activity.competition) existing.competition = row.activity.competition;
+      if (!existing.season || existing.season === row.activity.season) existing.season = row.activity.season;
+      continue;
+    }
+    grouped.set(key, {
+      player: row.activity.player,
+      value: row.value,
+      rows: [row.activity],
+      competition: row.activity.competition,
+      season: row.activity.season,
+      providerRank: row.providerRank
+    });
+  }
+  return Array.from(grouped.values()).sort((a, b) => b.value - a.value || b.providerRank - a.providerRank || a.player.localeCompare(b.player));
+}
+
+function aggregateActivityCountsByPlayer(rows: MatchActivity[]) {
+  const grouped = new Map<string, { player: string; value: number; rows: MatchActivity[]; competition: string | null; season: string | null; providerRank: number }>();
+  for (const activity of rows) {
+    const key = normalize(activity.player);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.value += 1;
+      existing.rows.push(activity);
+      existing.providerRank = Math.max(existing.providerRank, providerRank(activity.provider));
+      continue;
+    }
+    grouped.set(key, {
+      player: activity.player,
+      value: 1,
+      rows: [activity],
+      competition: activity.competition,
+      season: activity.season,
+      providerRank: providerRank(activity.provider)
+    });
+  }
+  return Array.from(grouped.values()).sort((a, b) => b.value - a.value || b.providerRank - a.providerRank || a.player.localeCompare(b.player));
+}
+
 function latestMetric(rows: MatchActivity[], metric: Metric) {
   const candidates = selectBestMetricRows(rows, metric).sort((a, b) => seasonRank(b.activity.season) - seasonRank(a.activity.season) || b.providerRank - a.providerRank);
   const latest = candidates[0];
@@ -166,7 +271,15 @@ function metricValue(activity: MatchActivity, metric: Metric) {
     assists: /(\d+(?:\.\d+)?)\s+assists?/,
     appearances: /(\d+(?:\.\d+)?)\s+appearances?/,
     minutes: /(\d+(?:\.\d+)?)\s+minutes?/,
-    cards: /(\d+(?:\.\d+)?)\s+cards?/
+    cards: /(\d+(?:\.\d+)?)\s+cards?/,
+    points: /(\d+(?:\.\d+)?)\s+points?/,
+    touchdowns: /(\d+(?:\.\d+)?)\s+(?:touchdowns?|tds?)/,
+    passing_yards: /(\d+(?:\.\d+)?)\s+passing\s+yards?/,
+    passing_touchdowns: /(\d+(?:\.\d+)?)\s+(?:passing\s+touchdowns?|passing\s+tds?)/,
+    rushing_yards: /(\d+(?:\.\d+)?)\s+rushing\s+yards?/,
+    receiving_yards: /(\d+(?:\.\d+)?)\s+receiving\s+yards?/,
+    sacks: /(\d+(?:\.\d+)?)\s+sacks?/,
+    interceptions: /(\d+(?:\.\d+)?)\s+interceptions?/
   };
   const match = text.match(patterns[metric]);
   return match ? Number(match[1]) : null;
@@ -179,8 +292,12 @@ function dedupeActivities(rows: MatchActivity[]) {
 }
 
 function providerRank(provider: MatchActivity["provider"]) {
+  if (provider === "nflverse") return 4;
+  if (provider === "statsbomb") return 4;
   if (provider === "statbunker") return 3;
   if (provider === "football-data") return 2;
+  if (provider === "football-data-uk") return 2;
+  if (provider === "fbref") return 2;
   return 1;
 }
 
@@ -214,4 +331,13 @@ function seasonRank(season: string) {
 
 function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9가-힣]+/g, " ").trim();
+}
+
+function seasonMatchesRequest(activitySeason: string, requestedSeason: string) {
+  const activity = normalize(activitySeason);
+  return requestedSeason.split(",").map((item) => normalize(item)).filter(Boolean).some((requested) => {
+    if (activity === requested) return true;
+    if (/^20\d{2}$/.test(requested) && activity.startsWith(requested)) return true;
+    return activity.includes(requested) || requested.includes(activity);
+  });
 }

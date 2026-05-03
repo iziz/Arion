@@ -35,6 +35,10 @@ export async function embedQueryText(text: string) {
   return embedding;
 }
 
+export async function embedPassageTexts(texts: string[]) {
+  return embedTexts(texts, "passage");
+}
+
 export async function embedTimelineSegments(segments: TimelineSegment[]) {
   const texts = segments.map(segmentToEmbeddingText);
   const embeddings = await embedTexts(texts, "passage");

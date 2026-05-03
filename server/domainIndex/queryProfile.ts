@@ -46,7 +46,7 @@ export function expandDomainQuery(query: string): DomainQueryProfile {
   const receiverRequired = matchingTerms(normalized, footballRules.eventTypes[0].terms).length > 0 || /받는\s*선수|receiver|receiving player/.test(normalized);
   const playerRequired = receiverRequired || /선수|player/.test(normalized);
   const pressureRequired = matchingTerms(normalized, americanFootballRules.eventTypes[1].terms).length > 0;
-  const quarterbackRequired = /quarterback|qb|mahomes/.test(normalized);
+  const quarterbackRequired = /quarterback|qb/.test(normalized);
   const expandedText = unique([
     query,
     ...labels,

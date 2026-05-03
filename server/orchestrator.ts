@@ -9,7 +9,7 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
   const scopeCoverage = estimateScopeCoverage(queryPlan, assets);
   const identityDecision = buildIdentityDecision(queryPlan.intent.player, identityCandidates, mode, knowledgePlayer);
   const scopeDecision = buildScopeDecision(queryPlan, scopeCoverage);
-  const routeDecision = buildRouteDecision(mode, indexes, queryPlan);
+  const routeDecision = buildRouteDecision(mode, indexes, assets, queryPlan);
   const retrievalFallback = [
     routeDecision.status !== "ready" ? routeDecision.reason : "",
     scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
@@ -254,9 +254,11 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
   };
 }
 
-function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
+function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], assets: AssetRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
   const requestedDomain = isSupportedSportsDomain(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
-  const domainIndexes = indexes.filter((index) => index.domainIndexing?.enabled && (!requestedDomain || index.domainIndexing.groups.includes(requestedDomain)));
+  const scopedIndexIds = new Set(assets.map((asset) => asset.indexId));
+  const scopedIndexes = scopedIndexIds.size > 0 ? indexes.filter((index) => scopedIndexIds.has(index.id)) : indexes;
+  const domainIndexes = scopedIndexes.filter((index) => index.domainIndexing?.enabled && (!requestedDomain || index.domainIndexing.groups.includes(requestedDomain)));
   if (mode === "stat_qa") {
     return {
       id: "route",

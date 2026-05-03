@@ -33,7 +33,6 @@ export function useConsoleData() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const refreshPromise = useRef<Promise<void> | null>(null);
-  const initialSelectionHydrated = useRef(false);
 
   const runningJobCount = useMemo(
     () => jobs.filter((job) => job.status === "running" || job.status === "queued").length,
@@ -77,9 +76,7 @@ export function useConsoleData() {
         setAssets(nextAssets);
         setSelectedAssetId((current) => {
           if (current) return nextAssets.some((asset) => asset.id === current) ? current : null;
-          if (initialSelectionHydrated.current) return current;
-          initialSelectionHydrated.current = true;
-          return nextAssets.find((asset) => asset.indexId === selectedIndexId)?.id ?? null;
+          return null;
         });
       }
       if (nextJobs) setJobs(nextJobs);
@@ -101,7 +98,7 @@ export function useConsoleData() {
     } finally {
       refreshPromise.current = null;
     }
-  }, [selectedIndexId]);
+  }, []);
 
   useEffect(() => {
     void refresh();

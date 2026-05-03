@@ -91,6 +91,21 @@ export async function ensurePostgresStore() {
       model text not null,
       embedding_json jsonb not null
     );
+    create table if not exists app_knowledge_vectors (
+      id text primary key,
+      domain_group text not null,
+      provider text not null,
+      kind text not null,
+      entity_type text not null,
+      entity_name text not null,
+      competition text,
+      season text,
+      team text,
+      match_time text,
+      text text not null,
+      source_text text not null,
+      embedding_json jsonb not null
+    );
     create table if not exists app_schema_migrations (
       version text primary key,
       description text not null,
@@ -102,6 +117,8 @@ export async function ensurePostgresStore() {
     create index if not exists app_vectors_asset_id_idx on app_vectors(asset_id);
     create index if not exists app_visual_vectors_index_id_idx on app_visual_vectors(index_id);
     create index if not exists app_visual_vectors_asset_id_idx on app_visual_vectors(asset_id);
+    create index if not exists app_knowledge_vectors_domain_group_idx on app_knowledge_vectors(domain_group);
+    create index if not exists app_knowledge_vectors_entity_name_idx on app_knowledge_vectors(entity_name);
   `);
 
   if (vectorExtensionAvailable) {
@@ -113,6 +130,13 @@ export async function ensurePostgresStore() {
     }
     await db.query(`alter table app_vectors add column if not exists embedding vector(${dimension})`);
     await db.query("create index if not exists app_vectors_embedding_idx on app_vectors using hnsw (embedding vector_cosine_ops)").catch(() => undefined);
+    const currentKnowledgeVectorType = await getVectorColumnType(db, "app_knowledge_vectors", "embedding");
+    if (currentKnowledgeVectorType && currentKnowledgeVectorType !== `vector(${dimension})`) {
+      await db.query("drop index if exists app_knowledge_vectors_embedding_idx");
+      await db.query("alter table app_knowledge_vectors drop column embedding");
+    }
+    await db.query(`alter table app_knowledge_vectors add column if not exists embedding vector(${dimension})`);
+    await db.query("create index if not exists app_knowledge_vectors_embedding_idx on app_knowledge_vectors using hnsw (embedding vector_cosine_ops)").catch(() => undefined);
     const visualDimension = getExpectedVisualEmbeddingDimensions();
     const currentVisualType = await getVectorColumnType(db, "app_visual_vectors", "embedding");
     if (currentVisualType && currentVisualType !== `vector(${visualDimension})`) {
@@ -132,6 +156,7 @@ export async function ensurePostgresStore() {
     "003_visual_vectors",
     `Configure OpenCLIP visual embedding table with ${getExpectedVisualEmbeddingDimensions()} dimensions`
   );
+  await recordMigration("004_knowledge_vectors", `Configure sports knowledge vector table with ${getExpectedEmbeddingDimensions()} dimensions`);
   setPostgresInitialized(true);
   return true;
 }

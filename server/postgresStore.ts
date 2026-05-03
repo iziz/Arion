@@ -23,6 +23,11 @@ export {
 export { ensurePostgresStore } from "./postgres/schema";
 export { getPostgresStatus, resetPostgresStore } from "./postgres/status";
 export {
+  getKnowledgeVectorCount,
+  rebuildKnowledgeVectorStore,
+  searchKnowledgeVectors
+} from "./postgres/knowledgeVectorRepository";
+export {
   getVectorCount,
   getVisualVectorCount,
   rebuildVectorStore,

@@ -198,8 +198,6 @@ export const americanFootballRules = {
       "national football league",
       "quarterback",
       "qb",
-      "chiefs",
-      "mahomes",
       "pocket",
       "scramble",
       "downfield",

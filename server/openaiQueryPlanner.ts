@@ -1,5 +1,5 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
-import { planDomainQuery } from "./queryPlanner";
+import { isStatLeaderboardQuery, planDomainQuery } from "./queryPlanner";
 import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./sportsKnowledge";
 
 type OpenAiPlan = {
@@ -19,7 +19,21 @@ type OpenAiPlan = {
 
 const planCache = new Map<string, { expiresAt: number; plan: DomainQueryPlan }>();
 const allowedQuestionTypes = new Set(["moment_retrieval", "stat_qa"]);
-const allowedMetrics = new Set(["goals", "assists", "appearances", "minutes", "cards"]);
+const allowedMetrics = new Set([
+  "goals",
+  "assists",
+  "appearances",
+  "minutes",
+  "cards",
+  "points",
+  "touchdowns",
+  "passing_yards",
+  "passing_touchdowns",
+  "rushing_yards",
+  "receiving_yards",
+  "sacks",
+  "interceptions"
+]);
 const allowedRoles = new Set(["receiver", "passer", "shooter", "any"]);
 const allowedEventTypes = new Set(["pass_receive", "shot", "dribble", "pressure", "scramble", "pocket_escape", "throw_on_run"]);
 const allowedPassTypes = new Set(["through_ball", "cross", "cutback"]);
@@ -94,7 +108,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               query,
               outputShape: {
                 questionType: "moment_retrieval | stat_qa",
-                metric: "goals | assists | appearances | minutes | cards | null",
+                metric: "goals | assists | appearances | minutes | cards | points | touchdowns | passing_yards | passing_touchdowns | rushing_yards | receiving_yards | sacks | interceptions | null",
                 competition: "string | null",
                 season: "string | null",
                 player: "canonical player name | null",
@@ -138,8 +152,9 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     role: allowedValue(llm.role, allowedRoles) as DomainSearchFilters["role"] | undefined
   });
   const metric = (allowedValue(llm.metric, allowedMetrics) as DomainQueryPlan["intent"]["metric"] | undefined) ?? base.intent.metric ?? null;
+  const wantsLeaderboardGrounding = Boolean(metric && isStatLeaderboardQuery(base.originalQuery) && !llmFilters.player && !base.domainFilters.player);
   const questionType =
-    allowedQuestionTypes.has(String(llm.questionType)) && (llm.questionType !== "stat_qa" || metric)
+    wantsLeaderboardGrounding ? "stat_qa" : allowedQuestionTypes.has(String(llm.questionType)) && (llm.questionType !== "stat_qa" || metric)
       ? (llm.questionType as DomainQueryPlan["intent"]["questionType"])
       : base.intent.questionType;
   const rawDomainFilters = compactFilters(

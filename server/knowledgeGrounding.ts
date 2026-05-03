@@ -1,4 +1,5 @@
-import type { AssetRecord, DomainQueryPlan, DomainSearchFilters, KnowledgeEvidence } from "../shared/types";
+import type { AssetRecord, DomainQueryPlan, DomainSearchFilters, KnowledgeEvidence, PlayerIdentity } from "../shared/types";
+import { trustedDomainEvents } from "./evidenceTrust";
 import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayers } from "./sportsKnowledge";
 import { isPlayerInventoryQuery } from "./queryPlanner";
 
@@ -32,7 +33,7 @@ function groundFacts(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;
   const query = normalize(queryPlan.originalQuery);
-  const wantsTeamStats = /table|standing|offense|defense|attendance|nationalit|goals|points|팀|순위|득점|실점|관중|국적/.test(query);
+  const wantsTeamStats = /table|standing|offense|defense|attendance|nationalit|goals|points|touchdowns?|passing|rushing|receiving|sacks?|interceptions?|팀|순위|득점|실점|관중|국적|터치다운|야드/.test(query);
   if (!requestedCompetition && !requestedSeason && !wantsTeamStats) return [];
 
   return (snapshot.facts ?? [])
@@ -167,15 +168,29 @@ function groundVideoScope(queryPlan: DomainQueryPlan, assets: AssetRecord[]): Kn
   const evidence: KnowledgeEvidence[] = [];
   for (const asset of assets) {
     for (const segment of asset.timeline) {
+      const players = new Map<string, { name: string; confidence: number; evidence: string[] }>();
+      const addPlayer = (name: string | null | undefined, confidence: number, playerEvidence: string[]) => {
+        if (!name) return;
+        const existing = players.get(name);
+        if (!existing || confidence > existing.confidence) players.set(name, { name, confidence, evidence: playerEvidence });
+      };
       for (const player of segment.domain?.scope?.players ?? []) {
+        addPlayer(player.value, player.confidence, player.evidence);
+      }
+      for (const event of trustedDomainEvents(segment)) {
+        addIdentity(players, event.football?.receivingPlayer.identity);
+        addIdentity(players, event.football?.passingPlayer.identity);
+        addIdentity(players, event.americanFootball?.quarterback.identity);
+      }
+      for (const player of players.values()) {
         evidence.push({
-          id: `video:${asset.id}:${segment.id}:player:${slug(player.value)}`,
+          id: `video:${asset.id}:${segment.id}:player:${slug(player.name)}`,
           kind: "video_scope",
           entityType: "player",
-          entityName: player.value,
+          entityName: player.name,
           source: "video_index",
           confidence: player.confidence,
-          evidenceText: `Video index links ${player.value} to ${asset.title} at ${formatTime(segment.start)}-${formatTime(segment.end)}.`,
+          evidenceText: `Video index links ${player.name} to ${asset.title} at ${formatTime(segment.start)}-${formatTime(segment.end)}.`,
           assetId: asset.id,
           segmentId: segment.id,
           matchTime: `${formatTime(segment.start)}-${formatTime(segment.end)}`
@@ -184,6 +199,18 @@ function groundVideoScope(queryPlan: DomainQueryPlan, assets: AssetRecord[]): Kn
     }
   }
   return dedupeEvidence(evidence);
+}
+
+function addIdentity(players: Map<string, { name: string; confidence: number; evidence: string[] }>, identity: PlayerIdentity | null | undefined) {
+  if (!identity?.name) return;
+  const existing = players.get(identity.name);
+  if (!existing || identity.confidence > existing.confidence) {
+    players.set(identity.name, {
+      name: identity.name,
+      confidence: identity.confidence,
+      evidence: identity.evidence
+    });
+  }
 }
 
 function rankKnowledgeEvidence(queryPlan: DomainQueryPlan, evidence: KnowledgeEvidence[]) {
@@ -206,7 +233,7 @@ function scoreKnowledgeEvidence(item: KnowledgeEvidence, queryText: string, term
   if (item.entityName && queryText.includes(normalize(item.entityName))) score += 3;
   if (item.kind === "match_activity" && /(minute|time|activity|event|시간|분|활동|기록|이벤트)/.test(queryText)) score += 2;
   if ((item.kind === "roster" || item.kind === "player_profile") && /(roster|lineup|squad|player|선수|명단|출전|스쿼드)/.test(queryText)) score += 2;
-  if ((item.kind === "team_stat" || item.kind === "attendance") && /(table|standing|stat|points|goals|attendance|순위|통계|승점|득점|실점|관중)/.test(queryText)) score += 2;
+  if ((item.kind === "team_stat" || item.kind === "attendance") && /(table|standing|stat|points|goals|touchdowns?|passing|rushing|receiving|sacks?|interceptions?|attendance|순위|통계|승점|득점|실점|관중|터치다운|야드)/.test(queryText)) score += 2;
   score += terms.reduce((sum, term) => sum + (evidenceText.includes(term) ? 0.35 : 0), 0);
   if (item.source === "video_index") score += 0.4;
   return Number(score.toFixed(3));
@@ -278,6 +305,14 @@ function formatTime(seconds: number) {
 }
 
 function knowledgeSource(provider: string | undefined): KnowledgeEvidence["source"] {
-  if (provider === "football-data" || provider === "kaggle" || provider === "statbunker") return provider;
+  if (
+    provider === "football-data" ||
+    provider === "football-data-uk" ||
+    provider === "kaggle" ||
+    provider === "statbunker" ||
+    provider === "statsbomb" ||
+    provider === "nflverse" ||
+    provider === "fbref"
+  ) return provider;
   return "sports_knowledge";
 }

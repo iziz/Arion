@@ -13,7 +13,8 @@ export function registerOrchestrationRoutes(app: Express) {
       explicitFilters: parseDomainFilters(req.query),
       indexId: req.query.indexId ? String(req.query.indexId) : undefined,
       tag: req.query.tag ? String(req.query.tag) : undefined,
-      modality: req.query.modality ? String(req.query.modality) : undefined
+      modality: req.query.modality ? String(req.query.modality) : undefined,
+      useKnowledgeLayer: req.query.useKnowledgeLayer !== "false"
     });
     const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
     res.json(buildOrchestrationPlan(queryPlan, scopedAssets, indexes));

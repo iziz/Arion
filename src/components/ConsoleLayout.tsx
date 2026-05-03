@@ -13,7 +13,7 @@ import {
   UploadCloud,
   X
 } from "lucide-react";
-import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import type {
   AskResponse,
   AssetRecord,
@@ -26,12 +26,13 @@ import type {
   MetricsSummary,
   OrchestrationPlan,
   SearchResult,
+  SportsDomainGroup,
   SportsKnowledgeAnswer,
   SportsKnowledgeSnapshot
 } from "../../shared/types";
 import type { DatabaseStatus, ObservabilitySnapshot } from "../api";
 import type { ConsoleTab, DialogMode } from "../consoleTypes";
-import { formatDuration } from "../displayUtils";
+import { formatDuration, mediaPath } from "../displayUtils";
 import { buildEvidenceLedger, type SearchTrustFilters } from "../searchTrust";
 import {
   AssetDetailTabs,
@@ -57,18 +58,14 @@ import {
 } from "./ConsoleComponents";
 import {
   AdvancedSearchFilters,
-  AskOperationTrace,
-  OrchestrationPlanCard,
-  QueryPlanCard,
   ResultTrustSummary,
   SearchConversation,
-  SearchPresetChips,
+  SearchDomainSelector,
   SearchScopeSummary,
+  SearchWorkflowTrace,
   SportsAnswerCard,
   type SearchConversationTurn
 } from "./SearchPanels";
-
-type SearchPreset = "haaland-through-ball" | "son-goals" | "strict-evidence" | "clear";
 
 export type ConsoleLayoutProps = {
   activeTab: ConsoleTab;
@@ -97,26 +94,24 @@ export type ConsoleLayoutProps = {
   playerRef: RefObject<HTMLVideoElement | null>;
   retryAssetStage: (assetId: string, stage: string) => Promise<void>;
   selectSegment: (assetId: string, segmentId: string, at: number) => void;
-  registerKnowledgePlayer: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   deleteKnowledgePlayer: (id: string) => Promise<void>;
-  importFootballData: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  importStatbunker: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   query: string;
   setQuery: Dispatch<SetStateAction<string>>;
   searching: boolean;
   runSearch: (event: FormEvent) => Promise<void>;
-  applySearchPreset: (preset: SearchPreset) => void;
   filtersOpen: boolean;
   setFiltersOpen: Dispatch<SetStateAction<boolean>>;
   activeSearchFilterCount: number;
   searchTag: string;
   setSearchTag: Dispatch<SetStateAction<string>>;
-  searchModality: string;
-  setSearchModality: Dispatch<SetStateAction<string>>;
+  searchDomainGroup: SportsDomainGroup | "";
+  setSearchDomainGroup: (domainGroup: SportsDomainGroup | "") => void;
   domainFilters: DomainSearchFilters;
   setDomainFilters: Dispatch<SetStateAction<DomainSearchFilters>>;
   trustFilters: SearchTrustFilters;
   setTrustFilters: Dispatch<SetStateAction<SearchTrustFilters>>;
+  useKnowledgeLayer: boolean;
+  setUseKnowledgeLayer: Dispatch<SetStateAction<boolean>>;
   searchConversation: SearchConversationTurn[];
   buildAssetMomentUrl: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   askResponse: AskResponse | null;
@@ -140,6 +135,18 @@ export type ConsoleLayoutProps = {
   uploadAsset: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   message: string;
 };
+
+type SearchVideoPreview = {
+  asset: AssetRecord;
+  segment: AssetRecord["timeline"][number];
+};
+
+const sectionTechStacks = {
+  data: "React · Express · Multer · FFmpeg/ffprobe · Whisper · PaddleOCR · OpenCLIP · pgvector",
+  search: "Query planner · multilingual-e5 · OpenCLIP visual vectors · pgvector HNSW · hybrid lexical ranking",
+  knowledge: "Sports registry · Football-Data · StatBunker · StatsBomb · nflverse · knowledge vectors",
+  system: "TypeScript · Vite · Node.js/Express · PostgreSQL · OpenTelemetry · local queue · NDJSON logs"
+} as const;
 
 export function ConsoleLayout(props: ConsoleLayoutProps) {
   const {
@@ -169,26 +176,24 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     playerRef,
     retryAssetStage,
     selectSegment,
-    registerKnowledgePlayer,
     deleteKnowledgePlayer,
-    importFootballData,
-    importStatbunker,
     query,
     setQuery,
     searching,
     runSearch,
-    applySearchPreset,
     filtersOpen,
     setFiltersOpen,
     activeSearchFilterCount,
     searchTag,
     setSearchTag,
-    searchModality,
-    setSearchModality,
+    searchDomainGroup,
+    setSearchDomainGroup,
     domainFilters,
     setDomainFilters,
     trustFilters,
     setTrustFilters,
+    useKnowledgeLayer,
+    setUseKnowledgeLayer,
     searchConversation,
     buildAssetMomentUrl,
     askResponse,
@@ -212,6 +217,27 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     uploadAsset,
     message
   } = props;
+  const [searchVideoPreview, setSearchVideoPreview] = useState<SearchVideoPreview | null>(null);
+  const knowledgeDomains = sportsKnowledge?.domains ?? defaultKnowledgeDomains();
+  const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<SportsDomainGroup>("sports.football");
+  const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? "sports.football";
+
+  useEffect(() => {
+    if (searching) setSearchVideoPreview(null);
+  }, [searching]);
+
+  useEffect(() => {
+    if (knowledgeDomains.some((domain) => domain.id === selectedKnowledgeDomain)) return;
+    setSelectedKnowledgeDomain(knowledgeDomains[0]?.id ?? "sports.football");
+  }, [knowledgeDomains, selectedKnowledgeDomain]);
+
+  function openSearchVideo(asset: AssetRecord, segment: AssetRecord["timeline"][number]) {
+    setSearchVideoPreview({ asset, segment });
+  }
+
+  function closeDialog() {
+    setDialogMode(null);
+  }
 
   return (
     <main className="shell">
@@ -221,14 +247,12 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         </div>
         <section className="context-bar" aria-label="Current context">
           <div className="context-combined">
-            <span>Asset · Index</span>
-            <strong>
-              {[selectedAsset?.title ?? "No asset selected", selectedIndex?.name ?? "No index"].join(" · ")}
-            </strong>
+            <span>Dataset</span>
+            <strong>{metrics.indexedAssets}/{metrics.assets} indexed · {indexes.length} groups</strong>
           </div>
           <div>
-            <span>Status</span>
-            <strong>{selectedAsset ? selectedAsset.status : "idle"}</strong>
+            <span>Data group</span>
+            <strong>{selectedIndex?.name ?? "No group"}</strong>
           </div>
           <div>
             <span>Queue</span>
@@ -319,6 +343,26 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           meta={`${sportsKnowledge?.players.length ?? 0} players`}
           onClick={() => setActiveTab("knowledge")}
         />
+        {activeTab === "knowledge" && (
+          <section className="asset-nav knowledge-nav" aria-label="Knowledge domain navigation">
+            <div className="asset-nav-header">
+              <span>도메인</span>
+            </div>
+            <div className="asset-nav-list">
+              {knowledgeDomains.map((domain) => (
+                <button
+                  key={domain.id}
+                  type="button"
+                  className={`asset-nav-item ${effectiveKnowledgeDomain === domain.id ? "active" : ""}`}
+                  onClick={() => setSelectedKnowledgeDomain(domain.id)}
+                >
+                  <span>{domain.label}</span>
+                  <strong>{domain.players}/{domain.teams}</strong>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         <TabButton
           active={activeTab === "system"}
           icon={<Activity size={17} />}
@@ -333,7 +377,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Data</p>
-            <h2>에셋</h2>
+            <h2 className="section-stack-title">{sectionTechStacks.data}</h2>
           </div>
         </div>
         <AssetGroupSummary
@@ -359,7 +403,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 <section className="asset-detail-view">
                   <div className="asset-overview-layout">
                     <div className="asset-player-column">
-                      <video ref={playerRef} className="player" src={`/media/${selectedAsset.storedName}`} controls />
+                      <video key={selectedAsset.id} ref={playerRef} className="player" src={`/media/${selectedAsset.storedName}`} controls preload="metadata" />
                     </div>
                     <aside className="asset-metadata-panel" aria-label="Video technical details">
                       <InfoTile label="Duration" value={formatDuration(selectedAsset.duration ?? 0)} />
@@ -455,16 +499,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Knowledge</p>
-            <h2>지식 베이스</h2>
+            <h2 className="section-stack-title">{sectionTechStacks.knowledge}</h2>
           </div>
         </div>
         <SportsKnowledgePanel
           sportsKnowledge={sportsKnowledge}
-          onSubmit={registerKnowledgePlayer}
+          selectedDomain={effectiveKnowledgeDomain}
           onDelete={deleteKnowledgePlayer}
-          onImport={importFootballData}
-          onStatbunkerImport={importStatbunker}
-          importing={busy}
         />
       </section>
       )}
@@ -474,7 +515,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Search</p>
-            <h2>검색</h2>
+            <h2 className="section-stack-title">{sectionTechStacks.search}</h2>
           </div>
         </div>
       <section className="tools">
@@ -490,31 +531,26 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
               {searching ? "Thinking..." : "Ask"}
             </button>
           </form>
-          <div className="ask-toolbar">
-            <SearchPresetChips onPreset={applySearchPreset} />
-            <button type="button" className={`filter-toggle ${filtersOpen ? "active" : ""}`} onClick={() => setFiltersOpen((open) => !open)}>
-              <SlidersHorizontal size={16} />
-              Filters
-              {activeSearchFilterCount > 0 && <span>{activeSearchFilterCount}</span>}
-            </button>
+          <div className="search-under-input">
+            <SearchDomainSelector value={searchDomainGroup} onChange={setSearchDomainGroup} />
+            <div className="search-option-actions">
+              <label className={`knowledge-layer-toggle ${useKnowledgeLayer ? "active" : ""}`}>
+                <input type="checkbox" checked={useKnowledgeLayer} onChange={(event) => setUseKnowledgeLayer(event.target.checked)} />
+                <span>Knowledge layer</span>
+              </label>
+              <button type="button" className={`filter-toggle ${filtersOpen ? "active" : ""}`} onClick={() => setFiltersOpen((open) => !open)}>
+                <SlidersHorizontal size={16} />
+                Filters
+                {activeSearchFilterCount > 0 && <span>{activeSearchFilterCount}</span>}
+              </button>
+            </div>
           </div>
-          <SearchScopeSummary
-            index={selectedIndex}
-            tag={searchTag}
-            modality={searchModality}
-            domainFilters={domainFilters}
-            trustFilters={trustFilters}
-          />
-          <SearchConversation turns={searchConversation} getMomentHref={buildAssetMomentUrl} />
-          {askResponse && <AskOperationTrace operation={askResponse.operation} />}
           <AdvancedSearchFilters
             open={filtersOpen}
-            selectedIndex={selectedIndex}
+            searchDomainGroup={searchDomainGroup}
             filterTags={filterTags}
             searchTag={searchTag}
             setSearchTag={setSearchTag}
-            searchModality={searchModality}
-            setSearchModality={setSearchModality}
             domainFilters={domainFilters}
             setDomainFilters={setDomainFilters}
             trustFilters={trustFilters}
@@ -522,16 +558,35 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             total={searchResults.length}
             visible={filteredSearchResults.length}
           />
+          <SearchScopeSummary
+            domainGroup={searchDomainGroup}
+            tag={searchTag}
+            domainFilters={domainFilters}
+            trustFilters={trustFilters}
+            useKnowledgeLayer={useKnowledgeLayer}
+          />
+          <SearchConversation
+            turns={searchConversation}
+            getMomentHref={buildAssetMomentUrl}
+            onOpenMoment={(asset, segment) => openSearchVideo(asset, segment)}
+          />
+          <SearchWorkflowTrace
+            operation={askResponse?.operation ?? null}
+            queryPlan={queryPlan}
+            orchestrationPlan={orchestrationPlan}
+            totalResults={searchResults.length}
+            visibleResults={filteredSearchResults.length}
+          />
           {sportsAnswer?.route !== "stat_qa" && (
             <ResultTrustSummary total={searchResults.length} visible={filteredSearchResults.length} trustFilters={trustFilters} />
           )}
           {sportsAnswer && <SportsAnswerCard answer={sportsAnswer} />}
-          {(queryPlan || orchestrationPlan) && (
-            <details className="search-diagnostics">
-              <summary>검색 진단</summary>
-              {queryPlan && <QueryPlanCard plan={queryPlan} />}
-              {orchestrationPlan && <OrchestrationPlanCard plan={orchestrationPlan} />}
-            </details>
+          {searchVideoPreview && (
+            <SearchVideoPreviewPanel
+              preview={searchVideoPreview}
+              onClose={() => setSearchVideoPreview(null)}
+              onOpenAsset={(assetId, segmentId, at) => selectSegment(assetId, segmentId, at)}
+            />
           )}
           <div className="result-list">
             {searching && (
@@ -566,12 +621,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 )}
                 {result.knowledgeEvidence.length > 0 && <KnowledgeEvidenceRow evidence={result.knowledgeEvidence} />}
                 {result.segments.slice(0, 3).map((segment) => (
-                  <a
+                  <button
                     key={segment.id}
-                    className="result-segment"
-                    href={buildAssetMomentUrl(result.asset.id, segment.id, segment.start)}
-                    target="_blank"
-                    rel="noreferrer"
+                    type="button"
+                    className={`result-segment ${
+                      searchVideoPreview?.asset.id === result.asset.id && searchVideoPreview.segment.id === segment.id ? "active" : ""
+                    }`}
+                    onClick={() => openSearchVideo(result.asset, segment)}
                   >
                     <SearchSceneEvidence
                       segment={segment}
@@ -579,9 +635,17 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                       reasons={result.matchReasons.filter((reason) => reason.segmentId === segment.id)}
                       verification={result.verification.filter((check) => check.segmentId === segment.id)}
                     />
-                  </a>
+                  </button>
                 ))}
-                {result.clips.length > 0 && <ClipStrip clips={result.clips} getHref={(clip) => buildAssetMomentUrl(clip.assetId, clip.segmentId, clip.start)} />}
+                {result.clips.length > 0 && (
+                  <ClipStrip
+                    clips={result.clips}
+                    onOpen={async (clip) => {
+                      const segment = result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId);
+                      if (segment) openSearchVideo(result.asset, segment);
+                    }}
+                  />
+                )}
               </article>
             ))}
             {!searching && !sportsAnswer && (query || Object.values(domainFilters).some(Boolean)) && searchResults.length === 0 && (
@@ -602,7 +666,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">System</p>
-            <h2>시스템</h2>
+            <h2 className="section-stack-title">{sectionTechStacks.system}</h2>
           </div>
         </div>
         <section className="metrics ops-metrics" aria-label="Service snapshot">
@@ -743,16 +807,20 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       )}
 
       {dialogMode && (
-        <section className="modal-backdrop" role="presentation" onMouseDown={() => setDialogMode(null)}>
+        <section className="modal-backdrop" role="presentation" onMouseDown={closeDialog}>
           <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="asset-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="section-label">{dialogMode === "asset" ? "Upload" : "Asset Group"}</p>
                 <h2 id="asset-dialog-title">
-                  {dialogMode === "index" ? "에셋그룹 만들기" : dialogMode === "edit-index" ? "에셋그룹 수정" : "영상 추가"}
+                  {dialogMode === "index"
+                    ? "에셋그룹 만들기"
+                    : dialogMode === "edit-index"
+                      ? "에셋그룹 수정"
+                      : "영상 추가"}
                 </h2>
               </div>
-              <button type="button" className="small-button icon-only" aria-label="닫기" onClick={() => setDialogMode(null)}>
+              <button type="button" className="small-button icon-only" aria-label="닫기" onClick={closeDialog}>
                 <X size={16} />
               </button>
             </div>
@@ -779,5 +847,89 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         </section>
       )}
     </main>
+  );
+}
+
+function defaultKnowledgeDomains(): NonNullable<SportsKnowledgeSnapshot["domains"]> {
+  return [
+    { id: "sports.football", label: "Football", sport: "football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 },
+    { id: "sports.american_football", label: "American football", sport: "american_football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 }
+  ];
+}
+
+function SearchVideoPreviewPanel({
+  preview,
+  onClose,
+  onOpenAsset
+}: {
+  preview: SearchVideoPreview;
+  onClose: () => void;
+  onOpenAsset: (assetId: string, segmentId: string, at: number) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const source = mediaPath(preview.asset.storedName);
+  const start = Math.max(0, preview.segment.start);
+  const end = Math.max(start, preview.segment.end);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const seekToMoment = () => {
+      video.currentTime = start;
+    };
+    if (video.readyState >= 1) seekToMoment();
+    video.addEventListener("loadedmetadata", seekToMoment, { once: true });
+    void video.play().catch(() => undefined);
+    return () => video.removeEventListener("loadedmetadata", seekToMoment);
+  }, [preview.asset.id, preview.segment.id, start]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <section className="search-video-backdrop" role="presentation" onMouseDown={onClose}>
+      <div
+        className="search-video-preview"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search result video player"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="search-video-header">
+          <div>
+            <p className="section-label">Video Preview</p>
+            <h3>{preview.asset.title}</h3>
+            <span>
+              {formatDuration(start)}-{formatDuration(end)} · {preview.segment.label}
+            </span>
+          </div>
+          <button type="button" className="small-button icon-only" aria-label="닫기" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        {source ? (
+          <video ref={videoRef} className="search-video-player" src={`${source}#t=${start.toFixed(2)}`} controls playsInline preload="metadata" />
+        ) : (
+          <EmptyState text="Video media is not available for this result." />
+        )}
+        <div className="search-video-actions">
+          <button
+            type="button"
+            className="small-button"
+            onClick={() => {
+              onOpenAsset(preview.asset.id, preview.segment.id, start);
+              onClose();
+            }}
+          >
+            데이터 화면에서 열기
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }

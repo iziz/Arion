@@ -4,7 +4,13 @@ import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { answerSportsKnowledgeQuestion } from "../sportsKnowledgeQa";
 import { checkVlmWorkerHealth } from "../vlmWorkerClient";
-import { executeSearchPipeline, getAskOperationResponse, parseAskRequest, startAskOperation } from "../workflows/askWorkflow";
+import { executeSearchPipeline, getAskOperationResponse, parseAskRequest, scopeAssetsForQuery, startAskOperation } from "../workflows/askWorkflow";
+import {
+  applyScopeDomainDefaults,
+  buildScopedMetadataMomentPlan,
+  buildStatSeededMomentPlan,
+  shouldContinueWithMomentRetrieval
+} from "../workflows/ask/statMomentSeed";
 import { listAssets, listIndexes } from "../store";
 
 export function registerAskRoutes(app: Express) {
@@ -21,14 +27,49 @@ export function registerAskRoutes(app: Express) {
 
   app.get("/api/search", async (req, res) => {
     const query = String(req.query.q ?? "");
-    const explicitFilters = parseDomainFilters(req.query);
-    const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
     const [assets, indexes] = await Promise.all([listAssets(), listIndexes()]);
-    if (queryPlan.intent.questionType === "stat_qa") {
+    const domainGroup = domainGroupValue(req.query.domainGroup);
+    const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
+    const useKnowledgeLayer = req.query.useKnowledgeLayer !== "false";
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
+    if (useKnowledgeLayer && queryPlan.intent.questionType === "stat_qa") {
+      const sportsAnswer = answerSportsKnowledgeQuestion(queryPlan);
+      const scopedAssets = scopeAssetsForQuery(assets, {
+        query,
+        explicitFilters,
+        indexId,
+        domainGroup,
+        tag: req.query.tag ? String(req.query.tag) : undefined,
+        modality: req.query.modality ? String(req.query.modality) : undefined,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        useKnowledgeLayer
+      }, indexes);
+      const retrievalPlan = shouldContinueWithMomentRetrieval(queryPlan, sportsAnswer)
+        ? buildStatSeededMomentPlan(queryPlan, sportsAnswer)
+        : buildScopedMetadataMomentPlan(queryPlan, sportsAnswer, scopedAssets, domainGroup);
+      if (retrievalPlan) {
+        res.json(
+          await executeSearchPipeline({
+            query,
+            explicitFilters,
+            queryPlan: retrievalPlan,
+            assets,
+            indexes,
+            indexId,
+            domainGroup,
+            tag: req.query.tag ? String(req.query.tag) : undefined,
+            modality: req.query.modality ? String(req.query.modality) : undefined,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+            useKnowledgeLayer
+          })
+        );
+        return;
+      }
       res.status(409).json({
         error: "This query asks for aggregate sports statistics. Use /api/knowledge/sports/answer instead of /api/search.",
         route: "stat_qa",
-        answer: answerSportsKnowledgeQuestion(queryPlan)
+        answer: sportsAnswer
       });
       return;
     }
@@ -39,10 +80,12 @@ export function registerAskRoutes(app: Express) {
         queryPlan,
         assets,
         indexes,
-        indexId: req.query.indexId ? String(req.query.indexId) : undefined,
+        indexId,
+        domainGroup,
         tag: req.query.tag ? String(req.query.tag) : undefined,
         modality: req.query.modality ? String(req.query.modality) : undefined,
-        limit: req.query.limit ? Number(req.query.limit) : undefined
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        useKnowledgeLayer
       })
     );
   });
@@ -53,11 +96,23 @@ export function registerAskRoutes(app: Express) {
   });
 
   app.get("/api/search/plan", async (req, res) => {
-    res.json(await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query)));
+    const indexes = await listIndexes();
+    const domainGroup = domainGroupValue(req.query.domainGroup);
+    const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    res.json(await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters));
   });
 
   app.get("/api/knowledge/sports/answer", async (req, res) => {
-    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
+    const indexes = await listIndexes();
+    const domainGroup = domainGroupValue(req.query.domainGroup);
+    const indexId = req.query.indexId ? String(req.query.indexId) : undefined;
+    const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId, domainGroup }, indexes);
+    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters);
     res.json(answerSportsKnowledgeQuestion(queryPlan));
   });
+}
+
+function domainGroupValue(value: unknown) {
+  return value === "sports.football" || value === "sports.american_football" ? value : undefined;
 }

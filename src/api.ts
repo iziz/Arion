@@ -56,6 +56,17 @@ export type StatbunkerImportResult = {
   snapshot: SportsKnowledgeSnapshot;
 };
 
+export type NflverseImportResult = {
+  source: "nflverse";
+  seasons: number[];
+  teams: number;
+  players: number;
+  matchActivities: number;
+  facts: number;
+  warnings: string[];
+  snapshot: SportsKnowledgeSnapshot;
+};
+
 export type DomainVlmBulkRefineResult = {
   indexId: string;
   queued: number;

@@ -86,7 +86,19 @@ export function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearc
       asset.summary,
       asset.intelligence.asr.transcript,
       asset.intelligence.ocr.tokens.join(" "),
-      asset.timeline.map((segment) => segmentSearchText(segment)).join(" ")
+      asset.timeline.map((segment) => segmentSearchText(segment)).join(" "),
+      asset.timeline
+        .flatMap((segment) =>
+          trustedDomainEvents(segment).flatMap((event) => [
+            event.caption,
+            ...event.labels,
+            event.football?.receivingPlayer.identity?.name,
+            event.football?.passingPlayer.identity?.name,
+            event.americanFootball?.quarterback.identity?.name
+          ])
+        )
+        .filter(Boolean)
+        .join(" ")
     ].join(" ")
   );
   return terms.every((term) => haystack.includes(normalizeSearchValue(term)));
@@ -110,7 +122,10 @@ export function matchesSegmentDomainFilters(asset: AssetRecord, segment: Timelin
         ...event.labels,
         ...event.evidence.asr,
         ...event.evidence.ocr,
-        ...event.evidence.metadata
+        ...event.evidence.metadata,
+        event.football?.receivingPlayer.identity?.name,
+        event.football?.passingPlayer.identity?.name,
+        event.americanFootball?.quarterback.identity?.name
       ])
     ].join(" ")
   );
@@ -197,9 +212,27 @@ function missingScopeCanStaySoft(segment: TimelineSegment, field: "competition" 
   const scopeValue = field === "competition" ? segment.domain?.scope?.competition : segment.domain?.scope?.season;
   if (scopeValue) return false;
   if (!filters.player || !textAllowsFilter(fullSegmentText, filters.player)) return false;
+  if (hasTrustedPlayerIdentity(segment, filters.player)) return true;
   const hasEventConstraint = Boolean(filters.eventType || filters.passType || filters.fieldZone || filters.role);
   if (!hasEventConstraint) return false;
   return trustedDomainEvents(segment).length > 0 || (isTrustedVisionEvidence(segment.sceneData?.vision) && Boolean(segment.sceneData?.vision?.eventClassification));
+}
+
+function hasTrustedPlayerIdentity(segment: TimelineSegment, player: string) {
+  const expected = normalizeSearchValue(player);
+  if (!expected) return false;
+  const candidates = [
+    ...(segment.domain?.scope?.players.map((item) => item.value) ?? []),
+    ...trustedDomainEvents(segment).flatMap((event) => [
+      event.football?.receivingPlayer.identity?.name,
+      event.football?.passingPlayer.identity?.name,
+      event.americanFootball?.quarterback.identity?.name
+    ])
+  ].filter(Boolean) as string[];
+  return candidates.some((candidate) => {
+    const normalized = normalizeSearchValue(candidate);
+    return normalized.includes(expected) || expected.includes(normalized);
+  });
 }
 
 function splitFilterValues(value?: string) {
@@ -253,7 +286,7 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
 
   if (filters.player) {
     const identities = events
-      .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity])
+      .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity, event.americanFootball?.quarterback.identity])
       .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity));
     const scopedPlayers = segment.domain?.scope?.players ?? [];
     const player = [...identities, ...scopedPlayers].find((candidate) => {
@@ -514,10 +547,13 @@ export function buildSearchMatchReasons(
   if (firstEvent) {
     const receiverIdentity = firstEvent.football?.receivingPlayer.identity;
     const passerIdentity = firstEvent.football?.passingPlayer.identity;
+    const quarterbackIdentity = firstEvent.americanFootball?.quarterback.identity;
     if (receiverIdentity) {
       reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Receiver ID", value: `${receiverIdentity.name} (${receiverIdentity.source})`, confidence: receiverIdentity.confidence });
     } else if (passerIdentity) {
       reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Player ID", value: `${passerIdentity.name} (${passerIdentity.source})`, confidence: passerIdentity.confidence });
+    } else if (quarterbackIdentity) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Quarterback ID", value: `${quarterbackIdentity.name} (${quarterbackIdentity.source})`, confidence: quarterbackIdentity.confidence });
     }
     for (const heuristic of firstEvent.evidence.heuristics.slice(0, 2)) {
       reasons.push({ segmentId: segment.id, kind: "evidence", label: "Evidence", value: heuristic, confidence: firstEvent.confidence });

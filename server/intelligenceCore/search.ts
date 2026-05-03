@@ -1,9 +1,9 @@
-import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, SearchMatchReason, SearchResult, TimelineSegment } from "../../shared/types";
+import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, SearchMatchReason, SearchResult, TimelineSegment } from "../../shared/types";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
 import { isPlayerInventoryQuery } from "../queryPlanner";
-import { matchKnowledgePlayers } from "../sportsKnowledge";
+import { matchKnowledgePlayer, matchKnowledgePlayers } from "../sportsKnowledge";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
 import { cosineSimilarity, extractKeywords, normalizeSearchValue, unique, vectorize } from "./textUtils";
 import { buildSearchMatchReasons, buildVerificationChecks, clipFromSegment, formatDomainFilters, hasActiveDomainFilters, matchesAssetDomainText, matchesSegmentDomainFilters, recencyBoost, scoreDomainFilterMatch, scoreSources, scoreText, scoreVlmQuality } from "./evidence";
@@ -23,6 +23,7 @@ export function searchAssets(
     domainFilters?: DomainSearchFilters;
     queryPlan?: DomainQueryPlan;
     knowledgeEvidence?: KnowledgeEvidence[];
+    useKnowledgeLayer?: boolean;
   } = {}
 ): SearchResult[] {
   if (isPlayerInventoryQuery(query)) {
@@ -183,17 +184,19 @@ function searchPlayerInventoryResults(
 ): SearchResult[] {
   const searchOptions = options ?? {};
   const limit = searchOptions.limit ?? 10;
+  const useKnowledgeLayer = searchOptions.useKnowledgeLayer !== false;
+  const inventoryFilters = inventoryDomainFilters(searchOptions.domainFilters);
   return assets
     .filter((asset) => asset.status === "indexed" || asset.timeline.length > 0)
     .filter((asset) => !searchOptions.indexId || asset.indexId === searchOptions.indexId)
     .filter((asset) => !searchOptions.tag || asset.tags.includes(searchOptions.tag))
-    .filter((asset) => matchesAssetDomainText(asset, searchOptions.domainFilters))
+    .filter((asset) => matchesAssetDomainText(asset, inventoryFilters))
     .map((asset) => {
-      const assetPlayers = collectAssetPlayerMentions(asset);
+      const assetPlayers = collectAssetPlayerMentions(asset, useKnowledgeLayer);
       const segmentCandidates = asset.timeline
         .filter((segment) => !searchOptions.modality || segment.modalities.includes(searchOptions.modality as TimelineSegment["modalities"][number]))
-        .filter((segment) => matchesSegmentDomainFilters(asset, segment, searchOptions.domainFilters))
-        .map((segment) => ({ segment, players: collectPlayerMentions(asset, segment) }))
+        .filter((segment) => matchesSegmentDomainFilters(asset, segment, inventoryFilters))
+        .map((segment) => ({ segment, players: collectPlayerMentions(asset, segment, useKnowledgeLayer) }))
         .filter((item) => item.players.length > 0)
         .sort((a, b) => averageConfidence(b.players) - averageConfidence(a.players) || b.players.length - a.players.length);
       const segmentPlayerNames = new Set(segmentCandidates.flatMap((item) => item.players.map((player) => player.value)));
@@ -201,7 +204,7 @@ function searchPlayerInventoryResults(
       const firstSegment = asset.timeline.find(
         (segment) =>
           (!searchOptions.modality || segment.modalities.includes(searchOptions.modality as TimelineSegment["modalities"][number])) &&
-          matchesSegmentDomainFilters(asset, segment, searchOptions.domainFilters)
+          matchesSegmentDomainFilters(asset, segment, inventoryFilters)
       );
       if (firstSegment && assetOnlyPlayers.length > 0) {
         segmentCandidates.push({ segment: firstSegment, players: assetOnlyPlayers });
@@ -212,7 +215,7 @@ function searchPlayerInventoryResults(
       const selectedDetails = selectedSegments.map((item) => {
         const segment = withSceneData(asset, item.segment);
         const matchReasons = buildPlayerInventoryReasons(segment.id, item.players);
-        const verification = buildVerificationChecks(asset, item.segment, searchOptions.domainFilters);
+        const verification = buildVerificationChecks(asset, item.segment, inventoryFilters);
         return {
           segment,
           matchReasons,
@@ -262,8 +265,33 @@ function searchPlayerInventoryResults(
     .slice(0, limit);
 }
 
-function collectPlayerMentions(_asset: AssetRecord, segment: TimelineSegment): DomainScopeValue[] {
+function inventoryDomainFilters(filters?: DomainSearchFilters): DomainSearchFilters | undefined {
+  if (!filters) return filters;
+  const base = filters.role === "any" ? { ...filters, role: undefined } : filters;
+  const hasSpecificRole = Boolean(base.role);
+  if (base.player || base.eventType || base.passType || base.fieldZone || hasSpecificRole) return base;
+  const next = { ...base };
+  delete next.competition;
+  delete next.season;
+  return next;
+}
+
+function collectPlayerMentions(_asset: AssetRecord, segment: TimelineSegment, useKnowledgeLayer: boolean): DomainScopeValue[] {
   const mentions = new Map<string, DomainScopeValue>();
+  const addMention = (value: DomainScopeValue | null | undefined) => {
+    if (!value?.value) return;
+    const mention = useKnowledgeLayer ? canonicalizeScopeValue(value) : value;
+    const existing = mentions.get(mention.value);
+    if (!existing || mention.confidence > existing.confidence) mentions.set(mention.value, mention);
+  };
+  for (const player of segment.domain?.scope?.players ?? []) {
+    addMention(player);
+  }
+  for (const event of trustedDomainEvents(segment)) {
+    addMention(identityToScopeValue(event.football?.receivingPlayer.identity));
+    addMention(identityToScopeValue(event.football?.passingPlayer.identity));
+    addMention(identityToScopeValue(event.americanFootball?.quarterback.identity));
+  }
   const text = [
     segment.transcript,
     segment.sceneData?.text.speech,
@@ -273,21 +301,43 @@ function collectPlayerMentions(_asset: AssetRecord, segment: TimelineSegment): D
   ]
     .filter(Boolean)
     .join(" ");
-  for (const match of matchKnowledgePlayers(text)) {
-    const value: DomainScopeValue = {
-      value: match.value.canonical,
-      confidence: match.confidence,
-      source: match.source,
-      evidence: match.evidence
-    };
-    const existing = mentions.get(value.value);
-    if (!existing || value.confidence > existing.confidence) mentions.set(value.value, value);
+  if (useKnowledgeLayer) {
+    for (const match of matchKnowledgePlayers(text)) {
+      addMention({
+        value: match.value.canonical,
+        confidence: match.confidence,
+        source: match.source,
+        evidence: match.evidence
+      });
+    }
   }
 
   return Array.from(mentions.values()).sort((a, b) => b.confidence - a.confidence || a.value.localeCompare(b.value));
 }
 
-function collectAssetPlayerMentions(asset: AssetRecord): DomainScopeValue[] {
+function identityToScopeValue(identity: PlayerIdentity | null | undefined): DomainScopeValue | null {
+  if (!identity?.name) return null;
+  return {
+    value: identity.name,
+    confidence: identity.confidence,
+    source: identity.source === "query" ? "metadata" : identity.source,
+    evidence: identity.evidence
+  };
+}
+
+function canonicalizeScopeValue(value: DomainScopeValue): DomainScopeValue {
+  const match = matchKnowledgePlayer(value.value);
+  if (!match || match.value.canonical === value.value) return value;
+  return {
+    ...value,
+    value: match.value.canonical,
+    confidence: Math.max(value.confidence, match.confidence),
+    evidence: [...value.evidence, ...match.evidence]
+  };
+}
+
+function collectAssetPlayerMentions(asset: AssetRecord, useKnowledgeLayer: boolean): DomainScopeValue[] {
+  if (!useKnowledgeLayer) return [];
   const text = [asset.title, asset.originalName, asset.description, asset.tags.join(" ")].filter(Boolean).join(" ");
   return matchKnowledgePlayers(text)
     .map((match) => ({

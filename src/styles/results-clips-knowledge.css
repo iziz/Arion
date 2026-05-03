@@ -64,6 +64,11 @@
   background: #f5f8ff;
 }
 
+.knowledge-evidence-row em.football-data-uk {
+  border-color: #d8e4cf;
+  background: #f6fbf0;
+}
+
 .knowledge-evidence-row em.kaggle {
   border-color: #c8e4f2;
   background: #f2fbff;
@@ -72,6 +77,17 @@
 .knowledge-evidence-row em.statbunker {
   border-color: #e0dac8;
   background: #fffaf0;
+}
+
+.knowledge-evidence-row em.nflverse {
+  border-color: #cce3d7;
+  background: #f1faf5;
+}
+
+.knowledge-evidence-row em.statsbomb,
+.knowledge-evidence-row em.fbref {
+  border-color: #d5d4ef;
+  background: #f7f6ff;
 }
 
 .search-loading-card {
@@ -610,14 +626,131 @@
   gap: 16px;
 }
 
+.knowledge-domain-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+  border: 1px solid #d7e1dc;
+  border-radius: 14px;
+  background: #fbfdfc;
+  padding: 14px;
+}
+
+.knowledge-domain-summary h2 {
+  margin: 0;
+  color: #12322b;
+  font-size: 24px;
+  font-weight: 950;
+}
+
+.knowledge-domain-summary p {
+  margin: 4px 0 0;
+  color: #5b6f68;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.knowledge-domain-metrics,
+.knowledge-stat-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.knowledge-domain-metrics {
+  grid-template-columns: repeat(5, minmax(82px, 1fr));
+  min-width: min(640px, 100%);
+}
+
+.knowledge-domain-metrics span {
+  display: grid;
+  gap: 5px;
+  border-radius: 12px;
+  background: #eef7f3;
+  color: #12322b;
+  padding: 10px;
+  font-size: 17px;
+  font-weight: 950;
+}
+
+.knowledge-domain-metrics b {
+  color: #2b8b70;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.knowledge-stat-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.knowledge-stat-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid #d7e1dc;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.knowledge-stat-card > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #2b8b70;
+}
+
+.knowledge-stat-card strong {
+  color: #12322b;
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.knowledge-stat-card ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.knowledge-stat-card li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: #526660;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.knowledge-stat-card li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-stat-card li b {
+  color: #12322b;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.knowledge-stat-card p {
+  margin: 0;
+  color: #7a8b85;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .knowledge-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
-.knowledge-form,
-.knowledge-import-card {
+.knowledge-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -628,21 +761,18 @@
   padding: 12px;
 }
 
-.knowledge-form > div,
-.knowledge-import-card > div {
+.knowledge-form > div {
   grid-column: 1 / -1;
   display: grid;
   gap: 3px;
 }
 
-.knowledge-form > div strong,
-.knowledge-import-card > div strong {
+.knowledge-form > div strong {
   color: #12322b;
   font-size: 14px;
 }
 
-.knowledge-form > div span,
-.knowledge-import-card > div span {
+.knowledge-form > div span {
   color: #5b6f68;
   font-size: 12px;
   font-weight: 700;
@@ -650,8 +780,6 @@
 
 .knowledge-form input,
 .knowledge-form select,
-.knowledge-import-card input,
-.knowledge-import-card select,
 .knowledge-toolbar input,
 .knowledge-toolbar select {
   width: 100%;
@@ -666,8 +794,7 @@
   font-weight: 800;
 }
 
-.knowledge-form button,
-.knowledge-import-card button {
+.knowledge-form button {
   grid-column: 1 / -1;
 }
 
@@ -697,6 +824,12 @@
   gap: 14px;
 }
 
+.knowledge-registry-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+}
+
 .knowledge-list-block {
   display: grid;
   gap: 10px;
@@ -711,4 +844,27 @@
   max-height: 520px;
   overflow: auto;
   padding-right: 4px;
+}
+
+.knowledge-table.compact-table {
+  max-height: 260px;
+}
+
+@media (max-width: 1180px) {
+  .knowledge-domain-summary,
+  .knowledge-stat-grid,
+  .knowledge-registry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-domain-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-width: 0;
+  }
+}
+
+@media (max-width: 680px) {
+  .knowledge-domain-metrics {
+    grid-template-columns: 1fr;
+  }
 }

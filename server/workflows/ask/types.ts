@@ -4,16 +4,19 @@ import type {
   AssetRecord,
   DomainQueryPlan,
   DomainSearchFilters,
-  IndexRecord
+  IndexRecord,
+  SportsDomainGroup
 } from "../../../shared/types";
 
 export type AskRequest = {
   query: string;
   explicitFilters: DomainSearchFilters;
   indexId?: string;
+  domainGroup?: SportsDomainGroup;
   tag?: string;
   modality?: string;
   limit?: number;
+  useKnowledgeLayer: boolean;
 };
 
 export type AskOperationEntry = {

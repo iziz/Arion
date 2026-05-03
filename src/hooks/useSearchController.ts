@@ -3,9 +3,9 @@ import type {
   AskResponse,
   DomainQueryPlan,
   DomainSearchFilters,
-  IndexRecord,
   OrchestrationPlan,
   SearchResult,
+  SportsDomainGroup,
   SportsKnowledgeAnswer
 } from "../../shared/types";
 import { api, sleep } from "../api";
@@ -19,18 +19,17 @@ import {
 import type { SearchConversationTurn } from "../components/SearchPanels";
 
 export function useSearchController({
-  selectedIndex,
   setMessage
 }: {
-  selectedIndex: IndexRecord | null;
   setMessage: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [searchTag, setSearchTag] = useState("");
-  const [searchModality, setSearchModality] = useState("");
+  const [searchDomainGroup, setSearchDomainGroupState] = useState<SportsDomainGroup | "">("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [domainFilters, setDomainFilters] = useState<DomainSearchFilters>({});
   const [trustFilters, setTrustFilters] = useState<SearchTrustFilters>(TRUST_PRESETS.balanced);
+  const [useKnowledgeLayer, setUseKnowledgeLayer] = useState(true);
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
   const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
   const [sportsAnswer, setSportsAnswer] = useState<SportsKnowledgeAnswer | null>(null);
@@ -43,13 +42,18 @@ export function useSearchController({
   const activeSearchFilterCount =
     Object.values(domainFilters).filter(Boolean).length +
     (searchTag ? 1 : 0) +
-    (searchModality ? 1 : 0) +
-    (trustPresetFor(trustFilters) === "balanced" ? 0 : 1);
+    (trustPresetFor(trustFilters) === "balanced" ? 0 : 1) +
+    (useKnowledgeLayer ? 0 : 1);
+
+  function setSearchDomainGroup(domainGroup: SportsDomainGroup | "") {
+    setSearchDomainGroupState(domainGroup);
+    setDomainFilters((current) => sanitizeFiltersForDomain(current, domainGroup));
+  }
 
   async function runSearch(event: FormEvent) {
     event.preventDefault();
     const submittedQuery = query.trim();
-    if (!submittedQuery && !Object.values(domainFilters).some(Boolean)) return;
+    if (!submittedQuery && !searchTag && !Object.values(domainFilters).some(Boolean)) return;
     setSearching(true);
     setMessage("");
     setSportsAnswer(null);
@@ -57,10 +61,10 @@ export function useSearchController({
     try {
       const started = await api.post<AskResponse>("/api/ask", {
         q: submittedQuery,
-        indexId: selectedIndex?.id ?? "default-index",
+        domainGroup: searchDomainGroup || undefined,
         tag: searchTag || undefined,
-        modality: searchModality || undefined,
-        domainFilters
+        domainFilters,
+        useKnowledgeLayer
       });
       setAskResponse(started);
       const completed = await pollAskOperation(started.operation.id);
@@ -126,44 +130,6 @@ export function useSearchController({
     );
   }
 
-  function applySearchPreset(preset: "haaland-through-ball" | "son-goals" | "strict-evidence" | "clear") {
-    if (preset === "haaland-through-ball") {
-      setQuery("Find Erling Haaland receiving a through ball in the final third");
-      setDomainFilters({
-        competition: "Premier League",
-        player: "Erling Haaland",
-        eventType: "pass_receive",
-        passType: "through_ball",
-        fieldZone: "final_third",
-        role: "receiver"
-      });
-      setTrustFilters(TRUST_PRESETS.balanced);
-      return;
-    }
-    if (preset === "son-goals") {
-      setQuery("Find Son Heung-min scoring goals");
-      setDomainFilters({
-        competition: "Premier League",
-        player: "Son Heung-min",
-        eventType: "shot",
-        role: "shooter"
-      });
-      setTrustFilters(TRUST_PRESETS.balanced);
-      return;
-    }
-    if (preset === "strict-evidence") {
-      setTrustFilters(TRUST_PRESETS.strict);
-      return;
-    }
-    setQuery("");
-    setSearchTag("");
-    setSearchModality("");
-    setDomainFilters({});
-    setTrustFilters(TRUST_PRESETS.balanced);
-    setSportsAnswer(null);
-    setAskResponse(null);
-  }
-
   function buildAssetMomentUrl(assetId: string, segmentId?: string | null, at?: number | null) {
     const url = new URL(window.location.href);
     url.searchParams.set("tab", "data");
@@ -187,14 +153,16 @@ export function useSearchController({
     setQuery,
     searchTag,
     setSearchTag,
-    searchModality,
-    setSearchModality,
+    searchDomainGroup,
+    setSearchDomainGroup,
     filtersOpen,
     setFiltersOpen,
     domainFilters,
     setDomainFilters,
     trustFilters,
     setTrustFilters,
+    useKnowledgeLayer,
+    setUseKnowledgeLayer,
     queryPlan,
     orchestrationPlan,
     sportsAnswer,
@@ -206,7 +174,35 @@ export function useSearchController({
     searching,
     activeSearchFilterCount,
     runSearch,
-    applySearchPreset,
     buildAssetMomentUrl
   };
+}
+
+function sanitizeFiltersForDomain(filters: DomainSearchFilters, domainGroup: SportsDomainGroup | ""): DomainSearchFilters {
+  const next: DomainSearchFilters = { ...filters };
+  if (!domainGroup) {
+    delete next.eventType;
+    delete next.passType;
+    delete next.fieldZone;
+    delete next.role;
+    return compactFilters(next);
+  }
+  if (domainGroup === "sports.american_football") {
+    if (next.competition && next.competition !== "NFL") delete next.competition;
+    if (next.eventType && !["scramble", "pressure", "pocket_escape", "throw_on_run"].includes(next.eventType)) delete next.eventType;
+    delete next.passType;
+    delete next.fieldZone;
+    delete next.role;
+  }
+  if (domainGroup === "sports.football") {
+    if (next.competition === "NFL") delete next.competition;
+    if (next.eventType && !["pass_receive", "shot", "dribble"].includes(next.eventType)) delete next.eventType;
+  }
+  return compactFilters(next);
+}
+
+function compactFilters(filters: DomainSearchFilters): DomainSearchFilters {
+  return Object.fromEntries(
+    Object.entries(filters).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+  ) as DomainSearchFilters;
 }

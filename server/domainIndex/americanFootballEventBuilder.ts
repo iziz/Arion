@@ -85,8 +85,8 @@ export function buildAmericanFootballEvent(asset: AssetRecord, segment: Timeline
       phase: americanFootballPhase(eventType, playType, normalized),
       playType,
       quarterback: {
-        present: Boolean(quarterbackIdentity) || /quarterback|qb|mahomes/.test(normalized),
-        confidence: quarterbackIdentity ? confidenceFromSignals(confidence, 0.08) : /quarterback|qb|mahomes/.test(normalized) ? 0.46 : 0,
+        present: Boolean(quarterbackIdentity) || /quarterback|qb/.test(normalized),
+        confidence: quarterbackIdentity ? confidenceFromSignals(confidence, 0.08) : /quarterback|qb/.test(normalized) ? 0.46 : 0,
         trackId: visual?.tracking?.nearestPlayerTrackId ?? null,
         trackingStatus: visual?.objects.players.status === "detected" ? "detected" : visual?.objects.players.status === "estimated" ? "estimated" : "not_configured",
         identity: quarterbackIdentity

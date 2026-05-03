@@ -8,12 +8,14 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const inferred: DomainSearchFilters = {};
   const warnings: string[] = [];
   let confidence = playerInventory ? 0.72 : originalQuery ? 0.35 : 0.15;
-  const statMetric = inferStatMetric(normalized);
-  const statQuestion = Boolean(statMetric && hasAny(normalized, ["how many", "number of", "몇", "얼마나", "득점 수", "기록"]));
-
   const playerMatch = matchKnowledgePlayer(originalQuery);
-  let competition = inferCompetition(originalQuery);
+  let competition = explicitFilters.competition ?? inferCompetition(originalQuery);
   if (!competition && playerMatch) competition = playerMatch.value.league;
+  const statMetric = inferStatMetric(normalized, competition);
+  const statQuestion = Boolean(
+    statMetric &&
+      (hasAny(normalized, ["how many", "number of", "몇", "얼마나", "득점 수", "기록"]) || isStatLeaderboardQuery(originalQuery))
+  );
   if (competition) {
     inferred.competition = competition;
     confidence += 0.08;
@@ -85,6 +87,9 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   if (!inferred.eventType && (inferred.player || inferred.competition || inferred.fieldZone)) {
     warnings.push(statQuestion ? "This is a stats question; use knowledge QA instead of moment retrieval for the direct answer." : "No explicit event was detected, so semantic search remains broad.");
   }
+  if (statQuestion && isMomentSearchQuery(originalQuery)) {
+    warnings.push("This query needs sports-knowledge grounding before searching indexed video moments.");
+  }
   if (inferred.player && inferred.role === "receiver") {
     warnings.push("Player role is inferred from language; detector/tracker evidence is not available yet.");
   }
@@ -121,6 +126,18 @@ export function isPlayerInventoryQuery(query: string) {
   const asksKoreanPlayerNames = /선수/.test(normalized) && /(이름|목록|리스트|언급|추출|전체|모든)/.test(normalized);
   const asksEnglishPlayerNames = /\bplayers?\b/.test(normalized) && /\b(name|names|list|mentioned|extract|all|every)\b/.test(normalized);
   return asksKoreanPlayerNames || asksEnglishPlayerNames;
+}
+
+export function isMomentSearchQuery(query: string) {
+  const readable = readableText(query);
+  const normalized = normalize(query);
+  return /찾|검색|보여|장면|구간|클립|하이라이트|나온|등장/.test(readable) || /\b(find|show|search|moments?|clips?|scene|scenes|highlight|appears?|shown)\b/.test(normalized);
+}
+
+export function isStatLeaderboardQuery(query: string) {
+  const readable = readableText(query);
+  const normalized = normalize(query);
+  return /가장\s*많|제일\s*많|최다|선두|1위|랭킹|순위/.test(readable) || /\b(most|top|highest|leader|leading|rank|ranking)\b/.test(normalized);
 }
 
 export function parseDomainFilters(value: Record<string, unknown>): DomainSearchFilters {
@@ -186,7 +203,16 @@ function currentSeason(competition?: string) {
   return `${start}-${String(start + 1).slice(2)}`;
 }
 
-function inferStatMetric(normalized: string): DomainQueryPlan["intent"]["metric"] {
+function inferStatMetric(normalized: string, competition?: string): DomainQueryPlan["intent"]["metric"] {
+  const americanFootball = competition === "NFL" || hasAny(normalized, ["nfl", "american football", "미식축구"]);
+  if (hasAny(normalized, ["passing yards", "pass yards", "패싱 야드", "패스 야드"])) return "passing_yards";
+  if (hasAny(normalized, ["passing touchdowns", "passing tds", "pass td", "패싱 터치다운"])) return "passing_touchdowns";
+  if (hasAny(normalized, ["rushing yards", "rush yards", "러싱 야드", "러시 야드"])) return "rushing_yards";
+  if (hasAny(normalized, ["receiving yards", "receiver yards", "리시빙 야드", "리시브 야드"])) return "receiving_yards";
+  if (hasAny(normalized, ["touchdown", "touchdowns", "td", "tds", "터치다운"])) return "touchdowns";
+  if (hasAny(normalized, ["sack", "sacks", "색"])) return "sacks";
+  if (hasAny(normalized, ["interception", "interceptions", "pick", "picks", "인터셉션"])) return "interceptions";
+  if (americanFootball && hasAny(normalized, ["point", "points", "scored", "score", "득점", "점수"])) return "points";
   if (hasAny(normalized, ["goal", "goals", "scored", "score", "득점", "골"])) return "goals";
   if (hasAny(normalized, ["assist", "assists", "도움", "어시스트"])) return "assists";
   if (hasAny(normalized, ["appearance", "appearances", "apps", "출전"])) return "appearances";
@@ -248,6 +274,10 @@ function roleValue(value: unknown): DomainSearchFilters["role"] | undefined {
 
 function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
+}
+
+function readableText(value: string) {
+  return value.toLowerCase().normalize("NFC").replace(/\s+/g, " ").trim();
 }
 
 function hasAny(value: string, terms: string[]) {
