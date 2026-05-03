@@ -19,6 +19,12 @@ export type SearchConversationTurn = {
   plan: DomainQueryPlan | null;
 };
 
+type MomentOpenOptions = {
+  start?: number;
+  end?: number;
+  label?: string;
+};
+
 export function SearchDomainSelector({
   value,
   onChange
@@ -436,7 +442,7 @@ export function SearchConversation({
 }: {
   turns: SearchConversationTurn[];
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
-  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number]) => void;
+  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
 }) {
   if (turns.length === 0) return null;
   return (
@@ -460,7 +466,9 @@ export function SearchConversation({
               <div className="assistant-result-strip">
                 {turn.results.slice(0, 3).map((result) => {
                   const clip = result.clips[0];
-                  const segment = result.segments[0];
+                  const segment = clip
+                    ? result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId) ?? result.segments[0]
+                    : result.segments[0];
                   const href = clip
                     ? getMomentHref(clip.assetId, clip.segmentId, clip.start)
                     : getMomentHref(result.asset.id, segment?.id ?? null, segment?.start ?? null);
@@ -473,7 +481,17 @@ export function SearchConversation({
                     </>
                   );
                   return onOpenMoment && segment ? (
-                    <button key={result.asset.id} type="button" onClick={() => onOpenMoment(result.asset, segment)}>
+                    <button
+                      key={result.asset.id}
+                      type="button"
+                      onClick={() =>
+                        onOpenMoment(
+                          result.asset,
+                          segment,
+                          clip ? { start: clip.start, end: clip.end, label: clip.title } : undefined
+                        )
+                      }
+                    >
                       {content}
                     </button>
                   ) : (

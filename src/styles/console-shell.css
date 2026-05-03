@@ -1339,7 +1339,40 @@ textarea:focus {
   border-color: #d9e7e0;
   background: #ffffff;
   color: #25352f;
+  cursor: pointer;
   box-shadow: 0 12px 28px rgba(44, 70, 61, 0.08);
+}
+
+.flow-node:focus-visible {
+  outline: 3px solid rgba(43, 139, 112, 0.22);
+  outline-offset: 3px;
+}
+
+.flow-node.expanded {
+  border-color: #2b8b70;
+  box-shadow: 0 0 0 2px rgba(43, 139, 112, 0.14), 0 16px 34px rgba(43, 139, 112, 0.14);
+}
+
+.node-click-target {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.node-click-target:focus-visible {
+  outline: 3px solid rgba(43, 139, 112, 0.18);
+  outline-offset: 3px;
+}
+
+.node-result {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 4px;
+  border-top: 1px solid #d8e6df;
+  padding-top: 12px;
+  cursor: default;
 }
 
 .flow-node::before,
@@ -1434,7 +1467,7 @@ textarea:focus {
 
 .node-actions {
   display: grid;
-  grid-template-columns: auto auto 32px;
+  grid-template-columns: auto auto minmax(0, 1fr) 32px;
   align-items: center;
   gap: 6px;
 }
@@ -1458,6 +1491,21 @@ textarea:focus {
   color: #477365;
   padding-inline: 0;
   text-transform: none;
+}
+
+.node-open {
+  justify-self: end;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf7f3;
+  color: #247b64;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  font-weight: 950;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .node-retry {

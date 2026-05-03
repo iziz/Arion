@@ -23,6 +23,7 @@ import type {
   EventRecord,
   IndexRecord,
   JobRecord,
+  KnowledgeVectorStoreStatus,
   MetricsSummary,
   OrchestrationPlan,
   SearchResult,
@@ -46,9 +47,7 @@ import {
   getAssetProgressLine,
   InfoTile,
   KnowledgeEvidenceRow,
-  Metric,
   SearchSceneEvidence,
-  SignalEvidence,
   SportsKnowledgePanel,
   TabButton,
   Timeline,
@@ -83,6 +82,7 @@ export type ConsoleLayoutProps = {
   refresh: () => Promise<void>;
   metrics: MetricsSummary;
   sportsKnowledge: SportsKnowledgeSnapshot | null;
+  knowledgeVectorStore: KnowledgeVectorStoreStatus | null;
   searchResults: SearchResult[];
   setDialogMode: Dispatch<SetStateAction<DialogMode>>;
   selectIndex: (indexId: string) => void;
@@ -139,7 +139,13 @@ export type ConsoleLayoutProps = {
 type SearchVideoPreview = {
   asset: AssetRecord;
   segment: AssetRecord["timeline"][number];
+  start?: number;
+  end?: number;
+  label?: string;
 };
+
+type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
+type ObservabilityLog = ObservabilitySnapshot["recentLogs"][number];
 
 const sectionTechStacks = {
   data: "React · Express · Multer · FFmpeg/ffprobe · Whisper · PaddleOCR · OpenCLIP · pgvector",
@@ -165,6 +171,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     refresh,
     metrics,
     sportsKnowledge,
+    knowledgeVectorStore,
     searchResults,
     setDialogMode,
     selectIndex,
@@ -221,6 +228,11 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   const knowledgeDomains = sportsKnowledge?.domains ?? defaultKnowledgeDomains();
   const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<SportsDomainGroup>("sports.football");
   const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? "sports.football";
+  const observabilityView = observability ? buildObservabilityView(observability) : null;
+  const failedJobCount = jobs.filter((job) => job.status === "failed").length;
+  const succeededJobCount = jobs.filter((job) => job.status === "succeeded").length;
+  const visibleJobs = jobs.slice(0, 12);
+  const visibleEvents = events.slice(0, 8);
 
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
@@ -231,8 +243,12 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setSelectedKnowledgeDomain(knowledgeDomains[0]?.id ?? "sports.football");
   }, [knowledgeDomains, selectedKnowledgeDomain]);
 
-  function openSearchVideo(asset: AssetRecord, segment: AssetRecord["timeline"][number]) {
-    setSearchVideoPreview({ asset, segment });
+  function openSearchVideo(
+    asset: AssetRecord,
+    segment: AssetRecord["timeline"][number],
+    options: { start?: number; end?: number; label?: string } = {}
+  ) {
+    setSearchVideoPreview({ asset, segment, ...options });
   }
 
   function closeDialog() {
@@ -451,8 +467,15 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   </div>
                 </section>
               )}
-              {assetDetailTab === "workflow" && <AssetFlow asset={selectedAsset} index={selectedIndex} job={selectedAssetJob} onRetryStage={retryAssetStage} />}
-              {assetDetailTab === "evidence" && <SignalEvidence asset={selectedAsset} />}
+              {assetDetailTab === "workflow" && (
+                <AssetFlow
+                  asset={selectedAsset}
+                  index={selectedIndex}
+                  job={selectedAssetJob}
+                  onRetryStage={retryAssetStage}
+                  onOpenMoment={(segment, options) => openSearchVideo(selectedAsset, segment, options)}
+                />
+              )}
               {assetDetailTab === "timeline" && (
                 <section className="asset-detail-view">
                   {selectedSegment && (
@@ -475,7 +498,10 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   <Timeline
                     asset={selectedAsset}
                     selectedSegmentId={selectedSegment?.id ?? null}
-                    onSelect={(segment) => selectSegment(selectedAsset.id, segment.id, segment.start)}
+                    onSelect={(segment) => {
+                      selectSegment(selectedAsset.id, segment.id, segment.start);
+                      openSearchVideo(selectedAsset, segment);
+                    }}
                   />
                 </section>
               )}
@@ -505,6 +531,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <SportsKnowledgePanel
           sportsKnowledge={sportsKnowledge}
           selectedDomain={effectiveKnowledgeDomain}
+          knowledgeVectorStore={knowledgeVectorStore}
           onDelete={deleteKnowledgePlayer}
         />
       </section>
@@ -568,7 +595,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           <SearchConversation
             turns={searchConversation}
             getMomentHref={buildAssetMomentUrl}
-            onOpenMoment={(asset, segment) => openSearchVideo(asset, segment)}
+            onOpenMoment={(asset, segment, options) => openSearchVideo(asset, segment, options)}
           />
           <SearchWorkflowTrace
             operation={askResponse?.operation ?? null}
@@ -581,13 +608,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <ResultTrustSummary total={searchResults.length} visible={filteredSearchResults.length} trustFilters={trustFilters} />
           )}
           {sportsAnswer && <SportsAnswerCard answer={sportsAnswer} />}
-          {searchVideoPreview && (
-            <SearchVideoPreviewPanel
-              preview={searchVideoPreview}
-              onClose={() => setSearchVideoPreview(null)}
-              onOpenAsset={(assetId, segmentId, at) => selectSegment(assetId, segmentId, at)}
-            />
-          )}
           <div className="result-list">
             {searching && (
               <article className="result-card search-loading-card" aria-live="polite">
@@ -642,7 +662,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                     clips={result.clips}
                     onOpen={async (clip) => {
                       const segment = result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId);
-                      if (segment) openSearchVideo(result.asset, segment);
+                      if (segment) openSearchVideo(result.asset, segment, { start: clip.start, end: clip.end, label: clip.title });
                     }}
                   />
                 )}
@@ -669,132 +689,190 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <h2 className="section-stack-title">{sectionTechStacks.system}</h2>
           </div>
         </div>
-        <section className="metrics ops-metrics" aria-label="Service snapshot">
-          <Metric icon={<Layers3 size={18} />} label="Indexes" value={metrics.indexes.toString()} />
-          <Metric icon={<FileVideo size={18} />} label="Total Assets" value={metrics.assets.toString()} />
-          <Metric icon={<CheckCircle2 size={18} />} label="Indexed Total" value={metrics.indexedAssets.toString()} />
-          <Metric icon={<Clock3 size={18} />} label="Running Jobs" value={metrics.runningJobs.toString()} />
-          <Metric icon={<Database size={18} />} label="Segments" value={metrics.segments.toString()} />
-          <Metric icon={<Database size={18} />} label="Vectors" value={metrics.vectors.toString()} />
-          <Metric icon={<CreditCard size={18} />} label="Billing Units" value={metrics.billingUnits.toString()} />
-        </section>
-      <section className="ops-grid">
-        <section className="panel jobs-panel">
-          <div className="panel-title">
-            <Activity size={18} />
-            <h2>Jobs</h2>
-            <span className="panel-count">{jobs.length}</span>
-          </div>
-          <div className="table-list">
-            {jobs.slice(0, 10).map((job) => (
-              <article key={job.id} className={`ops-row ${selectedJob?.id === job.id ? "active" : ""}`}>
-                <button type="button" className="row-button" onClick={() => setSelectedJobId(job.id)}>
-                  <strong>{job.type}</strong>
-                  <span>{job.status} · {job.stage} · {job.progress}%</span>
-                </button>
-                {job.assetId && (
-                  <button type="button" className="small-button" onClick={() => void retryJob(job.id)}>
-                    <RefreshCw size={14} />
-                    Retry
-                  </button>
-                )}
-              </article>
-            ))}
-            {jobs.length === 0 && <EmptyState text="No jobs have been recorded." />}
-          </div>
-          {selectedJob && (
-            <article className="job-detail">
-              <strong>{selectedJob.stage}</strong>
-              <span>{selectedJob.id}</span>
-              <div className="job-log">
-                {selectedJob.logs.slice(-6).map((log) => (
-                  <p key={`${log.at}-${log.message}`}>
-                    {new Date(log.at).toLocaleTimeString()} · {log.level} · {log.message}
-                  </p>
-                ))}
-              </div>
+        <section className="system-console">
+          <section className="system-kpi-grid" aria-label="Service snapshot">
+            <article className="system-kpi">
+              <CheckCircle2 size={18} />
+              <span>Indexed Assets</span>
+              <strong>{metrics.indexedAssets}/{metrics.assets}</strong>
+              <em>{metrics.indexes} indexes</em>
             </article>
-          )}
-        </section>
-
-        <section className="panel events-panel">
-          <div className="panel-title">
-            <Activity size={18} />
-            <h2>Events</h2>
-            <span className="panel-count">{events.length}</span>
-          </div>
-          <div className="table-list">
-            {events.map((event) => (
-              <article key={event.id} className="ops-row">
-                <strong>{event.type}</strong>
-                <span>{event.message} · {new Date(event.createdAt).toLocaleTimeString()}</span>
-              </article>
-            ))}
-            {events.length === 0 && <EmptyState text="No operational events have been recorded." />}
-          </div>
-        </section>
-
-        <section className="panel database-panel">
-          <div className="panel-title">
-            <Database size={18} />
-            <h2>Database</h2>
-          </div>
-          {dbStatus ? (
-            <article className="db-card">
-              <strong>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</strong>
-              <span>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
-              <span>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} visual dimensions`}</span>
-              <span>pgvector {dbStatus.pgvector ?? "off"}</span>
-              <div className="job-log">
-                {(dbStatus.migrations ?? []).slice(-3).map((migration) => (
-                  <p key={migration.version}>
-                    {migration.version} · {migration.description}
-                  </p>
-                ))}
-              </div>
+            <article className="system-kpi">
+              <Clock3 size={18} />
+              <span>Jobs</span>
+              <strong>{metrics.runningJobs}</strong>
+              <em>{failedJobCount} failed · {succeededJobCount} succeeded</em>
             </article>
-          ) : (
-            <EmptyState text="Database status is loading." />
-          )}
-        </section>
+            <article className="system-kpi">
+              <Layers3 size={18} />
+              <span>Timeline</span>
+              <strong>{metrics.segments}</strong>
+              <em>{metrics.vectors} vectors</em>
+            </article>
+            <article className="system-kpi">
+              <CreditCard size={18} />
+              <span>Billing Units</span>
+              <strong>{metrics.billingUnits}</strong>
+              <em>{dbStatus?.enabled ? "PostgreSQL" : dbStatus?.storage ?? "storage pending"}</em>
+            </article>
+          </section>
 
-        <section className="panel observability-panel">
-          <div className="panel-title">
-            <Activity size={18} />
-            <h2>Observability</h2>
-          </div>
-          {observability ? (
-            <>
-              <div className="obs-summary">
-                <span>{observability.traceExporter}</span>
-                <span>{observability.logFormat}</span>
-                <span>{observability.recentSpans.length} spans</span>
+          <section className="system-workspace">
+            <section className="panel system-panel system-jobs-panel">
+              <div className="system-panel-header">
+                <div>
+                  <p className="section-label">Queue</p>
+                  <h2>Jobs</h2>
+                </div>
+                <div className="system-panel-counts">
+                  <span>{jobs.length} total</span>
+                  <span>{metrics.runningJobs} running</span>
+                </div>
               </div>
-              <div className="table-list">
-                {[...observability.modelRuntimeMetrics, ...observability.stageMetrics].slice(0, 8).map((metric) => (
-                  <article key={metric.key} className={`ops-row ${metric.lastStatus === "error" ? "error-row" : ""}`}>
-                    <strong>{metric.key}</strong>
-                    <span>
-                      avg {metric.avgMs}ms · p95 {metric.p95Ms}ms · errors {metric.errorCount}
-                    </span>
-                    {metric.lastError && <span>{metric.lastError}</span>}
+
+              <div className="system-job-list">
+                {visibleJobs.map((job) => (
+                  <article key={job.id} className={`system-job-row ${job.status} ${selectedJob?.id === job.id ? "active" : ""}`}>
+                    <button type="button" className="system-job-main" onClick={() => setSelectedJobId(job.id)}>
+                      <span className={`system-status-pill ${job.status}`}>{formatJobStatus(job.status)}</span>
+                      <strong>{formatJobTypeLabel(job.type)}</strong>
+                      <span>{formatJobStageLabel(job)}</span>
+                      <span>{formatJobProgressLabel(job)}</span>
+                      <time>{formatRelativeTime(job.updatedAt)}</time>
+                    </button>
+                    {job.assetId && (
+                      <button
+                        type="button"
+                        className="small-button icon-only retry-button"
+                        onClick={() => void retryJob(job.id)}
+                        aria-label={`Retry ${formatJobTypeLabel(job.type)}`}
+                        title={`Retry ${formatJobTypeLabel(job.type)}`}
+                      >
+                        <RefreshCw size={14} aria-hidden="true" />
+                      </button>
+                    )}
                   </article>
                 ))}
+                {jobs.length === 0 && <EmptyState text="No jobs have been recorded." />}
               </div>
-              <div className="job-log obs-log">
-                {observability.recentLogs.slice(0, 5).map((log) => (
-                  <p key={`${log.timestamp}-${log.event}-${log.requestId}`}>
-                    {new Date(log.timestamp).toLocaleTimeString()} · {log.level} · {log.event} · {log.requestId ?? "no-request"}
-                  </p>
-                ))}
-              </div>
-            </>
-          ) : (
-            <EmptyState text="Observability data is loading." />
-          )}
+
+              {selectedJob && (
+                <article className="system-job-detail">
+                  <div className="system-detail-title">
+                    <div>
+                      <p className="section-label">Selected Job</p>
+                      <h3>{formatJobDetailTitle(selectedJob)}</h3>
+                    </div>
+                    <span className={`system-status-pill ${selectedJob.status}`}>{formatJobStatus(selectedJob.status)}</span>
+                  </div>
+                  <div className="system-detail-grid">
+                    <span><b>Type</b>{formatJobTypeLabel(selectedJob.type)}</span>
+                    <span><b>Stage</b>{formatJobStageLabel(selectedJob)}</span>
+                    <span><b>Progress</b>{formatJobProgressLabel(selectedJob)}</span>
+                    <span><b>Updated</b>{formatRelativeTime(selectedJob.updatedAt)}</span>
+                  </div>
+                  <span className="job-id">Job ID {selectedJob.id}</span>
+                  {selectedJob.error && <p className="system-job-error">{selectedJob.error}</p>}
+                  <div className="system-log-list">
+                    <strong>Job Logs</strong>
+                    {selectedJob.logs.slice(-6).map((log) => (
+                      <p key={`${log.at}-${log.message}`}>
+                        <time>{new Date(log.at).toLocaleTimeString()}</time>
+                        <span>{log.level}</span>
+                        {log.message}
+                      </p>
+                    ))}
+                  </div>
+                </article>
+              )}
+            </section>
+
+            <aside className="system-side-column">
+              <section className="panel system-panel system-events-panel">
+                <div className="system-panel-header">
+                  <div>
+                    <p className="section-label">Event Feed</p>
+                    <h2>Events</h2>
+                  </div>
+                  <span className="panel-count">{events.length}</span>
+                </div>
+                <div className="system-event-list">
+                  {visibleEvents.map((event) => (
+                    <article key={event.id} className="system-event-row">
+                      <strong>{formatEventTypeLabel(event.type)}</strong>
+                      <span>{event.message}</span>
+                      <time>{new Date(event.createdAt).toLocaleTimeString()}</time>
+                    </article>
+                  ))}
+                  {events.length === 0 && <EmptyState text="No operational events have been recorded." />}
+                </div>
+              </section>
+
+              <section className="system-info-grid">
+                <section className="panel system-panel system-database-panel">
+                  <div className="system-panel-header compact">
+                    <div>
+                      <p className="section-label">Storage</p>
+                      <h2>Database</h2>
+                    </div>
+                    <Database size={18} />
+                  </div>
+                  {dbStatus ? (
+                    <div className="system-fact-grid">
+                      <span><b>Store</b>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</span>
+                      <span><b>pgvector</b>{dbStatus.pgvector ?? "off"}</span>
+                      <span><b>Text</b>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
+                      <span><b>Visual</b>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} dimensions`}</span>
+                    </div>
+                  ) : (
+                    <EmptyState text="Database status is loading." />
+                  )}
+                </section>
+
+                <section className="panel system-panel system-observability-panel">
+                  <div className="system-panel-header compact">
+                    <div>
+                      <p className="section-label">Telemetry</p>
+                      <h2>Observability</h2>
+                    </div>
+                    <Activity size={18} />
+                  </div>
+                  {observabilityView ? (
+                    <>
+                      <div className="system-fact-grid">
+                        <span><b>Trace</b>{observabilityView.traceStore} · {observabilityView.spanCount} spans</span>
+                        <span><b>API p95</b>{observabilityView.httpP95}</span>
+                        <span><b>Pipeline</b>{observabilityView.pipelineErrorCount} errors</span>
+                        <span><b>Logs</b>{observabilityView.logFormat}</span>
+                      </div>
+                      {observabilityView.pipelineMetrics.length > 0 && (
+                        <div className="system-mini-metrics">
+                          {observabilityView.pipelineMetrics.slice(0, 3).map((metric) => (
+                            <span key={metric.key}>
+                              <b>{formatMetricName(metric.key)}</b>
+                              p95 {formatLatency(metric.p95Ms)} · {metric.errorCount} errors
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <EmptyState text="Observability data is loading." />
+                  )}
+                </section>
+              </section>
+            </aside>
+          </section>
         </section>
       </section>
-      </section>
+      )}
+
+      {searchVideoPreview && (
+        <SearchVideoPreviewPanel
+          preview={searchVideoPreview}
+          onClose={() => setSearchVideoPreview(null)}
+          onOpenAsset={(assetId, segmentId, at) => selectSegment(assetId, segmentId, at)}
+        />
       )}
 
       {(clipDetail || clipDetailLoading) && (
@@ -802,7 +880,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           detail={clipDetail}
           loading={clipDetailLoading}
           onClose={() => setClipDetail(null)}
-          onSeek={(assetId, segmentId, at) => selectSegment(assetId, segmentId, at)}
+          onSeek={(assetId, segmentId, at) => {
+            const asset = assets.find((item) => item.id === assetId);
+            if (asset && clipDetail?.segment.id === segmentId) {
+              openSearchVideo(asset, clipDetail.segment, { start: at, end: clipDetail.clip.end, label: clipDetail.clip.title });
+            }
+            selectSegment(assetId, segmentId, at);
+          }}
         />
       )}
 
@@ -857,6 +941,118 @@ function defaultKnowledgeDomains(): NonNullable<SportsKnowledgeSnapshot["domains
   ];
 }
 
+function formatJobTypeLabel(type: JobRecord["type"]) {
+  const labels: Record<JobRecord["type"], string> = {
+    "asset.index": "Index asset",
+    "asset.reindex": "Reindex asset",
+    "asset.domain-vlm.refine": "Domain VLM",
+    "webhook.test": "Webhook test"
+  };
+  return labels[type] ?? type;
+}
+
+function formatJobStageLabel(job: JobRecord) {
+  if (job.stage === "stale") return "Restart interrupted";
+  return job.stage;
+}
+
+function formatJobDetailTitle(job: JobRecord) {
+  if (job.stage === "stale") return "Interrupted by server restart";
+  return formatJobStageLabel(job);
+}
+
+function formatJobProgressLabel(job: JobRecord) {
+  if (job.stage === "stale") return getRecoveredJobDisposition(job);
+  return `${job.progress}%`;
+}
+
+function formatJobStatus(status: JobRecord["status"]) {
+  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
+}
+
+function getRecoveredJobDisposition(job: JobRecord) {
+  const message = `${job.error ?? ""} ${job.logs.at(-1)?.message ?? ""}`;
+  if (/previous indexed data was preserved/i.test(message)) return "Previous index preserved";
+  if (/retry is required/i.test(message)) return "Retry required";
+  return "Needs review";
+}
+
+function formatRelativeTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatEventTypeLabel(type: EventRecord["type"]) {
+  const parts = type.split(".");
+  const usefulParts = parts[0] === "asset" ? parts.slice(1) : parts;
+  return usefulParts.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(" ");
+}
+
+function buildObservabilityView(snapshot: ObservabilitySnapshot) {
+  const pipelineMetricPool = [...snapshot.modelRuntimeMetrics, ...snapshot.stageMetrics];
+  const pipelineMetrics = [...pipelineMetricPool].sort(compareObservabilityMetrics).slice(0, 6);
+  const httpMetric = snapshot.requestMetrics.find((metric) => metric.key === "http.request") ?? snapshot.requestMetrics[0] ?? null;
+  const slowestMetric = pipelineMetricPool.reduce<ObservabilityMetric | null>(
+    (slowest, metric) => (!slowest || metric.p95Ms > slowest.p95Ms ? metric : slowest),
+    null
+  );
+
+  return {
+    traceStore: formatTraceStore(snapshot.traceExporter),
+    spanCount: snapshot.recentSpans.length,
+    httpP95: httpMetric ? formatLatency(httpMetric.p95Ms) : "No samples",
+    httpSummary: httpMetric ? `${httpMetric.count} requests · ${httpMetric.errorCount} errors` : "No request metrics",
+    pipelineErrorCount: pipelineMetricPool.reduce((sum, metric) => sum + metric.errorCount, 0),
+    logFormat: formatLogFormat(snapshot.logFormat),
+    logPath: compactLogPath(snapshot.logPath),
+    slowestLabel: slowestMetric ? `Slowest p95 ${formatMetricName(slowestMetric.key)} ${formatLatency(slowestMetric.p95Ms)}` : "Waiting for pipeline samples",
+    pipelineMetrics,
+    signalLogs: snapshot.recentLogs.filter(isOperationalSignalLog).slice(0, 5)
+  };
+}
+
+function compareObservabilityMetrics(a: ObservabilityMetric, b: ObservabilityMetric) {
+  const statusDelta = Number(b.lastStatus === "error") - Number(a.lastStatus === "error");
+  if (statusDelta !== 0) return statusDelta;
+  if (b.errorCount !== a.errorCount) return b.errorCount - a.errorCount;
+  return b.p95Ms - a.p95Ms;
+}
+
+function isOperationalSignalLog(log: ObservabilityLog) {
+  return log.event !== "http.request";
+}
+
+function formatTraceStore(traceExporter: string) {
+  if (traceExporter === "local-in-memory") return "Memory";
+  return formatMetricName(traceExporter);
+}
+
+function formatLogFormat(logFormat: string) {
+  if (logFormat === "json-ndjson") return "NDJSON";
+  return logFormat.toUpperCase();
+}
+
+function compactLogPath(logPath: string) {
+  const parts = logPath.split("/").filter(Boolean);
+  const dataIndex = parts.lastIndexOf(".data");
+  if (dataIndex >= 0) return parts.slice(dataIndex).join("/");
+  return parts.slice(-3).join("/");
+}
+
+function formatLatency(value: number) {
+  if (value < 10) return `${value.toFixed(2)}ms`;
+  if (value < 100) return `${value.toFixed(1)}ms`;
+  return `${Math.round(value)}ms`;
+}
+
+function formatMetricName(key: string) {
+  const acronyms = new Set(["api", "asr", "http", "ocr", "p95", "vad", "vlm"]);
+  return key
+    .split(/[._-]/)
+    .filter(Boolean)
+    .map((part) => (acronyms.has(part.toLowerCase()) ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
+    .join(" ");
+}
+
 function SearchVideoPreviewPanel({
   preview,
   onClose,
@@ -868,8 +1064,9 @@ function SearchVideoPreviewPanel({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const source = mediaPath(preview.asset.storedName);
-  const start = Math.max(0, preview.segment.start);
-  const end = Math.max(start, preview.segment.end);
+  const start = Math.max(0, preview.start ?? preview.segment.start);
+  const end = Math.max(start, preview.end ?? preview.segment.end);
+  const label = preview.label ?? preview.segment.label;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -905,7 +1102,7 @@ function SearchVideoPreviewPanel({
             <p className="section-label">Video Preview</p>
             <h3>{preview.asset.title}</h3>
             <span>
-              {formatDuration(start)}-{formatDuration(end)} · {preview.segment.label}
+              {formatDuration(start)}-{formatDuration(end)} · {label}
             </span>
           </div>
           <button type="button" className="small-button icon-only" aria-label="닫기" onClick={onClose}>

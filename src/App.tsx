@@ -26,7 +26,7 @@ function isConsoleTab(value: string | null): value is ConsoleTab {
 }
 
 function isAssetDetailTab(value: string | null): value is AssetDetailTab {
-  return value === "overview" || value === "workflow" || value === "evidence" || value === "timeline";
+  return value === "overview" || value === "workflow" || value === "timeline";
 }
 
 export default function App() {
@@ -40,6 +40,7 @@ export default function App() {
     observability,
     sportsKnowledge,
     setSportsKnowledge,
+    knowledgeVectorStore,
     selectedIndexId,
     setSelectedIndexId,
     selectedAssetId,
@@ -276,6 +277,7 @@ export default function App() {
       refresh={refresh}
       metrics={metrics}
       sportsKnowledge={sportsKnowledge}
+      knowledgeVectorStore={knowledgeVectorStore}
       searchResults={searchResults}
       setDialogMode={setDialogMode}
       selectIndex={selectIndex}

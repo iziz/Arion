@@ -28,6 +28,5 @@ export {
   KnowledgeEvidenceRow,
   OcrRoleSummary,
   SearchSceneEvidence,
-  SignalEvidence,
   TrustBadge
 } from "./evidence/EvidenceComponents";

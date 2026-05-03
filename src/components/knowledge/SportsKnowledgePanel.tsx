@@ -1,15 +1,17 @@
-import { BarChart3, Layers3, X } from "lucide-react";
+import { BarChart3, Database, Layers3, Route, X } from "lucide-react";
 import { useState } from "react";
-import type { SportsDomainGroup, SportsKnowledgeSnapshot } from "../../../shared/types";
+import type { KnowledgeVectorStoreStatus, SportsDomainGroup, SportsKnowledgeSnapshot } from "../../../shared/types";
 import { EmptyState } from "../common/ConsolePrimitives";
 
 export function SportsKnowledgePanel({
   sportsKnowledge,
   selectedDomain,
+  knowledgeVectorStore,
   onDelete
 }: {
   sportsKnowledge: SportsKnowledgeSnapshot | null;
   selectedDomain: SportsDomainGroup;
+  knowledgeVectorStore: KnowledgeVectorStoreStatus | null;
   onDelete: (id: string) => Promise<void>;
 }) {
   const [filter, setFilter] = useState("");
@@ -33,12 +35,6 @@ export function SportsKnowledgePanel({
       .toLowerCase()
       .includes(normalizedFilter);
   });
-  const footballDataCount = domainPlayers.filter((player) => player.provider === "football-data").length;
-  const footballDataUkCount = domainPlayers.filter((player) => player.provider === "football-data-uk").length;
-  const kaggleCount = domainPlayers.filter((player) => player.provider === "kaggle").length;
-  const statbunkerCount = domainPlayers.filter((player) => player.provider === "statbunker").length;
-  const statsbombCount = domainPlayers.filter((player) => player.provider === "statsbomb").length;
-  const nflverseCount = domainPlayers.filter((player) => player.provider === "nflverse").length;
   const providerStats = countBy(domainPlayers, (player) => player.provider ?? "local");
   const seasonStats = topEntries([
     ...domainPlayers.flatMap((player) => player.activeSeasons),
@@ -54,6 +50,7 @@ export function SportsKnowledgePanel({
   const positionStats = topEntries(domainPlayers.map((player) => player.position ?? "unknown"));
   const activityRoleStats = topEntries(domainActivities.map((activity) => activity.role));
   const factKindStats = topEntries(domainFacts.map((fact) => fact.kind));
+  const availableKnowledgeDocuments = domainCompetitions.length + domainTeams.length + domainPlayers.length + domainActivities.length + domainFacts.length;
   return (
     <section className="panel knowledge-panel">
       <div className="panel-title">
@@ -76,19 +73,11 @@ export function SportsKnowledgePanel({
               <span><b>Facts</b>{domainFacts.length}</span>
             </div>
           </section>
-          <div className="obs-summary">
-            <span>{domainPlayers.length} players</span>
-            <span>{footballDataCount} football-data</span>
-            <span>{footballDataUkCount} football-data-uk</span>
-            <span>{kaggleCount} kaggle</span>
-            <span>{statbunkerCount} statbunker</span>
-            <span>{statsbombCount} statsbomb</span>
-            <span>{nflverseCount} nflverse</span>
-            <span>{domainTeams.length} teams</span>
-            <span>{domainCompetitions.length} competitions</span>
-            <span>{domainActivities.length} activities</span>
-            <span>{domainFacts.length} facts</span>
-          </div>
+          <KnowledgeRagCard
+            status={knowledgeVectorStore}
+            selectedDomain={selectedDomain}
+            availableKnowledgeDocuments={availableKnowledgeDocuments}
+          />
           <div className="knowledge-stat-grid" aria-label="Domain knowledge statistics">
             <KnowledgeStatCard title="Providers" items={providerStats} />
             <KnowledgeStatCard title="Seasons" items={seasonStats} />
@@ -214,6 +203,57 @@ export function SportsKnowledgePanel({
   );
 }
 
+function KnowledgeRagCard({
+  status,
+  selectedDomain,
+  availableKnowledgeDocuments
+}: {
+  status: KnowledgeVectorStoreStatus | null;
+  selectedDomain: SportsDomainGroup;
+  availableKnowledgeDocuments: number;
+}) {
+  const domainStatus = status?.domains.find((domain) => domain.domainGroup === selectedDomain) ?? null;
+  const domainVectors = domainStatus?.vectors ?? 0;
+  const coverage = availableKnowledgeDocuments > 0 ? Math.min(100, Math.round((domainVectors / availableKnowledgeDocuments) * 100)) : 0;
+  const ready = domainVectors > 0;
+  const providerItems = (domainStatus?.providers ?? status?.providers ?? []).map((item) => ({ label: sourceLabel(item.provider), count: item.vectors }));
+  const kindItems = (domainStatus?.kinds ?? status?.kinds ?? []).map((item) => ({ label: kindLabel(item.kind), count: item.vectors }));
+
+  return (
+    <section className={`knowledge-rag-card ${ready ? "ready" : "empty"}`} aria-label="Knowledge RAG status">
+      <div className="knowledge-rag-header">
+        <div>
+          <p className="section-label">Knowledge RAG</p>
+          <h3>{ready ? "Vectorized knowledge retrieval" : "Vector store not built"}</h3>
+          <p>
+            {status?.storage ?? "unknown"} · {domainVectors}/{availableKnowledgeDocuments} selected-domain documents · {status?.vectors ?? 0} total vectors
+          </p>
+        </div>
+        <span className="rag-status-pill">{ready ? `${coverage}% coverage` : "not ready"}</span>
+      </div>
+      <div className="knowledge-rag-metrics">
+        <span><b>Storage</b>{status?.storage ?? "unknown"}</span>
+        <span><b>Domain vectors</b>{domainVectors}</span>
+        <span><b>Total vectors</b>{status?.vectors ?? 0}</span>
+        <span><b>Coverage</b>{ready ? `${coverage}%` : "0%"}</span>
+      </div>
+      <div className="knowledge-rag-flow" aria-label="Knowledge RAG search flow">
+        {["Query plan", "Query embedding", "Knowledge vector search", "Evidence grounding", "Video ranking"].map((step, index, steps) => (
+          <span key={step}>
+            {index === 0 ? <Route size={14} /> : index === 2 ? <Database size={14} /> : null}
+            {step}
+            {index < steps.length - 1 && <i aria-hidden="true" />}
+          </span>
+        ))}
+      </div>
+      <div className="knowledge-rag-breakdown">
+        <KnowledgeStatCard title="RAG sources" items={providerItems} />
+        <KnowledgeStatCard title="RAG document types" items={kindItems} />
+      </div>
+    </section>
+  );
+}
+
 function KnowledgeStatCard({ title, items }: { title: string; items: Array<{ label: string; count: number }> }) {
   return (
     <article className="knowledge-stat-card">
@@ -235,6 +275,14 @@ function KnowledgeStatCard({ title, items }: { title: string; items: Array<{ lab
       )}
     </article>
   );
+}
+
+function sourceLabel(source: string) {
+  return source === "sports_knowledge" ? "sports knowledge" : source;
+}
+
+function kindLabel(kind: string) {
+  return kind.replace(/_/g, " ");
 }
 
 function defaultDomains(): NonNullable<SportsKnowledgeSnapshot["domains"]> {

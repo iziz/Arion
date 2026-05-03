@@ -30,21 +30,24 @@ export async function executeSearchPipeline({
 }: SearchPipelineRequest): Promise<SearchResult[]> {
   const scopedAssets = scopeAssetsForQuery(assets, { query, explicitFilters, indexId, domainGroup, tag, modality, limit, useKnowledgeLayer }, indexes);
   const vectorScopeIndexId = resolveVectorScopeIndexId(indexes, indexId, domainGroup);
+  const useSportsKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseSportsKnowledgeLayer(queryPlan, indexes, indexId, domainGroup));
   const groundedQuery = await runOptionalAskStep(askEntry, {
     id: "ground",
     label: "Knowledge grounding",
     owner: "knowledge",
     input: queryPlan.rewrittenQuery
   }, async () => {
-    if (!useKnowledgeLayer) {
+    if (!useSportsKnowledgeLayer) {
       return {
         value: {
           filters: queryPlan.domainFilters,
           semanticQuery: queryPlan.semanticQuery,
           evidence: [],
-          evidenceSummary: "Knowledge layer disabled by search option."
+          evidenceSummary: useKnowledgeLayer
+            ? "Sports knowledge skipped because the query is not grounded to a supported sports domain."
+            : "Knowledge layer disabled by search option."
         },
-        output: "Disabled by search option.",
+        output: useKnowledgeLayer ? "Skipped for non-sports query scope." : "Disabled by search option.",
         status: "skipped" as const
       };
     }
@@ -63,7 +66,7 @@ export async function executeSearchPipeline({
     domainFilters: groundedQuery.filters,
     queryPlan,
     knowledgeEvidence: groundedQuery.evidence,
-    useKnowledgeLayer
+    useKnowledgeLayer: useSportsKnowledgeLayer
   };
   if (isPlayerInventoryQuery(query)) {
     return runOptionalAskStep(askEntry, {
@@ -84,22 +87,22 @@ export async function executeSearchPipeline({
     label: "Query embeddings",
     owner: "retrieval",
     input: expandedQuery
-	  }, async () => {
-	    const queryVector = await traceAsync("search.embed_text_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query");
-	    let visualQueryVector: number[] = [];
-	    let visualOutput = "visual=unavailable";
-	    try {
-	      visualQueryVector = await traceAsync("search.embed_visual_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedVisualQuery(query), "search.embed_visual_query");
-	      visualOutput = `visual=${visualQueryVector.length} dims`;
-	    } catch (error) {
-	      visualOutput = `visual=unavailable (${error instanceof Error ? error.message : "visual embedding failed"})`;
-	    }
-	    return {
-	      value: { queryVector, visualQueryVector },
-	      output: `text=${queryVector.length} dims · ${visualOutput}`,
-	      status: visualQueryVector.length > 0 ? "succeeded" : "fallback"
-	    };
-	  });
+  }, async () => {
+    const queryVector = await traceAsync("search.embed_text_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query");
+    let visualQueryVector: number[] = [];
+    let visualOutput = "visual=unavailable";
+    try {
+      visualQueryVector = await traceAsync("search.embed_visual_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedVisualQuery(query), "search.embed_visual_query");
+      visualOutput = `visual=${visualQueryVector.length} dims`;
+    } catch (error) {
+      visualOutput = `visual=unavailable (${error instanceof Error ? error.message : "visual embedding failed"})`;
+    }
+    return {
+      value: { queryVector, visualQueryVector },
+      output: `text=${queryVector.length} dims · ${visualOutput}`,
+      status: visualQueryVector.length > 0 ? "succeeded" : "fallback"
+    };
+  });
   const { vectorHits, visualHits } = await runOptionalAskStep(askEntry, {
     id: "vector_search",
     label: "Vector search",
@@ -128,10 +131,10 @@ export async function executeSearchPipeline({
     owner: "knowledge",
     input: `domain=${domainGroup ?? "auto"} · limit=${limit ?? 24}`
   }, async () => {
-    if (!useKnowledgeLayer) {
+    if (!useSportsKnowledgeLayer) {
       return {
         value: [],
-        output: "Disabled by search option.",
+        output: useKnowledgeLayer ? "Skipped for non-sports query scope." : "Disabled by search option.",
         status: "skipped" as const
       };
     }
@@ -139,7 +142,7 @@ export async function executeSearchPipeline({
     const hits = await traceAsync(
       "search.knowledge_vector",
       { domainGroup: knowledgeDomainGroup ?? "all", limit: Number(limit ?? 24) },
-      () => searchKnowledgeVectors(knowledgeDomainGroup, vectors.queryVector, Number(limit ?? 24)),
+      () => searchKnowledgeVectors(knowledgeDomainGroup, vectors.queryVector, Number(limit ?? 24), expandedQuery),
       "search.knowledge_vector"
     );
     return {
@@ -180,6 +183,22 @@ export async function executeSearchPipeline({
 function domainGroupFromCompetition(competition: string | undefined): SportsDomainGroup | undefined {
   if (!competition) return undefined;
   return competition === "NFL" ? "sports.american_football" : "sports.football";
+}
+
+function shouldUseSportsKnowledgeLayer(
+  queryPlan: SearchPipelineRequest["queryPlan"],
+  indexes: IndexRecord[],
+  indexId: string | undefined,
+  domainGroup: AskRequest["domainGroup"]
+) {
+  if (domainGroup) return true;
+  const selectedIndex = indexId ? indexes.find((index) => index.id === indexId) : null;
+  if (selectedIndex?.domainIndexing?.enabled && selectedIndex.domainIndexing.groups.length > 0) return true;
+  const profile = expandDomainQuery(`${queryPlan.originalQuery} ${queryPlan.semanticQuery}`);
+  if (queryPlan.intent.questionType === "stat_qa" || queryPlan.intent.metric) return true;
+  if (queryPlan.intent.player || queryPlan.intent.eventType || queryPlan.intent.passType || queryPlan.intent.fieldZone || queryPlan.intent.role) return true;
+  if (queryPlan.domainFilters.competition || queryPlan.domainFilters.player || queryPlan.domainFilters.eventType || queryPlan.domainFilters.passType || queryPlan.domainFilters.fieldZone || queryPlan.domainFilters.role) return true;
+  return profile.domains.length > 0 || profile.labels.length > 0 || profile.football.playerRequired || profile.americanFootball.quarterbackRequired;
 }
 
 function dedupeKnowledgeEvidence(evidence: KnowledgeEvidence[]) {

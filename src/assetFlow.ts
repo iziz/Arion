@@ -114,7 +114,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: hasProbe
         ? `${formatDuration(asset.duration ?? 0)} · ${asset.width && asset.height ? `${asset.width}x${asset.height}` : "media metadata"}`
         : isIndexed
-          ? "No probe metadata was stored"
+          ? skipped("indexing finished without stored probe metadata")
           : "Waiting for ffprobe",
       state: flowState(asset, ["probing"], hasProbe, isFailed)
     },
@@ -125,11 +125,11 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? "16kHz mono WAV ready"
         : audioRuntimeStatus === "failed"
           ? "Audio extraction failed"
-          : activeRuntimeStage === "runtime-audio"
-            ? "Extracting audio"
-            : isIndexed
-              ? "No extracted audio artifact"
-              : "Waiting for ffmpeg audio extraction",
+            : activeRuntimeStage === "runtime-audio"
+              ? "Extracting audio"
+              : isIndexed
+                ? skipped("indexing finished without an extracted audio artifact")
+                : "Waiting for ffmpeg audio extraction",
       state: audioRuntimeStatus === "failed" && !audioDone ? "error" : audioDone ? "done" : activeRuntimeStage === "runtime-audio" ? "active" : flowState(asset, ["sampling"], audioDone, isFailed)
     },
     {
@@ -141,11 +141,11 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
           ? "Speech/music detection complete"
           : audioRuntimeStatus === "failed"
             ? "Speech/music detection failed"
-            : activeRuntimeStage === "runtime-audio"
-              ? "Detecting speech/music regions"
-              : isIndexed
-                ? "No speech or music regions were detected"
-                : "Waiting for speech/music detection",
+              : activeRuntimeStage === "runtime-audio"
+                ? "Detecting speech/music regions"
+                : isIndexed
+                  ? skipped("audio analysis found no speech or music regions to store")
+                  : "Waiting for speech/music detection",
       state: audioRuntimeStatus === "failed" && !vadDone ? "error" : vadDone ? "done" : activeRuntimeStage === "runtime-audio" ? "active" : flowState(asset, ["scanning"], vadDone, isFailed)
     },
     {
@@ -160,7 +160,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             : whisperFailure
               ? compactTraceFailure(whisperFailure)
               : isIndexed
-                ? "No speech transcript was extracted"
+                ? skipped("ASR produced no transcript segments for this indexed asset")
                 : activeRuntimeStage === "runtime-asr"
                   ? "Running transcription"
                   : "Waiting for transcription",
@@ -175,14 +175,16 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         : diarizationRuntimeStatus === "succeeded"
           ? "Speaker diarization complete"
           : diarizationError
-            ? compactTraceFailure(diarizationError)
+            ? skipped(compactTraceFailure(diarizationError))
           : diarizationRuntimeStatus === "failed"
             ? "Speaker diarization failed"
             : job?.stage === "diarization" || activeRuntimeStage === "runtime-diarization"
               ? "Running speaker diarization"
               : !asrDone && hasActiveJob
                 ? "Waiting for ASR segments"
-                : "Optional: configure WHISPERX_HF_TOKEN",
+                : isIndexed
+                  ? skipped("optional WhisperX diarization produced no speaker segments")
+                  : "Optional: configure WHISPERX_HF_TOKEN",
       state: diarizationDone
         ? "done"
         : diarizationRuntimeStatus === "failed" && !diarizationError
@@ -217,7 +219,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
               : activeRuntimeStage === "runtime-ocr"
                 ? "Running PaddleOCR"
                 : isIndexed
-                  ? "No frame text was detected"
+                  ? skipped("PaddleOCR found no frame text tokens to store")
                   : "Waiting for frame text",
       state: (ocrRuntimeStatus === "failed" || ocrFailure) && !ocrDone ? "error" : ocrDone ? "done" : activeRuntimeStage === "runtime-ocr" ? "active" : flowState(asset, ["scanning"], ocrDone, isFailed),
       helpText: ocrFailure ? `PaddleOCR did not complete: ${ocrFailure}` : undefined,
@@ -235,7 +237,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             : activeRuntimeStage === "runtime-visual"
               ? "Sampling visual frames"
               : isIndexed
-                ? "No visual samples were stored"
+                ? skipped("indexing finished without stored visual samples")
                 : "Waiting for keyframes",
       state: visualRuntimeStatus === "failed" && !visualDone ? "error" : visualDone ? "done" : activeRuntimeStage === "runtime-visual" ? "active" : flowState(asset, ["sampling", "scanning"], visualDone, isFailed),
       trace: compactModelTrace(findTrace(traces, "visual-source:") ?? findTrace(traces, "ffmpeg-visual-sampler:"))
@@ -250,7 +252,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
           : sceneDone
             ? "Scene boundary pass completed"
             : isIndexed
-              ? "No scene boundary data was stored"
+              ? skipped("indexing finished without stored scene boundary data")
               : "Waiting for scene detection",
       state: hasSceneData ? "done" : activeJobStage === "scene-detection" ? "active" : sceneDone ? "done" : isIndexed ? "skipped" : hasActiveJob ? "waiting" : flowState(asset, ["embedding"], false, isFailed)
     },
@@ -264,7 +266,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
           : timelineDone
             ? "Timeline build completed"
             : isIndexed
-              ? "No timeline moments were created"
+              ? skipped("indexing finished without searchable timeline moments")
               : "Waiting for timeline build",
       state: hasTimeline ? "done" : activeJobStage === "timeline" ? "active" : timelineDone ? "done" : isIndexed ? "skipped" : hasActiveJob ? "waiting" : flowState(asset, ["embedding"], false, isFailed)
     },
@@ -278,7 +280,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
           : keyframesDone
             ? "Keyframe generation completed"
             : isIndexed
-              ? "No keyframes were stored"
+              ? skipped("indexing finished without stored keyframe files")
               : "Waiting for keyframes",
       state: hasKeyframes ? "done" : activeJobStage === "keyframes" ? "active" : keyframesDone ? "done" : isIndexed ? "skipped" : hasActiveJob ? "waiting" : flowState(asset, ["embedding"], false, isFailed)
     },
@@ -288,16 +290,18 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: detectorTrace
         ? formatDetectorTrace(detectorTrace)
         : detectorUnavailableTrace
-          ? compactTraceFailure(detectorUnavailableTrace)
+          ? skipped(compactTraceFailure(detectorUnavailableTrace))
           : detectorDisabled
-            ? "Disabled by capability policy"
+            ? skipped(`vision detector is ${index?.capabilityPolicy?.visionDetector ?? "disabled"} in the asset group capability policy`)
             : detectorFailed
               ? failureMessage
               : activeJobStage === "vision-detection"
                 ? "Running configured object detector"
                 : activeJobProgress >= 80
                   ? "Detector pass completed"
-                  : "Waiting for detector",
+                  : isIndexed
+                    ? skipped("indexing finished without a detector trace or stored detection output")
+                    : "Waiting for detector",
       state: detectorTrace
         ? "done"
         : detectorFailed
@@ -319,16 +323,18 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: trackerTrace
         ? formatTrackerTrace(trackerTrace)
         : trackerUnavailableTrace
-          ? compactTraceFailure(trackerUnavailableTrace)
+          ? skipped(compactTraceFailure(trackerUnavailableTrace))
           : trackerDisabled
-            ? "Disabled by capability policy"
+            ? skipped(`vision tracker is ${index?.capabilityPolicy?.visionTracker ?? "disabled"} in the asset group capability policy`)
             : trackerFailed
               ? failureMessage
               : activeJobStage === "vision-tracking"
                 ? "Running configured tracker"
                 : activeJobProgress >= 81
                   ? "Tracker pass completed"
-                  : "Waiting for tracker",
+                  : isIndexed
+                    ? skipped("indexing finished without a tracker trace or stored tracking output")
+                    : "Waiting for tracker",
       state: trackerTrace
         ? "done"
         : trackerFailed
@@ -350,17 +356,17 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: soccerNetTrace
         ? formatSoccerNetTrace(soccerNetTrace)
         : soccerNetUnavailableTrace
-          ? compactTraceFailure(soccerNetUnavailableTrace)
+          ? skipped(compactTraceFailure(soccerNetUnavailableTrace))
           : soccerNetDisabled
             ? isFootballDomain
-              ? "Disabled by capability policy"
-              : "Not applicable to this domain group"
+              ? skipped(`SoccerNet action spotting is ${index?.capabilityPolicy?.soccerNetActionSpotting ?? "disabled"} in the asset group capability policy`)
+              : skipped(`SoccerNet action spotting applies only to sports.football, not ${formatDomainGroups(index)}`)
             : soccerNetFailed
               ? failureMessage
               : activeJobStage === "soccernet-action"
                 ? "Running configured action spotter"
                 : isIndexed
-                  ? "Not configured or no action spots returned"
+                  ? skipped("optional SoccerNet action spotting did not run for this indexed asset")
                   : "Waiting for football action spotting",
       state: soccerNetTrace
         ? "done"
@@ -391,9 +397,13 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
           : domainVlmFailed
             ? failureMessage
             : domainVlmDisabled
-              ? "Disabled or not applicable"
+              ? !domainIndexingEnabled
+                ? skipped("sports domain indexing is disabled for this asset group")
+                : skipped(`domain VLM refinement is ${index?.capabilityPolicy?.domainVlmRefinement ?? "disabled"} in the asset group capability policy`)
               : isIndexed
-                ? "Not configured or not requested"
+                ? hasDomainEvents
+                  ? skipped("indexing finished without any stored domain VLM refinement result")
+                  : skipped("no sports domain events were available for VLM refinement")
                 : "Waiting for domain event layer",
       state: domainVlmRunning
         ? "active"
@@ -418,7 +428,9 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             ? "Computing semantic text embeddings"
             : textEmbeddingDone
               ? "Semantic text embedding completed"
-              : "Waiting for text embeddings",
+              : isIndexed
+                ? skipped("indexing finished without a stored text embedding trace")
+                : "Waiting for text embeddings",
       state: textEmbeddingTrace || hasTextEmbedding ? "done" : activeJobStage === "embed" ? "active" : textEmbeddingDone ? "done" : hasActiveJob ? "waiting" : flowState(asset, ["embedding"], false, isFailed),
       trace: compactModelTrace(textEmbeddingTrace)
     },
@@ -428,13 +440,13 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: visualEmbeddingTrace
         ? formatVisualEmbeddingTrace(visualEmbeddingTrace)
         : visualEmbeddingUnavailableTrace
-          ? compactTraceFailure(visualEmbeddingUnavailableTrace)
+          ? skipped(compactTraceFailure(visualEmbeddingUnavailableTrace))
           : activeJobStage === "visual-embedding" || activeJobStage === "visual-embedding-unavailable"
             ? "Computing visual keyframe embeddings"
             : visualEmbeddingPassDone
               ? "Visual embedding pass completed"
               : isIndexed
-                ? "No visual embedding trace was stored"
+                ? skipped("indexing finished without a stored visual embedding trace")
                 : "Waiting for visual embeddings",
       state: visualEmbeddingTrace
         ? "done"
@@ -547,7 +559,7 @@ function getDomainFlowState({
   job: JobRecord | null;
 }): { detail: string; state: FlowStepState } {
   if (hasDomainEvents) return { detail: "Sports domain events are ready", state: "done" };
-  if (!domainIndexingEnabled) return { detail: "Disabled for this asset group", state: "skipped" };
+  if (!domainIndexingEnabled) return { detail: skipped("sports domain indexing is disabled for this asset group"), state: "skipped" };
 
   const stage = job?.stage ?? "queued";
   const progress = job?.progress ?? 0;
@@ -564,7 +576,7 @@ function getDomainFlowState({
     return { detail: `Waiting for detector, tracker, and text signals (${stage})`, state: "waiting" };
   }
 
-  if (isIndexed) return { detail: "Skipped because no trusted sports events were produced", state: "skipped" };
+  if (isIndexed) return { detail: skipped("no trusted sports events were produced from the indexed timeline signals"), state: "skipped" };
   return { detail: "Waiting for sports domain indexing", state: "waiting" };
 }
 
@@ -620,6 +632,17 @@ export function getLatestAssetJob(jobs: JobRecord[], assetId: string) {
   );
 }
 
+function skipped(reason: string) {
+  const trimmed = reason.trim();
+  if (!trimmed) return "Skipped: no stored result is available for this step";
+  return trimmed.toLowerCase().startsWith("skipped:") ? trimmed : `Skipped: ${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+function formatDomainGroups(index: IndexRecord | null) {
+  const groups = index?.domainIndexing?.groups ?? [];
+  return groups.length > 0 ? groups.join(", ") : "no domain group";
+}
+
 function compactTraceFailure(trace: string) {
   const detail = trace.replace(/^[^:]+:/, "").trim();
   if (!detail) return "Model execution failed";
@@ -627,6 +650,7 @@ function compactTraceFailure(trace: string) {
   if (detail.includes("WHISPERX_HF_TOKEN")) return "WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN";
   if (detail.includes("HF_TOKEN") || detail.includes("HF Hub")) return "Whisper failed while accessing Hugging Face model files";
   if (detail.includes("ModuleNotFoundError")) return detail.split("\n")[0];
+  if (detail.includes("is not valid JSON")) return "Model runtime returned non-JSON output instead of the expected result payload";
   if (detail.includes("paddle_ocr_extract.py")) return "PaddleOCR command failed";
   if (detail.includes("whisperx_diarize.py")) return "WhisperX command failed";
   if (detail.includes("whisper_transcribe.py")) return "Whisper command failed";

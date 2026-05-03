@@ -1,4 +1,4 @@
-import type { AssetRecord, JobRecord, MetricsSummary, SportsKnowledgeSnapshot } from "../shared/types";
+import type { AssetRecord, JobRecord, KnowledgeVectorStoreStatus, MetricsSummary, SportsKnowledgeSnapshot } from "../shared/types";
 
 export type DatabaseStatus = {
   enabled: boolean;
@@ -66,6 +66,8 @@ export type NflverseImportResult = {
   warnings: string[];
   snapshot: SportsKnowledgeSnapshot;
 };
+
+export type { KnowledgeVectorStoreStatus };
 
 export type DomainVlmBulkRefineResult = {
   indexId: string;
@@ -212,6 +214,17 @@ export function isObservabilitySnapshot(value: unknown): value is ObservabilityS
 
 export function isSportsKnowledgeSnapshot(value: unknown): value is SportsKnowledgeSnapshot {
   return isRecord(value) && Array.isArray(value.competitions) && Array.isArray(value.teams) && Array.isArray(value.players);
+}
+
+export function isKnowledgeVectorStoreStatus(value: unknown): value is KnowledgeVectorStoreStatus {
+  return (
+    isRecord(value) &&
+    (value.storage === "postgres" || value.storage === "local") &&
+    typeof value.vectors === "number" &&
+    Array.isArray(value.domains) &&
+    Array.isArray(value.providers) &&
+    Array.isArray(value.kinds)
+  );
 }
 
 export function isAssetUploadPayload(value: unknown): value is { asset: AssetRecord } {

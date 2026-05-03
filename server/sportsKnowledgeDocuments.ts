@@ -67,7 +67,7 @@ export function buildSportsKnowledgeDocuments(
     };
   });
 
-  const playerDocs = snapshot.players.slice(0, options.maxPlayers ?? snapshot.players.length).map((player) => {
+  const playerDocs = [...snapshot.players].sort(compareKnowledgePlayers).slice(0, options.maxPlayers ?? snapshot.players.length).map((player) => {
     const seasons = player.activeSeasons.join(", ");
     const teams = unique(Object.values(player.teamsBySeason).filter(Boolean)).join(", ");
     const sourceText = `${player.canonical} is a ${player.sport.replace(/_/g, " ")} player in ${player.league}${teams ? ` for ${teams}` : ""}${player.position ? `, position ${player.position}` : ""}${seasons ? `. Seasons: ${seasons}` : ""}.`;
@@ -184,6 +184,21 @@ function domainGroupForLeague(league: string): SportsDomainGroup {
 
 function unique(items: string[]) {
   return Array.from(new Set(items));
+}
+
+function compareKnowledgePlayers(a: SportsKnowledgeSnapshot["players"][number], b: SportsKnowledgeSnapshot["players"][number]) {
+  return playerPriority(b) - playerPriority(a) || a.canonical.localeCompare(b.canonical);
+}
+
+function playerPriority(player: SportsKnowledgeSnapshot["players"][number]) {
+  const seasons = player.activeSeasons.join(" ");
+  return [
+    player.provider === "local" ? 1000 : 0,
+    /2026|2025|2025-26|2024-25/.test(seasons) ? 200 : 0,
+    player.position ? 25 : 0,
+    Object.keys(player.teamsBySeason).length,
+    player.aliases.length
+  ].reduce((sum, value) => sum + value, 0);
 }
 
 function slug(value: string) {

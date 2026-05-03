@@ -24,6 +24,7 @@ export { ensurePostgresStore } from "./postgres/schema";
 export { getPostgresStatus, resetPostgresStore } from "./postgres/status";
 export {
   getKnowledgeVectorCount,
+  getKnowledgeVectorStatus,
   rebuildKnowledgeVectorStore,
   searchKnowledgeVectors
 } from "./postgres/knowledgeVectorRepository";

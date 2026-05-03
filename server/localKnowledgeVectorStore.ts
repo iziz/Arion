@@ -1,7 +1,9 @@
 import path from "node:path";
 import type { SportsDomainGroup } from "../shared/types";
-import { cosineSimilarity } from "./intelligenceCore/textUtils";
+import { extractKeywords } from "./intelligenceCore/textUtils";
 import { readJsonFile, writeJsonFile } from "./jsonFileStore";
+import { scoreKnowledgeVectorRecord } from "./knowledgeVectorScoring";
+import { buildKnowledgeVectorStatus } from "./knowledgeVectorStatus";
 import { embedPassageTexts } from "./localEmbeddingRuntime";
 import * as pgStore from "./postgresStore";
 import type { SportsKnowledgeDocument, SportsKnowledgeVectorHit, SportsKnowledgeVectorRecord } from "./sportsKnowledgeDocuments";
@@ -39,12 +41,13 @@ export async function rebuildKnowledgeVectorStore(documents: SportsKnowledgeDocu
   return { count: records.length, storage: "local" as const };
 }
 
-export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24): Promise<SportsKnowledgeVectorHit[]> {
-  if (pgStore.isPostgresEnabled()) return pgStore.searchKnowledgeVectors(domainGroup, queryVector, limit);
+export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24, queryText = ""): Promise<SportsKnowledgeVectorHit[]> {
+  if (pgStore.isPostgresEnabled()) return pgStore.searchKnowledgeVectors(domainGroup, queryVector, limit, queryText);
   await ensureKnowledgeVectorStore();
+  const terms = extractKeywords(queryText);
   return records
     .filter((record) => !domainGroup || record.domainGroup === domainGroup)
-    .map((record) => ({ ...record, score: cosineSimilarity(queryVector, record.vector) }))
+    .map((record) => ({ ...record, score: scoreKnowledgeVectorRecord(record, queryVector, terms, queryText) }))
     .filter((record) => record.score > 0.12)
     .sort((a, b) => b.score - a.score || a.entityName.localeCompare(b.entityName))
     .slice(0, limit);
@@ -54,6 +57,12 @@ export async function getKnowledgeVectorCount() {
   if (pgStore.isPostgresEnabled()) return pgStore.getKnowledgeVectorCount();
   await ensureKnowledgeVectorStore();
   return records.length;
+}
+
+export async function getKnowledgeVectorStatus() {
+  if (pgStore.isPostgresEnabled()) return pgStore.getKnowledgeVectorStatus();
+  await ensureKnowledgeVectorStore();
+  return buildKnowledgeVectorStatus(records, "local");
 }
 
 export async function ensureKnowledgeVectorStore() {

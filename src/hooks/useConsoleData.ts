@@ -4,6 +4,7 @@ import type {
   EventRecord,
   IndexRecord,
   JobRecord,
+  KnowledgeVectorStoreStatus,
   MetricsSummary,
   SportsKnowledgeSnapshot
 } from "../../shared/types";
@@ -13,6 +14,7 @@ import {
   getArrayResult,
   getGuardedResult,
   isDatabaseStatus,
+  isKnowledgeVectorStoreStatus,
   isMetricsSummary,
   isObservabilitySnapshot,
   isSportsKnowledgeSnapshot,
@@ -29,6 +31,7 @@ export function useConsoleData() {
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
   const [sportsKnowledge, setSportsKnowledge] = useState<SportsKnowledgeSnapshot | null>(null);
+  const [knowledgeVectorStore, setKnowledgeVectorStore] = useState<KnowledgeVectorStoreStatus | null>(null);
   const [selectedIndexId, setSelectedIndexId] = useState("default-index");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -47,7 +50,7 @@ export function useConsoleData() {
         setMessage("Refresh warning: API server is restarting or unavailable.");
         return;
       }
-      const [indexesResult, assetsResult, jobsResult, eventsResult, metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult] =
+      const [indexesResult, assetsResult, jobsResult, eventsResult, metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult, knowledgeVectorStoreResult] =
         await Promise.allSettled([
           api.get<IndexRecord[]>("/api/indexes"),
           api.get<AssetRecord[]>("/api/assets"),
@@ -56,7 +59,8 @@ export function useConsoleData() {
           api.get<MetricsSummary>("/api/metrics"),
           api.get<DatabaseStatus>("/api/db/status"),
           api.get<ObservabilitySnapshot>("/api/observability"),
-          api.get<SportsKnowledgeSnapshot>("/api/knowledge/sports")
+          api.get<SportsKnowledgeSnapshot>("/api/knowledge/sports"),
+          api.get<KnowledgeVectorStoreStatus>("/api/knowledge/sports/vector-store")
         ]);
       const failures: string[] = [];
       const nextIndexes = getArrayResult<IndexRecord>(indexesResult, "indexes", failures);
@@ -67,6 +71,7 @@ export function useConsoleData() {
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
       const nextSportsKnowledge = getGuardedResult(sportsKnowledgeResult, "sports knowledge", isSportsKnowledgeSnapshot, failures);
+      const nextKnowledgeVectorStore = getGuardedResult(knowledgeVectorStoreResult, "knowledge vector store", isKnowledgeVectorStoreStatus, failures);
 
       if (nextIndexes) {
         setIndexes(nextIndexes);
@@ -85,6 +90,7 @@ export function useConsoleData() {
       if (nextDbStatus) setDbStatus(nextDbStatus);
       if (nextObservability) setObservability(nextObservability);
       if (nextSportsKnowledge) setSportsKnowledge(nextSportsKnowledge);
+      if (nextKnowledgeVectorStore) setKnowledgeVectorStore(nextKnowledgeVectorStore);
 
       if (failures.length > 0) {
         setMessage(`Refresh warning: ${failures.slice(0, 2).join("; ")}`);
@@ -119,6 +125,7 @@ export function useConsoleData() {
     observability,
     sportsKnowledge,
     setSportsKnowledge,
+    knowledgeVectorStore,
     selectedIndexId,
     setSelectedIndexId,
     selectedAssetId,

@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { importFootballDataKnowledge } from "../footballDataClient";
 import { importFootballDataUkKnowledge } from "../footballDataUkImport";
 import { embedQueryText } from "../localEmbeddingRuntime";
-import { getKnowledgeVectorCount, rebuildKnowledgeVectorStore, searchKnowledgeVectors } from "../localKnowledgeVectorStore";
+import { getKnowledgeVectorStatus, rebuildKnowledgeVectorStore, searchKnowledgeVectors } from "../localKnowledgeVectorStore";
 import { importNflverseKnowledge } from "../nflverseImport";
 import { deleteSportsKnowledgePlayer, getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "../sportsKnowledge";
 import { buildSportsKnowledgeDocuments, knowledgeVectorHitToEvidence } from "../sportsKnowledgeDocuments";
@@ -15,7 +15,7 @@ export function registerKnowledgeRoutes(app: Express) {
   });
 
   app.get("/api/knowledge/sports/vector-store", async (_req, res) => {
-    res.json({ vectors: await getKnowledgeVectorCount() });
+    res.json(await getKnowledgeVectorStatus());
   });
 
   app.post("/api/knowledge/sports/vector-store/rebuild", async (req, res) => {
@@ -38,7 +38,7 @@ export function registerKnowledgeRoutes(app: Express) {
     }
     const domainGroup = domainGroupValue(req.query.domainGroup);
     const queryVector = await embedQueryText(query);
-    const hits = await searchKnowledgeVectors(domainGroup, queryVector, optionalNumber(req.query.limit, 12));
+    const hits = await searchKnowledgeVectors(domainGroup, queryVector, optionalNumber(req.query.limit, 12), query);
     res.json({
       hits,
       evidence: hits.map(knowledgeVectorHitToEvidence)

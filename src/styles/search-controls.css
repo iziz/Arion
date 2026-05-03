@@ -1057,6 +1057,35 @@
   line-height: 1.4;
 }
 
+.domain-event-row .time-link {
+  width: fit-content;
+  min-height: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #647871;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 820;
+  line-height: 1.4;
+  text-align: left;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.domain-event-row .time-link:hover {
+  background: transparent;
+  color: #2b8b70;
+  text-decoration: underline;
+  box-shadow: none;
+  transform: none;
+}
+
+.domain-event-row .time-link:focus-visible {
+  outline: 2px solid rgba(43, 139, 112, 0.28);
+  outline-offset: 3px;
+}
+
 .domain-chip-row {
   display: flex;
   flex-wrap: wrap;

@@ -1,8 +1,11 @@
 import type { SportsDomainGroup } from "../../shared/types";
 import type { SportsKnowledgeVectorRecord } from "../sportsKnowledgeDocuments";
+import { extractKeywords } from "../intelligenceCore/textUtils";
+import { scoreKnowledgeVectorRecord } from "../knowledgeVectorScoring";
+import { buildKnowledgeVectorStatus, type KnowledgeVectorStatusRecord } from "../knowledgeVectorStatus";
 import { getPool, isVectorExtensionAvailable } from "./connection";
 import { ensurePostgresStore } from "./schema";
-import { cosineSimilarity, isPgVectorCompatible, vectorLiteral } from "./vectorUtils";
+import { isPgVectorCompatible, vectorLiteral } from "./vectorUtils";
 
 type KnowledgeVectorRow = {
   id: string;
@@ -45,8 +48,11 @@ export async function rebuildKnowledgeVectorStore(records: SportsKnowledgeVector
   }
 }
 
-export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24) {
+export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24, queryText = "") {
   await ensurePostgresStore();
+  const terms = extractKeywords(queryText).slice(0, 8);
+  const candidateLimit = Math.max(limit * 24, 200);
+  const candidates = new Map<string, ReturnType<typeof rowToResult>>();
   if (isVectorExtensionAvailable() && isPgVectorCompatible(queryVector)) {
     const result = await getPool().query(
       `select *, 1 - (embedding <=> $1::vector) as score
@@ -55,17 +61,25 @@ export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | un
          and ($2::text is null or domain_group = $2)
        order by embedding <=> $1::vector
        limit $3`,
-      [vectorLiteral(queryVector), domainGroup ?? null, limit]
+      [vectorLiteral(queryVector), domainGroup ?? null, candidateLimit]
     );
-    return result.rows.map(rowToResult);
+    for (const row of result.rows.map(rowToResult)) candidates.set(row.id, row);
+  } else {
+    const result = await getPool().query(
+      "select * from app_knowledge_vectors where ($1::text is null or domain_group = $1)",
+      [domainGroup ?? null]
+    );
+    for (const row of result.rows.map(rowToResult)) candidates.set(row.id, row);
   }
 
-  const result = await getPool().query(
-    "select * from app_knowledge_vectors where ($1::text is null or domain_group = $1)",
-    [domainGroup ?? null]
-  );
-  return result.rows
-    .map((row) => ({ ...rowToResult(row), score: cosineSimilarity(queryVector, row.embedding_json ?? []) }))
+  if (terms.length > 0) {
+    const { where, values } = lexicalWhereClause(terms, domainGroup);
+    const result = await getPool().query(`select * from app_knowledge_vectors where ${where} limit ${candidateLimit}`, values);
+    for (const row of result.rows.map(rowToResult)) candidates.set(row.id, row);
+  }
+
+  return Array.from(candidates.values())
+    .map((row) => ({ ...row, score: scoreKnowledgeVectorRecord(row, queryVector, terms, queryText) }))
     .filter((row) => row.score > 0.12)
     .sort((a, b) => b.score - a.score || a.entityName.localeCompare(b.entityName))
     .slice(0, limit);
@@ -75,6 +89,16 @@ export async function getKnowledgeVectorCount() {
   await ensurePostgresStore();
   const result = await getPool().query("select count(*)::int as count from app_knowledge_vectors");
   return result.rows[0].count as number;
+}
+
+export async function getKnowledgeVectorStatus() {
+  await ensurePostgresStore();
+  const result = await getPool().query(
+    `select domain_group as "domainGroup", provider, kind, count(*)::int as vectors
+     from app_knowledge_vectors
+     group by domain_group, provider, kind`
+  );
+  return buildKnowledgeVectorStatus(result.rows as KnowledgeVectorStatusRecord[], "postgres");
 }
 
 function rowValues(record: SportsKnowledgeVectorRecord, pgVector?: string) {
@@ -113,4 +137,20 @@ function rowToResult(row: KnowledgeVectorRow) {
     vector: row.embedding_json ?? [],
     score: Number(row.score ?? 0)
   };
+}
+
+function lexicalWhereClause(terms: string[], domainGroup: SportsDomainGroup | undefined) {
+  const values: string[] = [];
+  const clauses: string[] = [];
+  if (domainGroup) {
+    values.push(domainGroup);
+    clauses.push(`domain_group = $${values.length}`);
+  }
+  const termClauses = terms.map((term) => {
+    values.push(`%${term.toLowerCase()}%`);
+    const index = values.length;
+    return `(lower(text) like $${index} or lower(entity_name) like $${index} or lower(coalesce(competition, '')) like $${index} or lower(coalesce(team, '')) like $${index})`;
+  });
+  clauses.push(`(${termClauses.join(" or ")})`);
+  return { where: clauses.join(" and "), values };
 }

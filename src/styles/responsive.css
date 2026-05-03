@@ -1,8 +1,21 @@
 @media (max-width: 980px) {
   .knowledge-grid,
   .knowledge-columns,
-  .knowledge-toolbar {
+  .knowledge-toolbar,
+  .workflow-result-grid,
+  .workflow-result-grid.compact,
+  .workflow-usage-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-result-header,
+  .workflow-result-list article,
+  .workflow-result-list button {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-result-header {
+    display: grid;
   }
 }
 
@@ -451,6 +464,11 @@
   min-height: 160px;
 }
 
+.workflow-stage .flow-node.expanded {
+  grid-column: 1 / -1;
+  min-height: 0;
+}
+
 .workflow-stage .flow-node p {
   font-size: 13px;
   line-height: 1.45;
@@ -635,7 +653,7 @@
 }
 
 .obs-summary {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .obs-summary span {
@@ -682,6 +700,20 @@
   }
 
   .obs-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .obs-section-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .obs-section-header span {
+    text-align: left;
+  }
+
+  .obs-metric-values {
     grid-template-columns: 1fr;
   }
 }

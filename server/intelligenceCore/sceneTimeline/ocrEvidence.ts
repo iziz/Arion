@@ -44,7 +44,7 @@ export function buildTextComparisons(speech: string, subtitles: string[], screen
     ...subtitles.map((text) => ({ kind: "subtitle" as const, text })),
     ...screenText.map((text) => ({ kind: "screen_text" as const, text }))
   ].filter((item) => item.text.trim().length > 0);
-  return sources
+  const comparisons = sources
     .map((source) => {
       const similarity = textSimilarity(speech, source.text);
       return {
@@ -56,7 +56,16 @@ export function buildTextComparisons(speech: string, subtitles: string[], screen
         suggestedText: chooseSuggestedCorrection(speech, source.text, similarity)
       };
     })
-    .sort((a, b) => a.similarity - b.similarity)
+    .sort((a, b) => a.similarity - b.similarity);
+
+  const seen = new Set<string>();
+  return comparisons
+    .filter((item) => {
+      const key = [item.status, Math.round(item.similarity * 100), normalizeForComparison(item.suggestedText || item.asrText || item.ocrText)].join(":");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 3);
 }
 

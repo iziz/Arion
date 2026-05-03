@@ -512,6 +512,19 @@ export type KnowledgeEvidence = {
   segmentId?: string;
 };
 
+export type KnowledgeVectorStoreStatus = {
+  storage: "postgres" | "local";
+  vectors: number;
+  domains: Array<{
+    domainGroup: SportsDomainGroup;
+    vectors: number;
+    providers: Array<{ provider: KnowledgeEvidence["source"]; vectors: number }>;
+    kinds: Array<{ kind: KnowledgeEvidence["kind"]; vectors: number }>;
+  }>;
+  providers: Array<{ provider: KnowledgeEvidence["source"]; vectors: number }>;
+  kinds: Array<{ kind: KnowledgeEvidence["kind"]; vectors: number }>;
+};
+
 export type DomainSearchFilters = {
   competition?: string;
   season?: string;
