@@ -1328,10 +1328,10 @@ Selected environment variables used by the implementation:
 | --- | --- |
 | `PORT` | API port, default `8787`. |
 | `REDIS_URL` | Redis URL for BullMQ asset job and ask operation dispatch/execution, default `redis://127.0.0.1:6379`. |
-| `JOB_QUEUE_NAME` | BullMQ queue name, default `arion:asset-jobs`. |
+| `JOB_QUEUE_NAME` | BullMQ queue name, default `arion-asset-jobs`. BullMQ queue names cannot contain `:`, so configured values are normalized by replacing `:` with `-`. |
 | `JOB_WORKER_CONCURRENCY` | Number of asset jobs a worker process can run concurrently, default `1`. |
 | `JOB_QUEUE_RECONCILE_MS` | Worker interval for reconciling queued `JobRecord`s into Redis, default `15000`. |
-| `ASK_QUEUE_NAME` | BullMQ queue name for ask operation execution, default `arion:ask-operations`. |
+| `ASK_QUEUE_NAME` | BullMQ queue name for ask operation execution, default `arion-ask-operations`. BullMQ queue names cannot contain `:`, so configured values are normalized by replacing `:` with `-`. |
 | `ASK_WORKER_CONCURRENCY` | Number of ask operations an ask worker can run concurrently, default `2`. |
 | `ASK_QUEUE_RECONCILE_MS` | Ask worker interval for reconciling queued `AskOperation`s into Redis, default `15000`. |
 | `DATABASE_URL` | Enables Postgres storage. |

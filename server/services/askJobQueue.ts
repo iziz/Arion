@@ -7,7 +7,7 @@ export type RedisAskOperationData = {
   operationId: string;
 };
 
-export const askOperationQueueName = process.env.ASK_QUEUE_NAME ?? "arion:ask-operations";
+export const askOperationQueueName = normalizeBullMqQueueName(process.env.ASK_QUEUE_NAME, "arion-ask-operations");
 export const askWorkerConcurrency = parsePositiveInteger(process.env.ASK_WORKER_CONCURRENCY, 2);
 export const askQueueReconcileIntervalMs = parsePositiveInteger(process.env.ASK_QUEUE_RECONCILE_MS, 15000);
 const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
@@ -114,4 +114,16 @@ function createRedisConnection(role: "producer" | "worker") {
 function parsePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function normalizeBullMqQueueName(value: string | undefined, fallback: string) {
+  const raw = (value || fallback).trim() || fallback;
+  const normalized = raw.replace(/:/g, "-");
+  if (normalized !== raw) {
+    logJson("warn", "ask.redis.queue_name_normalized", "BullMQ queue names cannot contain ':'; using a normalized ask operation queue name.", {
+      configured: raw,
+      normalized
+    });
+  }
+  return normalized;
 }

@@ -11,7 +11,7 @@ export type RedisAssetJobData = {
 };
 
 export const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
-export const assetJobQueueName = process.env.JOB_QUEUE_NAME ?? "arion:asset-jobs";
+export const assetJobQueueName = normalizeBullMqQueueName(process.env.JOB_QUEUE_NAME, "arion-asset-jobs");
 export const jobWorkerConcurrency = parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 1);
 
 const defaultJobOptions: JobsOptions = {
@@ -86,4 +86,16 @@ function createRedisConnection(role: "producer" | "worker") {
 function parsePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function normalizeBullMqQueueName(value: string | undefined, fallback: string) {
+  const raw = (value || fallback).trim() || fallback;
+  const normalized = raw.replace(/:/g, "-");
+  if (normalized !== raw) {
+    logJson("warn", "jobs.redis.queue_name_normalized", "BullMQ queue names cannot contain ':'; using a normalized asset job queue name.", {
+      configured: raw,
+      normalized
+    });
+  }
+  return normalized;
 }
