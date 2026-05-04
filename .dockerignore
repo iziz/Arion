@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.data/
+.venv-ai/
+uploads/
+.env
+.local/
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+/.tmp
+.git/
+.gitignore

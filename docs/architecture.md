@@ -41,7 +41,7 @@ Primary code references:
 
 ## Operational Runtime Topology
 
-This is the intended production-style boundary model after the durable queue and media boundary changes. Local development still uses Vite and local filesystem-backed object storage, but those are implementation choices behind the same boundaries.
+This is the intended production-style boundary model after the durable queue and media boundary changes. Standard local development uses Docker Compose for Redis and PostgreSQL/pgvector; Vite and local filesystem-backed object storage are implementation choices behind the same boundaries.
 
 ```mermaid
 flowchart TB
@@ -49,7 +49,7 @@ flowchart TB
   Client --> MediaDelivery["Media delivery boundary\nobject storage / CDN / reverse proxy"]
 
   Api --> Services["TypeScript application services\nroutes, workflows, search, knowledge"]
-  Services --> AppState["Application persistence\nPostgreSQL app_* tables\nlocal JSON fallback for development"]
+  Services --> AppState["Application persistence\nPostgreSQL app_* tables\nlocal JSON only when DATABASE_URL is unset"]
   Services --> QueueOutbox["Transactional queue outbox\napp_queue_outbox / queue-outbox.json"]
   QueueOutbox --> AskQueue["Redis + BullMQ\nask operation queue"]
   QueueOutbox --> AssetQueue["Redis + BullMQ\nasset job queue"]
@@ -155,8 +155,8 @@ flowchart TB
 
   subgraph StorageAndTelemetry["Application state and telemetry sinks"]
     direction LR
-    Persistence["Application persistence adapters\nmetadata, ask operations,\ntracking, vector stores"] --> LocalPersistence["Application filesystem persistence\n.data/db.json, events.ndjson,\nask/tracking/vector JSON"]
-    Persistence --> PostgresPersistence["Application PostgreSQL persistence\napp_* tables + optional pgvector"]
+    Persistence["Application persistence adapters\nmetadata, ask operations,\ntracking, vector stores"] --> LocalPersistence["Explicit offline filesystem fallback\n.data/db.json, events.ndjson,\nask/tracking/vector JSON"]
+    Persistence --> PostgresPersistence["Docker PostgreSQL persistence\napp_* tables + pgvector"]
     ObjectStorage["Object-storage media files\n.data/object-storage"]
     Persistence -.->|diagnostic logs only| Observability["Observability sink\nOpenTelemetry SDK, local spans,\nlatency buckets, NDJSON logs"]
     Observability --> LogFiles["Observability log files\n.data/logs/app.ndjson"]
@@ -197,18 +197,22 @@ flowchart TB
 
 `package.json` defines the local development topology:
 
-- `npm run dev` runs `dev:redis`, `dev:api`, `dev:worker:run`, `dev:ask-worker:run`, and `dev:web` concurrently.
-- `npm run dev:full` also starts `dev:redis`, the Python runtime service through `models:runtime:ai`, and the Python VLM worker through `models:vlm:ai`.
-- `dev:redis` runs `scripts/start_redis_dev.ts`; it uses an existing local Redis when one is reachable, starts `redis-server` when available, falls back to `docker run --rm -p 6379:6379 redis:7`, and finally starts the npm-managed `redis-memory-server` fallback on the configured `REDIS_URL` port.
-- `dev:api` runs `tsx watch server/index.ts`.
-- `dev:worker` starts `dev:redis` plus `dev:worker:run`; `dev:worker:run` runs `tsx watch server/jobWorker.ts`.
-- `dev:ask-worker` starts `dev:redis` plus `dev:ask-worker:run`; `dev:ask-worker:run` runs `tsx watch server/askWorker.ts`.
+- `npm run dev` runs `dev:infra` first, then starts `dev:api`, `dev:worker:run`, `dev:ask-worker:run`, and `dev:web` concurrently.
+- `npm run dev:full` also starts the Python runtime service through `models:runtime:ai` and the Python VLM worker through `models:vlm:ai`.
+- `dev:infra` runs `scripts/docker_infra.ts up`; it starts `redis` and `postgres` through Docker Compose and waits for Redis and PostgreSQL readiness.
+- `dev:api` runs `ARION_DOCKER_INFRA=true tsx watch server/index.ts`.
+- `dev:worker` starts `dev:infra` plus `dev:worker:run`; `dev:worker:run` runs `ARION_DOCKER_INFRA=true tsx watch server/jobWorker.ts`.
+- `dev:ask-worker` starts `dev:infra` plus `dev:ask-worker:run`; `dev:ask-worker:run` runs `ARION_DOCKER_INFRA=true tsx watch server/askWorker.ts`.
 - `dev:web` runs `vite --host 0.0.0.0`.
-- `worker` and `ask-worker` also start `dev:redis` before running their non-watch worker entrypoints.
+- `worker` and `ask-worker` also start `dev:infra` before running their non-watch worker entrypoints.
+- `infra:up`, `infra:check`, `infra:logs`, and `infra:down` manage the Docker Redis/PostgreSQL infrastructure.
+- `docker:up` runs the containerized web/API/worker stack with Redis and PostgreSQL.
+- `docker:full` runs `docker:up` plus the Python runtime and VLM services.
 - The API default port is `8787`.
 - The Vite default port is `5173`.
 - The combined local Python runtime service default port is `8792`.
-- Redis is required for asset job execution and ask operation execution. Local worker scripts start Redis automatically when `REDIS_URL` points at localhost, and worker entrypoints wait for Redis readiness before creating BullMQ workers. `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
+- Redis is required for asset job execution and ask operation execution. Docker Compose owns Redis in the standard runtime, and worker entrypoints wait for Redis readiness before creating BullMQ workers. `REDIS_URL` defaults to `redis://127.0.0.1:16379` for Docker-backed host development and `redis://redis:6379` inside Docker app services.
+- PostgreSQL/pgvector is the standard application persistence backend in Docker development and operations. `ARION_DOCKER_INFRA=true` pins host development to the Docker PostgreSQL URL so an unrelated local Postgres cannot be used accidentally.
 
 `vite.config.ts` proxies frontend development requests:
 
@@ -217,6 +221,34 @@ flowchart TB
 
 This means frontend code uses same-origin paths such as `/api/assets` and `/media/...`; the dev server forwards them to Express.
 The detailed local topology shows this Vite proxy because it is part of the development runtime. In a production deployment, the static frontend host or reverse proxy can replace this node while Express owns only the `/api` route layer. Local `/media` serving should be disabled in that topology with `MEDIA_SERVING_MODE=disabled`.
+
+## Docker Runtime
+
+Docker Compose is the standard infrastructure and operational packaging boundary.
+
+| Service | Image/build | Runtime responsibility |
+| --- | --- | --- |
+| `postgres` | `pgvector/pgvector:pg17` | Durable application persistence and pgvector indexes. |
+| `redis` | `redis:7.4-alpine` | BullMQ execution queues for asset jobs and ask operations. |
+| `api` | `Dockerfile.node` | Express API process, route handling, queue outbox writes, SSE fanout, and optional local `/media` serving. |
+| `asset-worker` | `Dockerfile.node` | BullMQ asset job worker and long-running indexing workflows. |
+| `ask-worker` | `Dockerfile.node` | BullMQ ask operation worker and query/search workflows. |
+| `web` | `Dockerfile.web` | Nginx-served React build with reverse proxying for `/api` and `/media`. |
+| `model-runtime` | `Dockerfile.python` | FastAPI Python runtime service for ASR, OCR, vision, and embedding endpoints. |
+| `vlm` | `Dockerfile.python` | FastAPI VLM service for Qwen/LLaVA-style video reasoning. |
+
+Compose profiles:
+
+- Default profile: infrastructure only, `redis` and `postgres`.
+- `app`: web, API, asset worker, ask worker, Redis, and PostgreSQL.
+- `ai`: Python runtime and VLM services. Use with `app` for a fully containerized AI runtime.
+
+Shared Docker volumes:
+
+- `postgres-data`: PostgreSQL cluster data.
+- `redis-data`: Redis append-only data.
+- `app-data`: application `.data` boundary, including local object storage, logs, and generated artifacts.
+- `uploads`: upload temp files.
 
 ## Frontend Architecture
 
@@ -1317,9 +1349,9 @@ The frontend still performs an initial REST read for full state hydration. Conti
 | Asset queue durability | `JobRecord` plus queue outbox are the source of truth. Redis/BullMQ is the execution queue. Postgres mode writes the job and outbox in one transaction. Worker startup publishes pending outbox entries and reconciles queued records. |
 | Asset checkpoint durability | `JobRecord.stageCheckpoints` records checkpoint status. Interrupted indexing jobs preserve checkpoints and resume from the failed or interrupted stage when outputs are reusable. |
 | Ask operations | Queue outbox plus Redis/BullMQ execution queue and separate `server/askWorker.ts` process. Persisted `AskOperation` entries include the original request. Running execution restarts from the beginning after worker recovery. |
-| Metadata durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
-| Vector durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
-| Tracking durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
+| Metadata durability | PostgreSQL in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
+| Vector durability | PostgreSQL + pgvector in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
+| Tracking durability | PostgreSQL in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
 | Local JSON writes | Serialized through promise chains in each store module. |
 | Runtime parallelism | Asset job worker concurrency is controlled by `JOB_WORKER_CONCURRENCY`; some local model stages can also run concurrently based on `LOCAL_MODEL_HEAVY_CONCURRENCY`. |
 | Frontend refresh | SSE event push through `/api/events/stream`; initial hydration remains REST. |
@@ -1331,14 +1363,15 @@ Selected environment variables used by the implementation:
 | Variable | Effect |
 | --- | --- |
 | `PORT` | API port, default `8787`. |
-| `REDIS_URL` | Redis URL for BullMQ asset job and ask operation dispatch/execution, default `redis://127.0.0.1:6379`. |
+| `ARION_DOCKER_INFRA` | When true, host development uses Docker Redis and Docker PostgreSQL/pgvector URLs, overriding `.env` values to avoid accidental local-service connections. |
+| `REDIS_URL` | Redis URL for BullMQ asset job and ask operation dispatch/execution, default `redis://127.0.0.1:16379` in Docker-backed host development. |
 | `JOB_QUEUE_NAME` | BullMQ queue name, default `arion-asset-jobs`. BullMQ queue names cannot contain `:`, so configured values are normalized by replacing `:` with `-`. |
 | `JOB_WORKER_CONCURRENCY` | Number of asset jobs a worker process can run concurrently, default `1`. |
 | `JOB_QUEUE_RECONCILE_MS` | Worker interval for reconciling queued `JobRecord`s into Redis, default `15000`. |
 | `ASK_QUEUE_NAME` | BullMQ queue name for ask operation execution, default `arion-ask-operations`. BullMQ queue names cannot contain `:`, so configured values are normalized by replacing `:` with `-`. |
 | `ASK_WORKER_CONCURRENCY` | Number of ask operations an ask worker can run concurrently, default `2`. |
 | `ASK_QUEUE_RECONCILE_MS` | Ask worker interval for reconciling queued `AskOperation`s into Redis, default `15000`. |
-| `DATABASE_URL` | Enables Postgres storage. |
+| `DATABASE_URL` | Enables Postgres storage; Docker-backed host development defaults to `postgres://video_intelligence:video_intelligence@127.0.0.1:15432/video_intelligence`. |
 | `POSTGRES_APPLICATION_NAME` | Sets the Postgres connection application name, default `arion`. |
 | `POSTGRES_POOL_MAX` | Sets the Node `pg` pool max size, default `10`. |
 | `POSTGRES_CONNECTION_TIMEOUT_MS` | Sets Postgres connection timeout, default `5000`. |

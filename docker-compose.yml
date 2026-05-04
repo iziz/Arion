@@ -1,0 +1,143 @@
+name: arion
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: video_intelligence
+      POSTGRES_USER: video_intelligence
+      POSTGRES_PASSWORD: video_intelligence
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video_intelligence -d video_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    env_file:
+      - .env.docker
+    environment:
+      ARION_PROCESS_ROLE: api
+      PORT: 8787
+    command: ["npm", "run", "api"]
+    ports:
+      - "${API_PORT:-8787}:8787"
+    volumes:
+      - app-data:/app/.data
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  asset-worker:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    env_file:
+      - .env.docker
+    environment:
+      ARION_PROCESS_ROLE: worker
+    command: ["npm", "run", "worker:run"]
+    volumes:
+      - app-data:/app/.data
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ask-worker:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    env_file:
+      - .env.docker
+    environment:
+      ARION_PROCESS_ROLE: worker
+    command: ["npm", "run", "ask-worker:run"]
+    volumes:
+      - app-data:/app/.data
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  model-runtime:
+    profiles: ["ai"]
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    env_file:
+      - .env.docker
+    command: ["python", "scripts/arion_model_runtime_service.py"]
+    volumes:
+      - app-data:/app/.data
+      - uploads:/app/uploads
+    ports:
+      - "${PYTHON_RUNTIME_SERVICE_PORT:-8792}:8792"
+    restart: unless-stopped
+
+  vlm:
+    profiles: ["ai"]
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    env_file:
+      - .env.docker
+    command: ["python", "scripts/qwen_vlm_worker.py"]
+    volumes:
+      - app-data:/app/.data
+      - uploads:/app/uploads
+    ports:
+      - "${QWEN_VLM_PORT:-8791}:8791"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  app-data:
+  uploads:

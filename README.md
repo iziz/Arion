@@ -27,7 +27,7 @@ Arion is a local TwelveLabs-like service prototype for video ingest, index manag
 - Timeline segment generation with modality labels and local semantic text embeddings
 - OpenCLIP keyframe image embeddings for visual search over generated thumbnails
 - Optional sports-only domain indexing for football asset groups, with ontology captions, event labels, and structured field/player/ball event placeholders
-- Persistent vector storage in PostgreSQL + pgvector, with `.data/vector-store.json` fallback when `DATABASE_URL` is unset
+- Persistent vector storage in Docker-managed PostgreSQL + pgvector; local JSON remains only an explicit fallback when `DATABASE_URL` is unset
 - Hybrid search ranking over lexical matches, text semantic vectors, visual vectors, source quality, confidence, and recency
 - Analysis endpoint for selected indexed assets
 - Webhook registration and delivery logs
@@ -53,7 +53,7 @@ React Console
            -> Python Runtime Services: ASR / OCR / Vision / Embedding
            -> VLM Worker Service
            -> Node Runtime Integrations: FFmpeg / OpenAI HTTP
-        -> Application Persistence: PostgreSQL app_* tables or local JSON in development
+        -> Application Persistence: PostgreSQL app_* tables
         -> Media Object Storage: source media and generated artifacts
         -> Observability Sink: OpenTelemetry spans, NDJSON logs, latency metrics
   -> Media Delivery Boundary
@@ -67,6 +67,7 @@ The indexing, search, and analysis logic is adapter-friendly. Production-oriente
 
 ```bash
 npm install
+npm run infra:up
 npm run dev
 npm run dev:full
 npm run build
@@ -80,11 +81,13 @@ npm run models:doctor
 npm run models:doctor:ai
 npm run models:runtime
 npm run models:runtime:ai
+npm run docker:up
+npm run docker:full
 ```
 
 The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
-Asset job execution and ask operation execution require Redis; `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` start local Redis automatically when `REDIS_URL` points at localhost. The Redis starter reuses an already-running Redis, then tries local `redis-server`, Docker `redis:7`, and the npm-managed `redis-memory-server` fallback on the configured `REDIS_URL` port.
-`REDIS_URL` defaults to `redis://127.0.0.1:6379`.
+Asset job execution, ask operation execution, and application persistence require Docker-managed Redis and PostgreSQL in the standard development path. `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` run `dev:infra` first, which starts `redis` and `postgres` through Docker Compose and waits for readiness.
+`REDIS_URL` defaults to `redis://127.0.0.1:16379` for Docker-backed host development, and Docker app services use `redis://redis:6379`.
 Local environment values are loaded from `.env` automatically when present.
 
 ## API
@@ -158,6 +161,38 @@ Local environment values are loaded from `.env` automatically when present.
 - `GET /api/observability` returns recent spans, recent logs, request latency, stage latency, and model runtime latency/error metrics.
 - `GET /api/model-capabilities` returns the current local runtime dependency/capability check.
 
+## Docker Runtime
+
+Docker is the required infrastructure boundary for the standard runtime.
+
+```bash
+npm run infra:up
+npm run infra:check
+npm run infra:logs
+npm run infra:down
+```
+
+Containerized application runtime:
+
+```bash
+npm run docker:up
+npm run docker:full
+npm run docker:down
+```
+
+The Compose stack defines these service boundaries:
+
+- `postgres`: `pgvector/pgvector:pg17`
+- `redis`: `redis:7.4-alpine`
+- `api`: Express API process
+- `asset-worker`: BullMQ asset job worker
+- `ask-worker`: BullMQ ask operation worker
+- `web`: Nginx static frontend with `/api` and `/media` reverse proxying
+- `model-runtime`: FastAPI Python runtime service for ASR/OCR/vision/embedding
+- `vlm`: FastAPI VLM service
+
+The Docker application services use `.env.docker`; host development uses `.env` plus `ARION_DOCKER_INFRA=true` from npm scripts. That flag pins Redis/PostgreSQL URLs to Docker infra ports so unrelated local services are not used accidentally.
+
 ## Local AI Setup
 
 Python 3.10-3.12 is recommended for PaddleOCR/PaddlePaddle compatibility.
@@ -203,22 +238,19 @@ Use `--skipKnowledge` to rebuild only asset indexes, `--skipAssets` to rebuild o
 
 ## PostgreSQL + pgvector
 
-Set `DATABASE_URL` to switch storage from `.data/db.json` and `.data/vector-store.json` to PostgreSQL.
+The standard development and operational topology uses Docker-managed PostgreSQL with pgvector and Docker-managed Redis.
 
 ```bash
-brew install postgresql@17 pgvector
-brew services start postgresql@17
-
-/opt/homebrew/opt/postgresql@17/bin/psql -d postgres -c "CREATE ROLE video_intelligence LOGIN PASSWORD 'video_intelligence';"
-/opt/homebrew/opt/postgresql@17/bin/createdb -O video_intelligence video_intelligence
-/opt/homebrew/opt/postgresql@17/bin/psql -d video_intelligence -c "CREATE EXTENSION IF NOT EXISTS vector;"
-
 cp .env.example .env
+npm run infra:up
 npm run db:check
 npm run db:migrate
 npm run db:seed
 npm run dev
 ```
+
+`npm run infra:up` runs `docker compose up -d redis postgres` and waits for Redis and PostgreSQL readiness. Host development uses project-scoped ports `16379` for Redis and `15432` for PostgreSQL by default to avoid accidentally connecting to unrelated local services. `npm run infra:down` stops the Compose stack.
+`docker-compose.yml` uses `pgvector/pgvector:pg17`, so `POSTGRES_REQUIRE_PGVECTOR=true` is the expected Docker path. If `DATABASE_URL` is deliberately unset outside the Docker path, the app can still use local JSON files for explicit offline development, but that is no longer the standard runtime.
 
 Operational settings:
 
@@ -253,6 +285,6 @@ Segments with missing or incompatible embeddings keep their JSON vector payload 
 
 - Replace local uploads with S3, R2, GCS, or Azure Blob Storage.
 - Serve media through object storage, CDN, or a reverse proxy with `MEDIA_SERVING_MODE=disabled` in the API process.
-- Replace Redis/BullMQ with SQS, Pub/Sub, Kafka, or RabbitMQ if the deployment needs a managed queue.
+- Replace the Docker Redis instance with managed Redis, SQS, Pub/Sub, Kafka, or RabbitMQ if the deployment needs managed queue infrastructure.
 - Add multimodal image/keyframe embeddings, shot detection, and stronger ranking signals.
 - Add tenant isolation, production metering, external OpenTelemetry exporters, and hosted log/metric backends.
