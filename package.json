@@ -21,6 +21,7 @@
     "knowledge:statbunker": "tsx scripts/import_statbunker.ts",
     "knowledge:vectors:rebuild": "tsx scripts/rebuild_knowledge_vectors.ts",
     "embeddings:rebuild": "tsx scripts/rebuild_embeddings.ts",
+    "indexes:rebuild": "tsx scripts/rebuild_all_indexes.ts",
     "domain:vlm:refine": "tsx scripts/refine_vlm_domain.ts",
     "text:repair": "tsx scripts/repair_text_encoding.ts",
     "models:doctor": "python3 scripts/model_doctor.py",

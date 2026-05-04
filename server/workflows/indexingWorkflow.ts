@@ -213,6 +213,14 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
           : undefined
       };
     });
+    await persistIndexingSnapshot(assetId, {
+      status: "embedding",
+      progress: 76,
+      tags: output.tags,
+      summary: output.summary,
+      timeline: thumbnailTimeline,
+      keyframes
+    });
     let videoVlmTrace = "";
     let videoVlmTimeline: AssetRecord["timeline"] = thumbnailTimeline;
     const shouldRunVideoVlm =
@@ -229,7 +237,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             onProgress: async (event) => {
               await updateJob(
                 jobId,
-                { stage: "video-vlm", progress: 76 + Math.round(event.progress * 0.02) },
+                { stage: "video-vlm", progress: Number((76 + event.progress * 0.02).toFixed(2)) },
                 `[video-vlm:${event.status}] ${event.message}`
               );
             }
@@ -245,6 +253,15 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         { stage: "video-vlm", progress: 78 },
         `Video VLM analysis completed for ${videoVlm.describedSegments}/${videoVlm.attemptedSegments} attempted segments (${videoVlm.invalidSegments} invalid, ${videoVlm.failedSegments} failed)`
       );
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 78,
+        tags: output.tags,
+        summary: output.summary,
+        timeline: videoVlmTimeline,
+        keyframes,
+        modelTrace: [videoVlmTrace]
+      });
       if (videoVlm.errors.length > 0) {
         logJson("warn", "model.vlm.video_segment.partial", "Video VLM analysis had partial failures", {
           jobId,
@@ -272,7 +289,16 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       ? `vision-detector:${detections.provider}:${detections.model}:${detections.frames.length}`
       : `vision-detector-unavailable:${detections.error ?? "detector unavailable"}`;
     assertCapabilityAvailable(embeddingIndex, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
-    const trackedV0Timeline = applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections));
+    const trackedV0Timeline = applyVisionTracking(applyVisionDetections(videoVlmTimeline, detections));
+    await persistIndexingSnapshot(assetId, {
+      status: "embedding",
+      progress: 79,
+      tags: output.tags,
+      summary: output.summary,
+      timeline: trackedV0Timeline,
+      keyframes,
+      modelTrace: [videoVlmTrace, detectorTrace]
+    });
     await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking players and ball candidates over video");
     const tracks = isCapabilityEnabled(embeddingIndex, "visionTracker")
       ? await traceAsync(
@@ -287,6 +313,15 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
     assertCapabilityAvailable(embeddingIndex, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
     const detectedTimeline = applyEventClassification(applyVisionTracks(trackedV0Timeline, tracks));
+    await persistIndexingSnapshot(assetId, {
+      status: "embedding",
+      progress: 80,
+      tags: output.tags,
+      summary: output.summary,
+      timeline: detectedTimeline,
+      keyframes,
+      modelTrace: [videoVlmTrace, detectorTrace, trackerTrace]
+    });
     let soccerNetTrace = "";
     let actionTimeline = detectedTimeline;
     const shouldRunSoccerNet =
@@ -402,8 +437,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       ...refreshed,
       intelligence: {
         ...refreshed.intelligence,
-        modelTrace: [
-          ...refreshed.intelligence.modelTrace,
+        modelTrace: mergeModelTrace(refreshed.intelligence.modelTrace, [
           videoVlmTrace,
           detectorTrace,
           trackerTrace,
@@ -411,7 +445,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
           soccerNetTrace,
           `embedding:${getEmbeddingModelName()}`,
           visualEmbeddingTrace
-        ].filter(Boolean)
+        ])
       },
       ...output,
       timeline,
@@ -626,6 +660,60 @@ function buildAudioRuntimePartial(audio: Awaited<ReturnType<typeof extractAudioA
     hasSpeech: audio.vad.available && audio.speechSegments.length > 0,
     hasMusic: audio.vad.available && audio.musicSegments.length > 0
   };
+}
+
+type IndexingSnapshotPatch = {
+  status?: AssetRecord["status"];
+  progress?: number;
+  tags?: string[];
+  summary?: string;
+  timeline?: AssetRecord["timeline"];
+  keyframes?: AssetRecord["keyframes"];
+  modelTrace?: string[];
+};
+
+async function persistIndexingSnapshot(assetId: string, patch: IndexingSnapshotPatch) {
+  const current = await getAsset(assetId);
+  if (!current) return null;
+  return saveAsset({
+    ...current,
+    tags: patch.tags ?? current.tags,
+    summary: patch.summary ?? current.summary,
+    timeline: patch.timeline ?? current.timeline,
+    keyframes: patch.keyframes ?? current.keyframes,
+    status: patch.status ?? current.status,
+    progress: patch.progress ?? current.progress,
+    intelligence: {
+      ...current.intelligence,
+      modelTrace: mergeModelTrace(current.intelligence.modelTrace, patch.modelTrace ?? [])
+    },
+    updatedAt: new Date().toISOString()
+  });
+}
+
+function mergeModelTrace(existing: string[], additions: string[]) {
+  const next = [...existing];
+  for (const trace of additions.filter(Boolean)) {
+    const group = modelTraceGroup(trace);
+    const previousIndex = group ? next.findIndex((item) => modelTraceGroup(item) === group) : -1;
+    if (previousIndex >= 0) {
+      next[previousIndex] = trace;
+    } else if (!next.includes(trace)) {
+      next.push(trace);
+    }
+  }
+  return next;
+}
+
+function modelTraceGroup(trace: string) {
+  if (trace.startsWith("video-vlm")) return "video-vlm";
+  if (trace.startsWith("vision-detector")) return "vision-detector";
+  if (trace.startsWith("vision-tracker")) return "vision-tracker";
+  if (trace.startsWith("soccernet-action")) return "soccernet-action";
+  if (trace.startsWith("domain-vlm")) return "domain-vlm";
+  if (trace.startsWith("embedding:")) return "embedding";
+  if (trace.startsWith("visual-embedding")) return "visual-embedding";
+  return null;
 }
 
 async function emitForAsset(

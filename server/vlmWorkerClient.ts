@@ -4,7 +4,6 @@ import { getPublicMediaRoot } from "./localObjectStorage";
 import { markVlmQuality, mergeVlmResponse, type VlmSportsEventResponse } from "./vlm/domainMapper";
 
 const DEFAULT_TIMEOUT_MS = 90000;
-const DEFAULT_MAX_SEGMENTS = 80;
 
 export type VlmRefinementResult = {
   timeline: TimelineSegment[];
@@ -53,19 +52,17 @@ export type VideoVlmProgressEvent = {
   failedSegments: number;
   skippedSegments: number;
   segmentId: string | null;
-  status: VideoVlmEvidence["status"];
+  status: VideoVlmEvidence["status"] | "running";
   message: string;
   progress: number;
 };
 
 export type VlmRefinementOptions = {
-  maxSegments?: number;
   timeoutMs?: number;
   onProgress?: (event: VlmRefinementProgressEvent) => void | Promise<void>;
 };
 
 export type VideoVlmAnalysisOptions = {
-  maxSegments?: number;
   timeoutMs?: number;
   onProgress?: (event: VideoVlmProgressEvent) => void | Promise<void>;
 };
@@ -128,9 +125,9 @@ export async function analyzeTimelineWithVlm(
     };
   }
 
-  const maxSegments = Math.max(1, Number(options.maxSegments ?? process.env.VLM_MAX_VIDEO_SEGMENTS_PER_ASSET ?? process.env.VLM_MAX_SEGMENTS_PER_ASSET ?? DEFAULT_MAX_SEGMENTS));
+  const eligibleSegments = timeline.filter(shouldAnalyzeSegment).length;
   const timeoutMs = Math.max(5000, Number(options.timeoutMs ?? process.env.VLM_WORKER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS));
-  const totalSegments = Math.min(maxSegments, timeline.filter(shouldAnalyzeSegment).length);
+  const totalSegments = eligibleSegments;
   const errors: string[] = [];
   let describedSegments = 0;
   let attemptedSegments = 0;
@@ -140,12 +137,24 @@ export async function analyzeTimelineWithVlm(
   const analyzed: TimelineSegment[] = [];
 
   for (const segment of timeline) {
-    if (attemptedSegments >= maxSegments || !shouldAnalyzeSegment(segment)) {
+    if (attemptedSegments >= totalSegments || !shouldAnalyzeSegment(segment)) {
       skippedSegments += 1;
       analyzed.push(segment);
       continue;
     }
     attemptedSegments += 1;
+    await emitVideoProgress(options, {
+      totalSegments,
+      attemptedSegments,
+      describedSegments,
+      invalidSegments,
+      failedSegments,
+      skippedSegments,
+      segmentId: segment.id,
+      status: "running",
+      message: `Video VLM analyzing segment ${attemptedSegments}/${totalSegments}`,
+      progress: getProgress(Math.max(0, attemptedSegments - 1), totalSegments)
+    });
     try {
       const response = await callVlmAnalyzeEndpoint(url, asset, segment, timeoutMs);
       if (isUsableVideoVlmResponse(response)) {
@@ -237,9 +246,9 @@ export async function refineSportsDomainTimelineWithVlm(
     };
   }
 
-  const maxSegments = Math.max(1, Number(options.maxSegments ?? process.env.VLM_MAX_SEGMENTS_PER_ASSET ?? DEFAULT_MAX_SEGMENTS));
+  const eligibleSegments = timeline.filter(shouldRefineSegment).length;
   const timeoutMs = Math.max(5000, Number(options.timeoutMs ?? process.env.VLM_WORKER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS));
-  const totalSegments = Math.min(maxSegments, timeline.filter(shouldRefineSegment).length);
+  const totalSegments = eligibleSegments;
   const errors: string[] = [];
   let refinedSegments = 0;
   let attemptedSegments = 0;
@@ -249,7 +258,7 @@ export async function refineSportsDomainTimelineWithVlm(
   const refined: TimelineSegment[] = [];
 
   for (const segment of timeline) {
-    if (attemptedSegments >= maxSegments || !shouldRefineSegment(segment)) {
+    if (attemptedSegments >= totalSegments || !shouldRefineSegment(segment)) {
       skippedSegments += 1;
       refined.push(segment);
       continue;

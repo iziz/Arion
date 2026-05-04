@@ -147,6 +147,8 @@ LOCAL_AI_PYTHON="$PWD/.venv-ai/bin/python" npm run dev
 The runtime extracts 16 kHz mono WAV audio with FFmpeg, derives speech/music regions with FFmpeg VAD-style silence detection, then tries `faster-whisper` first and `openai-whisper` second. WhisperX diarization is optional because pyannote-backed diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg and can try multiple OCR language candidates when `PADDLEOCR_LANG=auto`.
 The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, `sentence-transformers`, and optional `ultralytics`/`rfdetr`/`SoccerNet` backends.
 
+`TIMELINE_MAX_SEGMENTS` controls the maximum generated timeline windows and keyframes per asset; the default is `120`. When raw scene windows exceed that limit, adjacent windows are merged across the full duration instead of truncating the tail of the video. Domain-neutral Video VLM analysis and domain-specific VLM refinement follow their eligible timeline/keyframe counts.
+
 ## Local Embeddings
 
 The default semantic embedding model is `intfloat/multilingual-e5-base`, which produces normalized 768-dimensional vectors for transcript, OCR, visual labels, tags, and timeline text. Query text is embedded with the same model before vector search.
@@ -157,6 +159,14 @@ npm run embeddings:rebuild
 ```
 
 Use this command after changing `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `VISUAL_EMBEDDING_MODEL`, `VISUAL_EMBEDDING_PRETRAINED`, or `VISUAL_EMBEDDING_DIMENSIONS`. If the text model runtime is unavailable, the app falls back to deterministic keyword vectors so local indexing can continue. If the visual model runtime is unavailable, visual vectors are skipped while text search remains available.
+
+To rebuild every local index from source videos, including full asset reindexing, Video VLM analysis when configured, text/visual vectors, and sports knowledge vectors:
+
+```bash
+npm run indexes:rebuild -- --all
+```
+
+Use `--skipKnowledge` to rebuild only asset indexes, `--skipAssets` to rebuild only knowledge vectors, and `--batchSize=128` to tune knowledge vector embedding batches. Without `--all`, the command reindexes only assets that are already indexed.
 
 ## PostgreSQL + pgvector
 

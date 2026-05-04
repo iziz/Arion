@@ -61,9 +61,13 @@ export async function recoverDetachedLocalJobs() {
   const detachedJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
   for (const job of detachedJobs) {
     const asset = job.assetId ? await getAsset(job.assetId) : null;
-    const hasPreviousIndex = Boolean(asset?.timeline.length);
+    const isRetryJob = job.type === "asset.reindex" || job.logs.some((entry) => /Retry requested/i.test(entry.message));
+    const hasPreviousIndex = Boolean(asset?.timeline.length && (asset.status === "indexed" || isRetryJob));
+    const hasPartialIndex = Boolean(asset?.timeline.length);
     const message = hasPreviousIndex
       ? "Detached local job recovered after server restart; previous indexed data was preserved."
+      : hasPartialIndex
+        ? "Detached local job recovered after server restart; partial indexed data was preserved, but retry is required."
       : "Detached local job recovered after server restart; retry is required.";
     await updateJob(
       job.id,

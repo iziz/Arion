@@ -40,6 +40,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const hasDomainEvents = asset.timeline.some((segment) => (segment.domain?.events.length ?? 0) > 0);
   const domainEventCount = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
   const videoVlmSummary = getVideoVlmSummary(asset);
+  const videoVlmJobProgress = getVideoVlmJobProgress(job);
+  const videoVlmJobFailed = Boolean(videoVlmJobProgress?.failed && videoVlmJobProgress.failed > 0 && videoVlmJobProgress.described === 0);
   const domainVlmSummary = getDomainVlmSummary(asset);
   const domainIndexingEnabled = Boolean(index?.domainIndexing?.enabled && index.domainIndexing.groups.length > 0);
   const isFootballDomain = Boolean(index?.domainIndexing?.groups.includes("sports.football"));
@@ -109,6 +111,11 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const trackerFailed = isFailed && /visionTracker|Tracker/i.test(failureMessage);
   const soccerNetFailed = isFailed && /soccerNetActionSpotting|SoccerNet/i.test(failureMessage);
   const domainVlmFailed = isFailed && /domainVlmRefinement|Sports event VLM|domain-vlm/i.test(failureMessage);
+  const stalePreservedIndexedJob = Boolean(job?.status === "failed" && job.stage === "stale" && /(?:previous|partial) indexed data was preserved/i.test(failureMessage));
+  const jobLogText = (job?.logs ?? []).map((entry) => entry.message).join("\n");
+  const videoVlmInterruptedBeforeSave = stalePreservedIndexedJob && /Video VLM analysis completed|\[video-vlm:/i.test(jobLogText);
+  const detectorInterruptedBeforeSave = stalePreservedIndexedJob && /Detecting players and ball candidates|stage\.vision_detection|vision-detection/i.test(jobLogText);
+  const trackerInterruptedBeforeSave = stalePreservedIndexedJob && /Tracking players and ball candidates|stage\.vision_tracking|vision-tracking/i.test(jobLogText);
 
   const videoVlmDisabled = index?.capabilityPolicy?.videoVlmAnalysis === "disabled";
   const detectorDisabled = index?.capabilityPolicy?.visionDetector === "disabled";
@@ -420,7 +427,9 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       detail: videoVlmSummary
         ? videoVlmSummary
         : activeJobStage === "video-vlm"
-          ? "Analyzing timeline keyframes"
+          ? videoVlmJobProgress
+            ? `Analyzing timeline keyframes ${videoVlmJobProgress.attempted}/${videoVlmJobProgress.total}`
+            : "Analyzing timeline keyframes"
           : videoVlmTrace
             ? formatVideoVlmTrace(videoVlmTrace)
             : videoVlmUnavailableTrace
@@ -429,14 +438,20 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                 ? skipped(`video VLM analysis is ${index?.capabilityPolicy?.videoVlmAnalysis ?? "disabled"} in the asset group capability policy`)
                 : videoVlmFailed
                   ? failureMessage
-                  : videoVlmPassCompleted
-                    ? waitingForIndexedAssetSave("Video VLM analysis")
+                    : videoVlmPassCompleted
+                      ? videoVlmJobProgress
+                        ? videoVlmJobProgress.failed
+                          ? `Video VLM completed: ${videoVlmJobProgress.described ?? 0}/${videoVlmJobProgress.total} described, ${videoVlmJobProgress.failed} failed`
+                          : `Video VLM pass finished (${videoVlmJobProgress.attempted}/${videoVlmJobProgress.total}); waiting for indexed asset record save`
+                        : waitingForIndexedAssetSave("Video VLM analysis")
+                    : videoVlmInterruptedBeforeSave
+                      ? interruptedBeforeSave("Video VLM output")
                     : isIndexed
                       ? skipped("indexing finished without stored video VLM scene analysis")
                       : "Waiting for video VLM analysis",
       state: videoVlmSummary || videoVlmTrace
         ? "done"
-        : videoVlmFailed
+        : videoVlmFailed || videoVlmJobFailed || videoVlmInterruptedBeforeSave
           ? "error"
           : videoVlmUnavailableTrace || videoVlmDisabled
             ? "skipped"
@@ -460,6 +475,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             ? skipped(`vision detector is ${index?.capabilityPolicy?.visionDetector ?? "disabled"} in the asset group capability policy`)
             : detectorFailed
               ? failureMessage
+              : detectorInterruptedBeforeSave
+                ? interruptedBeforeSave("detector output")
               : activeJobStage === "vision-detection"
                 ? "Running configured object detector"
                 : detectorPassCompleted
@@ -469,7 +486,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                     : "Waiting for detector",
       state: detectorTrace
         ? "done"
-        : detectorFailed
+        : detectorFailed || detectorInterruptedBeforeSave
           ? "error"
           : detectorUnavailableTrace || detectorDisabled
             ? "skipped"
@@ -493,6 +510,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             ? skipped(`vision tracker is ${index?.capabilityPolicy?.visionTracker ?? "disabled"} in the asset group capability policy`)
             : trackerFailed
               ? failureMessage
+              : trackerInterruptedBeforeSave
+                ? interruptedBeforeSave("tracker output")
               : activeJobStage === "vision-tracking"
                 ? "Running configured tracker"
                 : trackerPassCompleted
@@ -502,7 +521,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                     : "Waiting for tracker",
       state: trackerTrace
         ? "done"
-        : trackerFailed
+        : trackerFailed || trackerInterruptedBeforeSave
           ? "error"
           : trackerUnavailableTrace || trackerDisabled
             ? "skipped"
@@ -694,6 +713,45 @@ function getVideoVlmSummary(asset: AssetRecord) {
   return `VLM ${counts.described}/${attempted} described${counts.invalid ? `, ${counts.invalid} invalid` : ""}${counts.failed ? `, ${counts.failed} failed` : ""}`;
 }
 
+function getVideoVlmJobProgress(job: JobRecord | null) {
+  if (!job) return null;
+  for (let index = job.logs.length - 1; index >= 0; index -= 1) {
+    const message = job.logs[index]?.message ?? "";
+    const segmentMatch = message.match(/^\[video-vlm:([^\]]+)] Video VLM (?:analyzing|analyzed|returned invalid structure for|failed for) segment (\d+)\/(\d+)/i);
+    if (segmentMatch) {
+      const attempted = Number(segmentMatch[2]);
+      const total = Number(segmentMatch[3]);
+      if (Number.isFinite(attempted) && Number.isFinite(total) && total > 0) {
+        return {
+          status: segmentMatch[1],
+          attempted,
+          total,
+          progress: Math.max(0, Math.min(100, Math.round((attempted / total) * 100)))
+        };
+      }
+    }
+    const completedMatch = message.match(/^Video VLM analysis completed for (\d+)\/(\d+) attempted segments \((\d+) invalid, (\d+) failed\)/i);
+    if (completedMatch) {
+      const attempted = Number(completedMatch[2]);
+      const described = Number(completedMatch[1]);
+      const invalid = Number(completedMatch[3]);
+      const failed = Number(completedMatch[4]);
+      if (Number.isFinite(attempted) && attempted > 0) {
+        return {
+          status: "complete",
+          attempted,
+          total: attempted,
+          progress: 100,
+          described,
+          invalid: Number.isFinite(invalid) ? invalid : 0,
+          failed: Number.isFinite(failed) ? failed : 0
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function getFlowStepServerProgress(step: Omit<FlowStep, "progress" | "retryStage">, job: JobRecord | null) {
   if (step.state !== "active") return undefined;
   if (job?.status !== "queued" && job?.status !== "running") return undefined;
@@ -767,6 +825,10 @@ function getDomainFlowState({
 
 function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, asset: AssetRecord, job: JobRecord | null) {
   if (step.state === "done") return 100;
+  if (step.id === "videoVlm" && step.state === "active") {
+    const videoVlmJobProgress = getVideoVlmJobProgress(job);
+    if (videoVlmJobProgress) return videoVlmJobProgress.progress;
+  }
   if (step.state === "waiting") return null;
   if (step.state === "skipped") return null;
   if (step.state === "error") return null;
@@ -833,7 +895,6 @@ export function getLatestAssetJob(jobs: JobRecord[], assetId: string) {
   const assetJobs = jobs.filter((job) => job.assetId === assetId);
   return (
     assetJobs.find((job) => job.status === "running" || job.status === "queued") ??
-    [...assetJobs].filter((job) => job.status === "succeeded").sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] ??
     [...assetJobs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] ??
     null
   );
@@ -847,6 +908,10 @@ function skipped(reason: string) {
 
 function waitingForIndexedAssetSave(label: string) {
   return `${label} pass finished; waiting for indexed asset record save`;
+}
+
+function interruptedBeforeSave(label: string) {
+  return `Interrupted before ${label} was saved; previous indexed asset was preserved`;
 }
 
 function formatDomainGroups(index: IndexRecord | null) {

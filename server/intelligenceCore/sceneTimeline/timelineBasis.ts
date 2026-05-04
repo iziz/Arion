@@ -10,11 +10,18 @@ export function fuseTimelineBasis(
 ): TimelineBasis[] {
   const safeDuration = Math.max(duration, 1);
   if (shotWindows.length === 0 && whisperSegments.length === 0) return [];
+  const maxSegments = positiveIntegerOrDefault(process.env.TIMELINE_MAX_SEGMENTS, 120);
   if (shotWindows.length === 0) {
-    return whisperSegments.map((segment, index) => ({
+    return limitWindowsWithCoverage(
+      whisperSegments.map((segment) => ({
+        start: segment.start,
+        end: segment.end
+      })),
+      maxSegments
+    ).map((segment, index) => ({
       start: segment.start,
       end: segment.end,
-      text: segment.text,
+      text: overlappingWhisperText(asset, segment.start, segment.end),
       shotIndex: index + 1,
       boundaryScore: null,
       boundarySource: null,
@@ -24,7 +31,6 @@ export function fuseTimelineBasis(
 
   const minWindow = Number(process.env.TIMELINE_MIN_WINDOW_SECONDS || 1.2);
   const maxWindow = Number(process.env.TIMELINE_MAX_WINDOW_SECONDS || 22);
-  const maxSegments = Number(process.env.TIMELINE_MAX_SEGMENTS || 120);
   const points = sortedUniquePoints([
     0,
     safeDuration,
@@ -38,7 +44,7 @@ export function fuseTimelineBasis(
       .filter((window) => window.end - window.start >= 0.35),
     minWindow
   );
-  const splitWindows = windows.flatMap((window) => splitLongWindow(window, maxWindow)).slice(0, maxSegments);
+  const splitWindows = limitWindowsWithCoverage(windows.flatMap((window) => splitLongWindow(window, maxWindow)), maxSegments);
   return splitWindows.map((window, index) => {
     const shot = bestOverlappingShotWindow(shotWindows, window.start, window.end);
     return {
@@ -61,8 +67,7 @@ export function normalizeWhisperTimeline(asset: AssetRecord) {
       end: Math.min(duration, Math.max(Number(segment.end || 0), Number(segment.start || 0) + 1)),
       text: segment.text.trim()
     }))
-    .filter((segment) => segment.text.length > 0)
-    .slice(0, 80);
+    .filter((segment) => segment.text.length > 0);
 }
 
 export function overlappingWhisperText(asset: AssetRecord, start: number, end: number) {
@@ -116,6 +121,25 @@ function splitLongWindow(window: { start: number; end: number }, maxWindow: numb
     start: window.start + size * index,
     end: index === count - 1 ? window.end : window.start + size * (index + 1)
   }));
+}
+
+function limitWindowsWithCoverage(windows: Array<{ start: number; end: number }>, maxSegments: number) {
+  if (windows.length <= maxSegments) return windows;
+  return Array.from({ length: maxSegments }, (_item, index) => {
+    const startIndex = Math.floor((index * windows.length) / maxSegments);
+    const endIndex = Math.floor(((index + 1) * windows.length) / maxSegments);
+    const group = windows.slice(startIndex, Math.max(startIndex + 1, endIndex));
+    return {
+      start: group[0].start,
+      end: group.at(-1)?.end ?? group[0].end
+    };
+  });
+}
+
+function positiveIntegerOrDefault(value: unknown, fallback: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 1) return fallback;
+  return Math.floor(numeric);
 }
 
 function bestOverlappingShotWindow(shotWindows: ShotWindow[], start: number, end: number) {
