@@ -199,7 +199,7 @@ flowchart TB
 
 - `npm run dev` runs `dev:redis`, `dev:api`, `dev:worker:run`, `dev:ask-worker:run`, and `dev:web` concurrently.
 - `npm run dev:full` also starts `dev:redis`, the Python runtime service through `models:runtime:ai`, and the Python VLM worker through `models:vlm:ai`.
-- `dev:redis` runs `scripts/start_redis_dev.ts`; it uses an existing local Redis when one is reachable, starts `redis-server` when available, and falls back to `docker run --rm -p 6379:6379 redis:7`.
+- `dev:redis` runs `scripts/start_redis_dev.ts`; it uses an existing local Redis when one is reachable, starts `redis-server` when available, falls back to `docker run --rm -p 6379:6379 redis:7`, and finally starts the npm-managed `redis-memory-server` fallback on the configured `REDIS_URL` port.
 - `dev:api` runs `tsx watch server/index.ts`.
 - `dev:worker` starts `dev:redis` plus `dev:worker:run`; `dev:worker:run` runs `tsx watch server/jobWorker.ts`.
 - `dev:ask-worker` starts `dev:redis` plus `dev:ask-worker:run`; `dev:ask-worker:run` runs `tsx watch server/askWorker.ts`.

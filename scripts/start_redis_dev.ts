@@ -2,6 +2,9 @@ import IORedis from "ioredis";
 import { mkdir } from "node:fs/promises";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import type { RedisMemoryServer as RedisMemoryServerClass } from "redis-memory-server";
+
+type RedisMemoryServerInstance = InstanceType<typeof RedisMemoryServerClass>;
 
 const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
 const parsed = new URL(redisUrl);
@@ -20,27 +23,37 @@ if (!isLocalRedisHost(host)) {
 
 await mkdir(path.resolve(".data", "redis"), { recursive: true });
 
-let child = tryStartRedisServer(port) ?? tryStartDockerRedis(port);
+let child: ChildProcess | null = tryStartRedisServer(port) ?? tryStartDockerRedis(port);
+let memoryServer: RedisMemoryServerInstance | null = null;
+
 if (!child) {
-  console.error("[dev:redis] Could not start Redis. Install redis-server or Docker, then rerun npm run dev:full.");
+  memoryServer = await tryStartRedisMemoryServer(port);
+}
+
+if (!child && !memoryServer) {
+  console.error("[dev:redis] Could not start Redis with redis-server, Docker, or redis-memory-server.");
   process.exit(1);
 }
 
-const ready = await waitForRedis(redisUrl, child);
+const ready = await waitForRedis(redisUrl, () => child !== null && (child.exitCode !== null || child.signalCode !== null));
 if (!ready) {
-  child.kill("SIGTERM");
+  await shutdown(1);
   process.exit(1);
 }
 
 console.log(`[dev:redis] Redis is ready at ${redisUrl}`);
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+process.once("SIGINT", () => void shutdown(0));
+process.once("SIGTERM", () => void shutdown(0));
 
-child.on("exit", (code, signal) => {
-  if (signal) process.exit(0);
-  process.exit(code ?? 0);
-});
+if (child) {
+  child.on("exit", (code, signal) => {
+    if (signal) process.exit(0);
+    process.exit(code ?? 0);
+  });
+} else {
+  process.stdin.resume();
+}
 
 function tryStartRedisServer(redisPort: number) {
   if (!commandExists("redis-server", ["--version"])) return null;
@@ -69,10 +82,37 @@ function tryStartDockerRedis(redisPort: number) {
   return spawn("docker", ["run", "--rm", "-p", `${redisPort}:6379`, "redis:7"], { stdio: "inherit" });
 }
 
-async function waitForRedis(url: string, processRef: ChildProcess) {
+async function tryStartRedisMemoryServer(redisPort: number) {
+  try {
+    const { RedisMemoryServer } = await import("redis-memory-server");
+    console.log(`[dev:redis] Starting redis-memory-server on port ${redisPort}`);
+    const server = await RedisMemoryServer.create({
+      binary: {
+        version: process.env.REDISMS_VERSION ?? "7.2.4"
+      },
+      instance: {
+        args: ["--dir", path.resolve(".data", "redis")],
+        ip: "127.0.0.1",
+        port: redisPort
+      }
+    });
+    const actualPort = await server.getPort();
+    if (actualPort !== redisPort) {
+      await server.stop();
+      console.error(`[dev:redis] redis-memory-server started on ${actualPort}, expected ${redisPort}.`);
+      return null;
+    }
+    return server;
+  } catch (error) {
+    console.error(`[dev:redis] redis-memory-server failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+async function waitForRedis(url: string, hasProcessExited: () => boolean) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (processRef.exitCode !== null) {
-      console.error(`[dev:redis] Redis process exited before becoming ready with code ${processRef.exitCode}.`);
+    if (hasProcessExited()) {
+      console.error("[dev:redis] Redis process exited before becoming ready.");
       return false;
     }
     if (await isRedisReachable(url)) return true;
@@ -114,6 +154,14 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shutdown() {
+let shuttingDown = false;
+
+async function shutdown(exitCode: number) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   child?.kill("SIGTERM");
+  if (memoryServer) {
+    await memoryServer.stop();
+  }
+  process.exit(exitCode);
 }
