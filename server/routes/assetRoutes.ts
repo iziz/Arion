@@ -134,7 +134,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
         job.id,
         () =>
           traceJobAsync("job.indexing", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex" }, () =>
-            runIndexingJob(job.id, asset.id, sourcePath)
+            runIndexingJob(job.id, asset.id, sourcePath, { retryStage: requestedStage })
           )
       );
     }

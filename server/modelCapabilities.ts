@@ -43,6 +43,7 @@ export async function getRuntimeCapabilities() {
     maxBuffer: 1024 * 1024
   });
   const raw = parsePythonJson<Record<string, unknown>>(stdout);
+  const whisperCppReady = Boolean(raw.whisper_cpp && raw.whisper_cpp_model);
   return {
     checkedAt: new Date().toISOString(),
     python: String(raw.python ?? "unknown"),
@@ -51,7 +52,7 @@ export async function getRuntimeCapabilities() {
       ffprobe: Boolean(raw.ffprobe)
     },
     models: {
-      whisper: Boolean(raw.whisper || raw.faster_whisper),
+      whisper: Boolean(raw.whisper || raw.faster_whisper || whisperCppReady),
       whisperx: Boolean(raw.whisperx && raw.whisperx_diarize && raw.pyannote_audio),
       paddleocr: Boolean(raw.paddleocr && raw.paddle),
       scenedetect: Boolean(raw.scenedetect),

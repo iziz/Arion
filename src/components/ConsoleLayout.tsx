@@ -285,9 +285,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   return (
     <main className="shell">
       <header className="topbar">
-        <div>
-          <h1>Arion Console</h1>
-        </div>
         <section className="context-bar" aria-label="Current context">
           <div className="context-combined">
             <span>Dataset</span>
@@ -308,12 +305,12 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       </header>
 
       <nav className="view-tabs" aria-label="Console sections">
-        <a className="brand-logo" href="/" aria-label="Arion home">
+        <a className="brand-logo" href="/" aria-label="Arion.AI home">
           <span className="brand-mark">
             <img src="/arion-mark.svg" alt="" />
           </span>
           <span className="brand-copy">
-            <strong>Arion</strong>
+            <strong>Arion.AI</strong>
             <em>Video Intelligence</em>
           </span>
         </a>

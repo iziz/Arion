@@ -325,9 +325,9 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     },
     {
       id: "visual",
-      label: "Visual sampler",
+      label: "Visual profile sampler",
       detail: hasVisual
-        ? `${asset.keyframes.length} keyframes · ${asset.intelligence.visual.dominantColor}`
+        ? `Low-res frame profile · ${asset.intelligence.visual.dominantColor}`
         : visualRuntimeRunning
           ? "Sampling visual frames"
           : visualRuntimeWaitingForMerge
@@ -344,7 +344,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                     ? "Waiting for visual sampler"
                     : isIndexed
                       ? skipped("indexing finished without stored visual samples")
-                      : "Waiting for keyframes",
+                      : "Waiting for visual profile sampling",
       state: visualRuntimeStatus === "failed" && !visualDone
         ? visualRuntimeWaitingForMerge
           ? "waiting"
@@ -719,6 +719,9 @@ function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, as
   if (step.state === "skipped") return null;
   if (step.state === "error") return null;
 
+  const runtimeProgress = getFlowStepRuntimeProgress(step.id, job);
+  if (runtimeProgress !== null) return runtimeProgress;
+
   const progress = job?.progress ?? asset.progress;
   const stage = job?.stage ?? asset.status;
   if (step.id === "speakers" && stage === "diarization") {
@@ -753,6 +756,24 @@ function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, as
   const normalized = Math.round(((progress - start) / Math.max(1, end - start)) * 100);
   if (stage === "queued") return 0;
   return Math.max(5, Math.min(95, normalized));
+}
+
+function getFlowStepRuntimeProgress(stepId: string, job: JobRecord | null) {
+  if (!job || (job.status !== "queued" && job.status !== "running")) return null;
+  const runtimeStageIds: Record<string, string[]> = {
+    audio: ["audio"],
+    vad: ["audio"],
+    asr: ["asr"],
+    speakers: ["diarization"],
+    ocr: ["ocr"],
+    visual: ["visual"]
+  };
+  const stages = runtimeStageIds[stepId] ?? [];
+  const progressValues = stages
+    .map((stageId) => job.runtimeStages?.[stageId]?.progress)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (progressValues.length === 0) return null;
+  return Math.max(5, Math.min(100, Math.round(Math.max(...progressValues))));
 }
 
 export function getLatestAssetJob(jobs: JobRecord[], assetId: string) {

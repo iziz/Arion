@@ -277,6 +277,7 @@ export function AssetFlow({
                     onToggle={(nextStep) => setExpandedStepId((current) => (current === nextStep.id ? null : nextStep.id))}
                     onRetry={retryNode}
                   >
+                    <WorkflowRunDetails job={job} step={step} />
                     <WorkflowResultContent asset={asset} step={step} onOpenMoment={onOpenMoment} />
                   </FlowNode>
                 ))}
@@ -453,6 +454,196 @@ function WorkflowUsageSection({ items }: { items: string[] }) {
   );
 }
 
+function WorkflowRunDetails({ job, step }: { job: JobRecord | null; step: FlowStep }) {
+  if (!job) return null;
+  const currentStage = isWorkflowStageMatch(step, job.stage);
+  const runtimeStages = getWorkflowRuntimeStages(job, step);
+  const matchedLogs = getWorkflowStepLogs(job, step);
+  const candidateLogs = matchedLogs.length > 0 ? matchedLogs : currentStage ? job.logs : [];
+  const logs = collapseConsecutiveWorkflowLogs(candidateLogs).slice(-6);
+  const logTitle = matchedLogs.length > 0 || !currentStage ? "Related logs" : "Recent job logs";
+  return (
+    <section className={`workflow-node-run-details ${currentStage ? "current" : ""}`} aria-label={`${step.label} run details`}>
+      <div className="workflow-run-header">
+        <div>
+          <h4>Run details</h4>
+          <span>{job.type} · {job.status} · {job.stage}</span>
+        </div>
+        <strong>{job.progress}%</strong>
+      </div>
+      <div className="workflow-run-progress" aria-label={`${job.progress}% job progress`}>
+        <span style={{ width: `${job.progress}%` }} />
+      </div>
+      <div className="workflow-run-facts">
+        <span>
+          <b>Node</b>
+          {step.state}
+        </span>
+        <span>
+          <b>Step</b>
+          {step.progress === null ? step.state : `${step.progress}%`}
+        </span>
+        <span>
+          <b>Updated</b>
+          {formatWorkflowTime(job.updatedAt)}
+        </span>
+      </div>
+      {job.error && <p className="workflow-run-error">{job.error}</p>}
+      {runtimeStages.length > 0 && (
+        <div className="workflow-runtime-stage-list" aria-label={`${step.label} runtime stages`}>
+          {runtimeStages.map((stage) => {
+            const progress = normalizeWorkflowPercent(stage.progress);
+            const elapsed = formatWorkflowElapsed(stage.startedAt, stage.completedAt);
+            return (
+              <article key={stage.stage} className={`workflow-runtime-stage ${stage.status}`}>
+                <div className="workflow-runtime-stage-heading">
+                  <strong>{stage.stage}</strong>
+                  <span>{stage.status} · {progress}%</span>
+                </div>
+                <p>{stage.message}</p>
+                <div className="workflow-runtime-stage-progress" aria-label={`${stage.stage} ${progress}% complete`}>
+                  <span style={{ width: `${progress}%` }} />
+                </div>
+                <div className="workflow-runtime-stage-meta">
+                  <span>Elapsed {elapsed}</span>
+                  <span>Updated {formatWorkflowTime(stage.updatedAt)}</span>
+                </div>
+                {stage.error && <em>{stage.error}</em>}
+              </article>
+            );
+          })}
+        </div>
+      )}
+      <div className="workflow-log-list" aria-label={`${step.label} job logs`}>
+        <strong>{logTitle}</strong>
+        {logs.length > 0 ? (
+          logs.map((log) => (
+            <p key={`${log.at}-${log.message}`} className={log.level}>
+              <time>{formatWorkflowTime(log.at)}</time>
+              <span>{log.level}</span>
+              {log.message}
+            </p>
+          ))
+        ) : (
+          <em>No job log lines matched this node.</em>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function collapseConsecutiveWorkflowLogs(logs: JobRecord["logs"]) {
+  return logs.reduce<JobRecord["logs"]>((collapsed, log) => {
+    const previous = collapsed.at(-1);
+    if (previous?.level === log.level && previous.message === log.message) {
+      collapsed[collapsed.length - 1] = log;
+      return collapsed;
+    }
+    collapsed.push(log);
+    return collapsed;
+  }, []);
+}
+
+function getWorkflowRuntimeStages(job: JobRecord, step: FlowStep) {
+  const runtimeStageIds = getWorkflowRuntimeStageIds(step.id);
+  return runtimeStageIds
+    .map((stageId) => job.runtimeStages?.[stageId])
+    .filter((stage): stage is NonNullable<JobRecord["runtimeStages"]>[string] => Boolean(stage));
+}
+
+function getWorkflowStepLogs(job: JobRecord, step: FlowStep) {
+  const tokens = getWorkflowLogTokens(step.id);
+  return job.logs.filter((log) => {
+    const message = log.message.toLowerCase();
+    return tokens.some((token) => message.includes(token));
+  });
+}
+
+function isWorkflowStageMatch(step: FlowStep, stage: string) {
+  const normalizedStage = stage.toLowerCase();
+  return getWorkflowStageAliases(step.id).some((alias) => normalizedStage === alias || normalizedStage.startsWith(`${alias}-`));
+}
+
+function getWorkflowRuntimeStageIds(stepId: string) {
+  const runtimeStages: Record<string, string[]> = {
+    audio: ["audio", "audio-probe"],
+    vad: ["audio"],
+    asr: ["asr"],
+    speakers: ["diarization"],
+    ocr: ["ocr"],
+    visual: ["visual"]
+  };
+  return runtimeStages[stepId] ?? [];
+}
+
+function getWorkflowStageAliases(stepId: string) {
+  const stageAliases: Record<string, string[]> = {
+    input: ["queued"],
+    probe: ["probe"],
+    audio: ["sample", "local-model-runtime", "runtime-audio"],
+    vad: ["local-model-runtime", "runtime-audio"],
+    asr: ["local-model-runtime", "runtime-asr"],
+    speakers: ["diarization", "local-model-runtime", "runtime-diarization"],
+    ocr: ["local-model-runtime", "runtime-ocr"],
+    visual: ["sample", "local-model-runtime", "runtime-visual"],
+    scene: ["timeline", "scene-detection"],
+    timeline: ["timeline"],
+    keyframes: ["keyframes"],
+    detector: ["vision-detection"],
+    tracker: ["vision-tracking"],
+    soccernet: ["soccernet-action"],
+    domain: ["domain-index"],
+    domainVlm: ["domain-vlm"],
+    textEmbedding: ["embed"],
+    visualEmbedding: ["visual-embedding", "visual-embedding-unavailable"],
+    vector: ["vector-upsert-text", "vector-upsert-visual", "finalize"],
+    ready: ["complete", "finalize"]
+  };
+  return stageAliases[stepId] ?? [stepId.toLowerCase()];
+}
+
+function getWorkflowLogTokens(stepId: string) {
+  const logTokens: Record<string, string[]> = {
+    input: ["upload", "queued", "indexing started"],
+    probe: ["probe", "probing", "media"],
+    audio: ["runtime:audio", "audio", "sampling"],
+    vad: ["vad", "speech", "music"],
+    asr: ["runtime:asr", "asr", "transcription", "whisper"],
+    speakers: ["runtime:diarization", "diarization", "speaker", "whisperx"],
+    ocr: ["runtime:ocr", "ocr"],
+    visual: ["runtime:visual", "visual", "frame", "sampling"],
+    scene: ["scene"],
+    timeline: ["timeline"],
+    keyframes: ["keyframe"],
+    detector: ["vision-detection", "detecting players", "detector"],
+    tracker: ["vision-tracking", "tracking players", "tracker"],
+    soccernet: ["soccernet", "action spotting"],
+    domain: ["domain-index", "sports domain", "event layer"],
+    domainVlm: ["domain-vlm", "vlm"],
+    textEmbedding: ["semantic text", "embedding started", "embedding complete", "embed"],
+    visualEmbedding: ["visual-embedding", "visual embedding", "visual embeddings"],
+    vector: ["vector", "upsert", "writing"],
+    ready: ["complete", "finalize", "saving"]
+  };
+  return logTokens[stepId] ?? [stepId.toLowerCase()];
+}
+
+function formatWorkflowTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatWorkflowElapsed(startedAt: string, completedAt: string | null) {
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "0:00";
+  return formatDuration((end - start) / 1000);
+}
+
+function normalizeWorkflowPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 function qualityToneForStep(step: FlowStep) {
   if (step.state === "done") return "good";
   if (step.state === "error") return "bad";
@@ -493,7 +684,7 @@ function searchImpactForStep(step: FlowStep) {
     asr: "Search impact: text searchable",
     speakers: "Search impact: speaker context",
     ocr: "Search impact: screen text searchable",
-    visual: "Search impact: visual searchable",
+    visual: "Search impact: visual profile",
     scene: "Search impact: moment boundaries",
     timeline: "Search impact: moment retrieval",
     keyframes: "Search impact: thumbnails",

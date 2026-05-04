@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--dedupe-threshold", type=float, default=float(os.environ.get("PADDLEOCR_DEDUPE_THRESHOLD", "3.0")))
     parser.add_argument("--workers", type=int, default=int(os.environ.get("PADDLEOCR_WORKERS", "2")))
     args = parser.parse_args()
+    configure_threading()
 
     try:
         from paddleocr import PaddleOCR
@@ -38,6 +39,7 @@ def main():
         for name in sorted(os.listdir(args.frames_dir))
         if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
     ]
+    emit_progress(10, f"Preparing {len(image_paths)} OCR snapshots for {args.lang}")
 
     last_signatures = {}
     selected_image_paths = []
@@ -52,18 +54,36 @@ def main():
         selected_image_paths.append(image_path)
 
     workers = normalize_worker_count(args.workers, len(selected_image_paths))
-    if workers > 1:
+    total_frames = len(selected_image_paths)
+    emit_progress(15, f"Selected {total_frames} OCR snapshots for {args.lang} after dedupe")
+    if total_frames == 0:
+        emit_progress(98, f"No OCR snapshots to analyze for {args.lang}")
+        frame_results = []
+    elif workers > 1:
         with multiprocessing.get_context("spawn").Pool(processes=workers, initializer=init_worker, initargs=(args.lang,)) as pool:
-            frame_results = pool.map(
-                run_ocr_frame_worker,
-                [(image_path, args.subtitle_interval, args.full_interval) for image_path in selected_image_paths],
-            )
+            completed_frames = 0
+
+            def report_completed(_result):
+                nonlocal completed_frames
+                completed_frames += 1
+                emit_frame_progress(completed_frames, total_frames, args.lang, workers)
+
+            async_results = [
+                pool.apply_async(
+                    run_ocr_frame_worker,
+                    ((image_path, args.subtitle_interval, args.full_interval),),
+                    callback=report_completed,
+                )
+                for image_path in selected_image_paths
+            ]
+            frame_results = [result.get() for result in async_results]
     else:
         init_worker(args.lang)
-        frame_results = [
-            run_ocr_frame_worker((image_path, args.subtitle_interval, args.full_interval))
-            for image_path in selected_image_paths
-        ]
+        frame_results = []
+        for index, image_path in enumerate(selected_image_paths, start=1):
+            frame_results.append(run_ocr_frame_worker((image_path, args.subtitle_interval, args.full_interval)))
+            emit_frame_progress(index, total_frames, args.lang, workers)
+    emit_progress(98, f"Finalizing OCR tokens from {total_frames} snapshots for {args.lang}")
 
     tokens = []
     confidences = []
@@ -104,8 +124,28 @@ def normalize_worker_count(configured_workers, item_count):
     return max(1, min(configured_workers, item_count, cpu_count))
 
 
+def configure_threading():
+    threads = optional_positive_int(os.environ.get("PADDLEOCR_CPU_THREADS_PER_WORKER"))
+    if threads is None:
+        return None
+    for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"]:
+        os.environ.setdefault(key, str(threads))
+    return threads
+
+
+def optional_positive_int(value):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(str(value))
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def init_worker(lang):
     global _WORKER_OCR, _WORKER_LANG
+    configure_threading()
     _WORKER_LANG = lang
     if _WORKER_OCR is not None:
         return
@@ -145,6 +185,24 @@ def run_ocr_frame_worker(payload):
 def emit_result(result):
     print(json.dumps(result, ensure_ascii=False), flush=True)
     stop_resource_tracker()
+
+
+def emit_progress(progress, message):
+    payload = {
+        "type": "progress",
+        "stage": "ocr",
+        "progress": max(0, min(100, int(round(progress)))),
+        "message": message,
+    }
+    print(f"ARION_PROGRESS {json.dumps(payload, ensure_ascii=False)}", file=sys.stderr, flush=True)
+
+
+def emit_frame_progress(completed, total, lang, workers):
+    if total <= 0:
+        return
+    progress = 20 + (min(1, completed / total) * 75)
+    worker_text = f" with {workers} workers" if workers > 1 else ""
+    emit_progress(progress, f"Analyzing OCR snapshots {completed} / {total} for {lang}{worker_text}")
 
 
 def stop_resource_tracker():

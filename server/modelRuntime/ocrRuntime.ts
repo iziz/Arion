@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import type { OcrBox, OcrFrameResult } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
 import { parsePythonJson, runPythonScriptOnExit } from "./pythonProcess";
+import { createPythonProgressReporter } from "./pythonProgress";
+import type { RuntimeStageReporter } from "./stageReporter";
 import { toPublicMediaPath } from "./mediaPath";
 
 const execFileAsync = promisify(execFile);
@@ -21,7 +23,13 @@ type PaddleResult = {
   error?: string;
 };
 
-export async function runPaddleOcr(filePath: string, assetId: string, languages: string[], duration: number | null): Promise<PaddleResult> {
+export async function runPaddleOcr(
+  filePath: string,
+  assetId: string,
+  languages: string[],
+  duration: number | null,
+  reportStage?: RuntimeStageReporter
+): Promise<PaddleResult> {
   const mediaRoot = getPublicMediaRoot();
   const relativeDir = path.join("generated", "assets", assetId, "ocr-frames");
   const framesDir = path.join(mediaRoot, relativeDir);
@@ -30,15 +38,28 @@ export async function runPaddleOcr(filePath: string, assetId: string, languages:
   const subtitleIntervalSeconds = Number(process.env.PADDLEOCR_SUBTITLE_INTERVAL_SECONDS || 0.5);
   const subtitleMaxFrames = Number(process.env.PADDLEOCR_SUBTITLE_MAX_FRAMES || 1800);
   const frameScaleWidth = Number(process.env.PADDLEOCR_FRAME_WIDTH || 960);
-  const workers = Number(process.env.PADDLEOCR_WORKERS || 2);
+  const workers = positiveInteger(process.env.PADDLEOCR_WORKERS, 2);
   try {
     await mkdir(framesDir, { recursive: true });
     await clearGeneratedFrames(framesDir);
+    await reportStage?.({ stage: "ocr", status: "running", message: "Extracting subtitle OCR snapshots", progress: 3, log: false });
     await extractOcrFrames(filePath, framesDir, "subtitle-bottom-frame-%05d.png", `fps=1/${subtitleIntervalSeconds},crop=iw:ih*0.28:0:ih*0.70,scale=${frameScaleWidth}:-2`, subtitleMaxFrames);
+    await reportStage?.({ stage: "ocr", status: "running", message: "Extracting top overlay OCR snapshots", progress: 6, log: false });
     await extractOcrFrames(filePath, framesDir, "subtitle-top-frame-%05d.png", `fps=1/${subtitleIntervalSeconds},crop=iw:ih*0.22:0:0,scale=${frameScaleWidth}:-2`, subtitleMaxFrames);
+    await reportStage?.({ stage: "ocr", status: "running", message: "Extracting full-frame OCR snapshots", progress: 9, log: false });
     await extractOcrFrames(filePath, framesDir, "full-frame-%04d.png", `fps=1/${fullFrameIntervalSeconds},scale=${frameScaleWidth}:-2`, fullFrameMaxFrames);
-    const results = await Promise.all(
-      languages.map((language) => runPaddleOcrLanguage(framesDir, language, mediaRoot, subtitleIntervalSeconds, fullFrameIntervalSeconds, workers))
+    const frameCount = await countOcrFrames(framesDir);
+    await reportStage?.({
+      stage: "ocr",
+      status: "running",
+      message: `Prepared ${frameCount} OCR snapshots for ${languages.join(", ")}`,
+      progress: 12,
+      log: false
+    });
+    const results = await mapWithConcurrency(
+      languages,
+      getLanguageConcurrency(languages.length),
+      (language) => runPaddleOcrLanguage(framesDir, language, mediaRoot, subtitleIntervalSeconds, fullFrameIntervalSeconds, workers, reportStage)
     );
     const available = results.filter((result) => result.available);
     if (available.length === 0) return results[0] ?? unavailablePaddleResult("PaddleOCR returned no result");
@@ -83,6 +104,11 @@ async function clearGeneratedFrames(framesDir: string) {
   );
 }
 
+async function countOcrFrames(framesDir: string) {
+  const entries = await readdir(framesDir).catch(() => []);
+  return entries.filter((entry) => /^(?:frame|full-frame|subtitle-(?:top|bottom)-frame)-\d+\.(png|jpe?g|webp)$/i.test(entry)).length;
+}
+
 function getOcrSampleInterval(duration: number | null, maxFrames: number) {
   const configured = Number(process.env.PADDLEOCR_SAMPLE_INTERVAL_SECONDS || 0);
   const mediaDuration = duration ?? 0;
@@ -96,8 +122,10 @@ async function runPaddleOcrLanguage(
   mediaRoot: string,
   subtitleIntervalSeconds: number,
   fullFrameIntervalSeconds: number,
-  workers: number
+  workers: number,
+  reportStage?: RuntimeStageReporter
 ): Promise<PaddleResult> {
+  const progressReporter = createPythonProgressReporter("ocr", reportStage);
   try {
     const { stdout } = await runPythonScriptOnExit(
       [
@@ -115,9 +143,11 @@ async function runPaddleOcrLanguage(
       {
         maxBuffer: 1024 * 1024 * 4,
         timeout: Number(process.env.PADDLEOCR_TIMEOUT_MS || 0) || undefined,
-        env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True" }
+        env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True" },
+        onStderr: progressReporter.handleChunk
       }
     );
+    await progressReporter.flush();
     const parsed = parsePythonJson<PaddleResult>(stdout);
     return {
       available: Boolean(parsed.available),
@@ -129,6 +159,7 @@ async function runPaddleOcrLanguage(
       error: parsed.error
     };
   } catch (error) {
+    await progressReporter.flush();
     return unavailablePaddleResult(error instanceof Error ? error.message : "PaddleOCR execution failed", language);
   }
 }
@@ -147,6 +178,32 @@ function unavailablePaddleResult(error: string, language = "unknown"): PaddleRes
 
 function scoreOcrResult(result: PaddleResult) {
   return result.tokens.length * 0.2 + result.frames.filter((frame) => frame.tokens.length > 0).length * 0.3 + result.confidence;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await task(items[currentIndex]);
+      }
+    })
+  );
+  return results;
+}
+
+function getLanguageConcurrency(languageCount: number) {
+  return Math.max(1, Math.min(positiveInteger(process.env.PADDLEOCR_LANGUAGE_CONCURRENCY, languageCount), languageCount));
+}
+
+function positiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
 }
 
 function normalizeOcrFrames(value: unknown, mediaRoot: string, sampleIntervalSeconds = 10): OcrFrameResult[] {

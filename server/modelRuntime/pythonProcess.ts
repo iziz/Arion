@@ -19,7 +19,7 @@ export type ProcessTableEntry = {
 
 export function runPythonScriptOnExit(
   args: string[],
-  options: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: number }
+  options: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: number; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void }
 ): Promise<PythonScriptResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonBin, args, {
@@ -43,8 +43,14 @@ export function runPythonScriptOnExit(
     };
 
     const append = (kind: "stdout" | "stderr", chunk: Buffer | string) => {
-      if (kind === "stdout") stdout += chunk.toString();
-      else stderr += chunk.toString();
+      const text = chunk.toString();
+      if (kind === "stdout") {
+        stdout += text;
+        options.onStdout?.(text);
+      } else {
+        stderr += text;
+        options.onStderr?.(text);
+      }
       if (stdout.length + stderr.length > maxBuffer) {
         if (child.pid) void terminateProcessTree(child.pid, "SIGKILL");
         else child.kill("SIGKILL");

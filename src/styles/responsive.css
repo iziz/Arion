@@ -4,6 +4,8 @@
   .knowledge-toolbar,
   .workflow-result-grid,
   .workflow-result-grid.compact,
+  .workflow-run-facts,
+  .workflow-log-list p,
   .workflow-usage-grid {
     grid-template-columns: 1fr;
   }

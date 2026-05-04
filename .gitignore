@@ -4,6 +4,7 @@ dist/
 .venv-ai/
 uploads/
 .env
+.local/
 .DS_Store
 *.log
 __pycache__/

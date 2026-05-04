@@ -11,7 +11,33 @@ def normalize_auto(value):
     return value
 
 
+def configure_threading():
+    threads = optional_positive_int(os.environ.get("WHISPERX_CPU_THREADS") or os.environ.get("WHISPER_CPU_THREADS"))
+    if threads is None:
+        return None
+    for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"]:
+        os.environ.setdefault(key, str(threads))
+    try:
+        import torch
+
+        torch.set_num_threads(threads)
+    except Exception:
+        pass
+    return threads
+
+
+def optional_positive_int(value):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(str(value))
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def main():
+    configure_threading()
     parser = argparse.ArgumentParser(description="Run optional WhisperX alignment and speaker diarization.")
     parser.add_argument("audio_path")
     parser.add_argument("--model", default=os.environ.get("WHISPERX_MODEL") or os.environ.get("WHISPER_MODEL", "large-v3"))

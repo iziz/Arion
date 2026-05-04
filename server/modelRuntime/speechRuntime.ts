@@ -4,6 +4,7 @@ import type { AssetRecord, CapabilityMode, LocalIntelligence, WhisperSegment } f
 import { getObjectPath, getPublicMediaRoot } from "../localObjectStorage";
 import { traceAsync } from "../observability";
 import { parsePythonJson, runPythonScriptOnExit } from "./pythonProcess";
+import { createPythonProgressReporter } from "./pythonProgress";
 import { runRuntimeStage, type RuntimeStageReporter } from "./stageReporter";
 
 const whisperScript = path.resolve("scripts", "whisper_transcribe.py");
@@ -23,8 +24,8 @@ export async function runSpeechRuntime(
     () =>
       traceAsync(
         "model.asr.whisper",
-        { assetId: asset.id, model: process.env.WHISPER_MODEL || "large-v3", language: language ?? "auto" },
-        () => runWhisper(audioPath, language, asset.duration),
+        { assetId: asset.id, model: process.env.WHISPER_MODEL || "large-v3", backend: process.env.WHISPER_BACKEND || "auto", language: language ?? "auto" },
+        () => runWhisper(audioPath, language, asset.duration, reportStage),
         "model.asr.whisper"
       ),
     (result) => (result.available ? null : (result.error ?? "Whisper returned no transcript result"))
@@ -84,15 +85,18 @@ function disabledDiarizationResult(): DiarizationResult {
   };
 }
 
-async function runWhisper(filePath: string, language: string | null, duration: number | null): Promise<WhisperResult> {
+async function runWhisper(filePath: string, language: string | null, duration: number | null, reportStage?: RuntimeStageReporter): Promise<WhisperResult> {
+  const progressReporter = createPythonProgressReporter("asr", reportStage);
   try {
     const args = [whisperScript, filePath, "--model", process.env.WHISPER_MODEL || "large-v3"];
     if (language) args.push("--language", language);
     const timeout = getWhisperTimeoutMs(duration);
     const { stdout } = await runPythonScriptOnExit(args, {
       maxBuffer: 1024 * 1024 * 4,
-      timeout
+      timeout,
+      onStderr: progressReporter.handleChunk
     });
+    await progressReporter.flush();
     const parsed = parsePythonJson<WhisperResult>(stdout);
     return {
       available: Boolean(parsed.available),
@@ -105,6 +109,7 @@ async function runWhisper(filePath: string, language: string | null, duration: n
       error: parsed.error
     };
   } catch (error) {
+    await progressReporter.flush();
     return {
       available: false,
       provider: "none",

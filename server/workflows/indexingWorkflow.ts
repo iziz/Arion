@@ -94,7 +94,13 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
   return { asset, job };
 }
 
-export async function runIndexingJob(jobId: string, assetId: string, filePath: string) {
+type RunIndexingJobOptions = {
+  retryStage?: string | null;
+};
+
+const runtimeStageUpdateQueues = new Map<string, Promise<void>>();
+
+export async function runIndexingJob(jobId: string, assetId: string, filePath: string, options: RunIndexingJobOptions = {}) {
   try {
     await updateJob(jobId, { status: "running", stage: "probe", progress: 12 }, "Started media probing");
     await updateAsset(assetId, { status: "probing", progress: 12 });
@@ -133,7 +139,8 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       "stage.local_model_runtime",
       { jobId, assetId },
       () =>
-        runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event), {
+        runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event, { keepJobStage: true }), {
+          forceStages: getForcedRuntimeStages(options.retryStage),
           whisperXDiarization: runtimePolicy.whisperXDiarization,
           onPartial: (_stage, partial) => mergeLocalRuntimePartial(assetId, partial)
         }),
@@ -441,22 +448,53 @@ export function normalizeWorkflowStage(value: unknown) {
 
 async function updateRuntimeStage(
   jobId: string,
-  event: { stage: string; status: "running" | "succeeded" | "failed"; message: string; error?: string }
+  event: {
+    stage: string;
+    status: "running" | "succeeded" | "failed";
+    message: string;
+    error?: string;
+    progress?: number;
+    log?: boolean;
+    heartbeat?: boolean;
+  },
+  options: { keepJobStage?: boolean } = {}
 ) {
-  const progressByStage: Record<string, number> = {
-    audio: 42,
-    "audio-probe": 44,
-    visual: 46,
-    asr: 50,
-    diarization: 52,
-    ocr: 54
-  };
-  const progress = progressByStage[event.stage] ?? 50;
+  const previous = runtimeStageUpdateQueues.get(jobId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => updateRuntimeStageNow(jobId, event, options));
+  const settled = next.then(() => undefined, () => undefined);
+  runtimeStageUpdateQueues.set(jobId, settled);
+  try {
+    return await next;
+  } finally {
+    if (runtimeStageUpdateQueues.get(jobId) === settled) runtimeStageUpdateQueues.delete(jobId);
+  }
+}
+
+async function updateRuntimeStageNow(
+  jobId: string,
+  event: {
+    stage: string;
+    status: "running" | "succeeded" | "failed";
+    message: string;
+    error?: string;
+    progress?: number;
+    log?: boolean;
+    heartbeat?: boolean;
+  },
+  options: { keepJobStage?: boolean } = {}
+) {
   const stage = event.status === "running" ? `runtime-${event.stage}` : `runtime-${event.stage}-${event.status}`;
   const level = event.status === "failed" ? "warn" : "info";
-  const message = event.error ? `${event.message}: ${event.error}` : event.message;
   const currentJob = await getJob(jobId);
   const previousStage = currentJob?.runtimeStages?.[event.stage];
+  const eventProgress = getNormalizedRuntimeProgress(event.progress);
+  const preservePreviousMessage =
+    !event.error &&
+    previousStage?.message &&
+    (event.heartbeat || (event.status === "running" && eventProgress !== null && eventProgress < previousStage.progress));
+  const message = event.error ? `${event.message}: ${event.error}` : preservePreviousMessage ? previousStage.message : event.message;
+  const stageProgress = getRuntimeStageProgress(event, previousStage?.progress);
+  const jobProgress = Math.max(currentJob?.progress ?? 0, getRuntimeJobProgress(event.stage, stageProgress));
   const now = new Date().toISOString();
   const runtimeStages = {
     ...(currentJob?.runtimeStages ?? {}),
@@ -464,20 +502,59 @@ async function updateRuntimeStage(
       stage: event.stage,
       status: event.status,
       message,
-      progress,
+      progress: stageProgress,
       error: event.error ?? null,
       startedAt: previousStage?.startedAt ?? now,
       updatedAt: now,
       completedAt: event.status === "running" ? previousStage?.completedAt ?? null : now
     }
   };
-  const updated = await updateJob(jobId, { stage, progress, runtimeStages }, `[runtime:${event.stage}:${event.status}] ${message}`, level);
+  const logMessage = event.log === false || event.heartbeat ? undefined : `[runtime:${event.stage}:${event.status}] ${message}`;
+  const nextJobStage = options.keepJobStage ? "local-model-runtime" : stage;
+  const updated = await updateJob(jobId, { stage: nextJobStage, progress: jobProgress, runtimeStages }, logMessage, level);
   if (updated?.assetId) {
     await updateAsset(updated.assetId, {
       status: event.stage === "asr" || event.stage === "diarization" ? "transcribing" : "scanning",
-      progress
+      progress: jobProgress
     });
   }
+}
+
+function getRuntimeStageProgress(event: { status: "running" | "succeeded" | "failed"; progress?: number }, previousProgress = 0) {
+  if (event.status === "succeeded" || event.status === "failed") return 100;
+  const progress = getNormalizedRuntimeProgress(event.progress);
+  if (progress !== null) return Math.max(previousProgress, progress);
+  return Math.max(0, Math.min(100, Math.round(previousProgress)));
+}
+
+function getNormalizedRuntimeProgress(value: unknown) {
+  const progress = Number(value);
+  if (!Number.isFinite(progress)) return null;
+  return Math.max(0, Math.min(100, Math.round(progress)));
+}
+
+function getRuntimeJobProgress(stage: string, stageProgress: number) {
+  const ranges: Record<string, [number, number]> = {
+    audio: [40, 44],
+    "audio-probe": [44, 46],
+    visual: [44, 48],
+    asr: [48, 52],
+    diarization: [52, 54],
+    ocr: [54, 58]
+  };
+  const [start, end] = ranges[stage] ?? [48, 52];
+  const normalized = Math.max(0, Math.min(100, stageProgress)) / 100;
+  return Math.round(start + (end - start) * normalized);
+}
+
+function getForcedRuntimeStages(retryStage: string | null | undefined) {
+  if (!retryStage) return [];
+  if (retryStage === "asr") return ["asr", "diarization"];
+  if (retryStage === "speakers") return ["diarization"];
+  if (retryStage === "ocr") return ["ocr"];
+  if (retryStage === "visual") return ["visual"];
+  if (retryStage === "audio" || retryStage === "vad") return ["audio", "audio-probe", "asr", "diarization"];
+  return [];
 }
 
 async function mergeLocalRuntimePartial(assetId: string, partial: LocalRuntimePartial) {
