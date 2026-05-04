@@ -4,6 +4,7 @@ import type {
   ClipDetailResult,
   IndexRecord,
   JobRecord,
+  SportsDomainGroup,
 } from "../shared/types";
 import {
   api,
@@ -20,14 +21,7 @@ import { useConsoleData } from "./hooks/useConsoleData";
 import { useKnowledgeActions } from "./hooks/useKnowledgeActions";
 import { useSearchController } from "./hooks/useSearchController";
 import { type AssetDetailTab } from "./components/ConsoleComponents";
-
-function isConsoleTab(value: string | null): value is ConsoleTab {
-  return value === "data" || value === "knowledge" || value === "search" || value === "system";
-}
-
-function isAssetDetailTab(value: string | null): value is AssetDetailTab {
-  return value === "overview" || value === "workflow" || value === "timeline";
-}
+import { buildConsoleHref, consoleLocationKey, parseConsoleRoute, type ConsoleRouteState } from "./navigation";
 
 export default function App() {
   const {
@@ -54,14 +48,18 @@ export default function App() {
     setMessage
   } = useConsoleData();
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [selectedMomentTime, setSelectedMomentTime] = useState<number | null>(null);
   const [clipDetail, setClipDetail] = useState<ClipDetailResult | null>(null);
   const [clipDetailLoading, setClipDetailLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeek] = useState<{ assetId: string; at: number } | null>(null);
   const [activeTab, setActiveTab] = useState<ConsoleTab>("system");
   const [assetDetailTab, setAssetDetailTab] = useState<AssetDetailTab>("overview");
+  const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<SportsDomainGroup>("sports.football");
   const [dialogMode, setDialogMode] = useState<DialogMode>(null);
   const [busy, setBusy] = useState(false);
+  const [routeReady, setRouteReady] = useState(false);
+  const routeReadyRef = useRef(false);
   const playerRef = useRef<HTMLVideoElement | null>(null);
 
   const selectedIndex = indexes.find((index) => index.id === selectedIndexId) ?? indexes[0] ?? null;
@@ -102,20 +100,58 @@ export default function App() {
   const selectedAssetJob = selectedAsset ? getLatestAssetJob(jobs, selectedAsset.id) : null;
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null;
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
+
+  function buildCurrentRoute(overrides: Partial<ConsoleRouteState> = {}): ConsoleRouteState {
+    return {
+      activeTab,
+      selectedIndexId,
+      selectedAssetId,
+      selectedSegmentId,
+      assetDetailTab,
+      selectedKnowledgeDomain,
+      seekAt: selectedMomentTime,
+      ...overrides
+    };
+  }
+
+  function writeConsoleRoute(overrides: Partial<ConsoleRouteState>, mode: "push" | "replace") {
+    if (!routeReadyRef.current) return;
+    const nextHref = buildConsoleHref(buildCurrentRoute(overrides));
+    if (nextHref === consoleLocationKey(window.location.href)) return;
+    window.history[mode === "push" ? "pushState" : "replaceState"](null, "", nextHref);
+  }
+
+  function navigateTab(tab: ConsoleTab) {
+    setActiveTab(tab);
+    writeConsoleRoute({ activeTab: tab }, "push");
+  }
+
+  function navigateAssetDetailTab(tab: AssetDetailTab) {
+    setAssetDetailTab(tab);
+    writeConsoleRoute({ activeTab: "data", assetDetailTab: tab }, "push");
+  }
+
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const assetId = params.get("asset");
-    const segmentId = params.get("segment");
-    const at = Number(params.get("t"));
-    const tab = params.get("tab");
-    const detailTab = params.get("assetTab");
-    if (tab === "dashboard") setActiveTab("system");
-    if (isConsoleTab(tab)) setActiveTab(tab);
-    if (isAssetDetailTab(detailTab)) setAssetDetailTab(detailTab);
-    if (assetId) setSelectedAssetId(assetId);
-    if (segmentId) setSelectedSegmentId(segmentId);
-    if (assetId && Number.isFinite(at)) setPendingSeek({ assetId, at });
-  }, []);
+    function applyRouteFromLocation() {
+      const route = parseConsoleRoute(new URL(window.location.href));
+      setActiveTab(route.activeTab);
+      setAssetDetailTab(route.assetDetailTab);
+      if (route.selectedKnowledgeDomain) setSelectedKnowledgeDomain(route.selectedKnowledgeDomain);
+      if (route.selectedIndexId) setSelectedIndexId(route.selectedIndexId);
+      if (route.activeTab === "data") {
+        setSelectedAssetId(route.selectedAssetId);
+        setSelectedSegmentId(route.selectedSegmentId);
+        setSelectedMomentTime(route.seekAt);
+        setPendingSeek(route.selectedAssetId && route.seekAt !== null ? { assetId: route.selectedAssetId, at: route.seekAt } : null);
+      }
+    }
+
+    applyRouteFromLocation();
+    routeReadyRef.current = true;
+    setRouteReady(true);
+    window.addEventListener("popstate", applyRouteFromLocation);
+    return () => window.removeEventListener("popstate", applyRouteFromLocation);
+  }, [setSelectedAssetId, setSelectedIndexId]);
 
   useEffect(() => {
     if (!selectedAssetId) return;
@@ -124,16 +160,9 @@ export default function App() {
   }, [assets, selectedAssetId, selectedIndexId]);
 
   useEffect(() => {
-    const url = new URL(window.location.href);
-    if (selectedAssetId) {
-      url.searchParams.set("asset", selectedAssetId);
-    } else {
-      url.searchParams.delete("asset");
-      url.searchParams.delete("segment");
-      url.searchParams.delete("t");
-    }
-    window.history.replaceState(null, "", url.toString());
-  }, [selectedAssetId]);
+    if (!routeReady) return;
+    writeConsoleRoute({}, "replace");
+  }, [routeReady, activeTab, selectedIndexId, selectedAssetId, selectedSegmentId, selectedMomentTime, assetDetailTab, selectedKnowledgeDomain]);
 
   useEffect(() => {
     if (!pendingSeek || selectedAsset?.id !== pendingSeek.assetId || !playerRef.current) return;
@@ -224,8 +253,20 @@ export default function App() {
       setSelectedIndexId(payload.asset.indexId);
       setSelectedAssetId(payload.asset.id);
       setSelectedSegmentId(null);
+      setSelectedMomentTime(null);
       setActiveTab("data");
       setAssetDetailTab("overview");
+      writeConsoleRoute(
+        {
+          activeTab: "data",
+          selectedIndexId: payload.asset.indexId,
+          selectedAssetId: payload.asset.id,
+          selectedSegmentId: null,
+          assetDetailTab: "overview",
+          seekAt: null
+        },
+        "push"
+      );
       form.reset();
       setDialogMode(null);
       void refresh()
@@ -238,16 +279,27 @@ export default function App() {
     }
   }
 
-  function seekTo(assetId: string, at: number) {
+  function seekTo(assetId: string, at: number, segmentId: string | null = null) {
     setActiveTab("data");
     setAssetDetailTab("overview");
     setSelectedAssetId(assetId);
+    setSelectedSegmentId(segmentId);
+    setSelectedMomentTime(at);
     setPendingSeek({ assetId, at });
+    writeConsoleRoute(
+      {
+        activeTab: "data",
+        selectedAssetId: assetId,
+        selectedSegmentId: segmentId,
+        assetDetailTab: "overview",
+        seekAt: at
+      },
+      "push"
+    );
   }
 
   function selectSegment(assetId: string, segmentId: string, at: number) {
-    setSelectedSegmentId(segmentId);
-    seekTo(assetId, at);
+    seekTo(assetId, at, segmentId);
   }
 
   async function retryJob(id: string) {
@@ -277,23 +329,50 @@ export default function App() {
   }
 
   function selectIndex(indexId: string) {
+    setActiveTab("data");
     setSelectedIndexId(indexId);
     setSelectedAssetId(null);
     setSelectedSegmentId(null);
+    setSelectedMomentTime(null);
     setAssetDetailTab("overview");
+    writeConsoleRoute(
+      {
+        activeTab: "data",
+        selectedIndexId: indexId,
+        selectedAssetId: null,
+        selectedSegmentId: null,
+        assetDetailTab: "overview",
+        seekAt: null
+      },
+      "push"
+    );
   }
 
   function selectAsset(asset: AssetRecord) {
     playerRef.current?.pause();
+    setActiveTab("data");
+    setSelectedIndexId(asset.indexId);
     setSelectedAssetId(asset.id);
-    setSelectedSegmentId(asset.timeline[0]?.id ?? null);
+    setSelectedSegmentId(null);
+    setSelectedMomentTime(null);
     setAssetDetailTab("overview");
+    writeConsoleRoute(
+      {
+        activeTab: "data",
+        selectedIndexId: asset.indexId,
+        selectedAssetId: asset.id,
+        selectedSegmentId: null,
+        assetDetailTab: "overview",
+        seekAt: null
+      },
+      "push"
+    );
   }
 
   return (
     <ConsoleLayout
       activeTab={activeTab}
-      setActiveTab={setActiveTab}
+      setActiveTab={navigateTab}
       indexes={indexes}
       assets={assets}
       visibleAssets={visibleAssets}
@@ -315,7 +394,9 @@ export default function App() {
       busy={busy}
       refineAssetGroupVlm={refineAssetGroupVlm}
       assetDetailTab={assetDetailTab}
-      setAssetDetailTab={setAssetDetailTab}
+      setAssetDetailTab={navigateAssetDetailTab}
+      selectedKnowledgeDomain={selectedKnowledgeDomain}
+      setSelectedKnowledgeDomain={setSelectedKnowledgeDomain}
       playerRef={playerRef}
       retryAssetStage={retryAssetStage}
       selectSegment={selectSegment}

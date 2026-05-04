@@ -64,7 +64,7 @@ import {
 
 export type ConsoleLayoutProps = {
   activeTab: ConsoleTab;
-  setActiveTab: Dispatch<SetStateAction<ConsoleTab>>;
+  setActiveTab: (tab: ConsoleTab) => void;
   indexes: IndexRecord[];
   assets: AssetRecord[];
   visibleAssets: AssetRecord[];
@@ -86,7 +86,9 @@ export type ConsoleLayoutProps = {
   busy: boolean;
   refineAssetGroupVlm: (indexId: string) => Promise<void>;
   assetDetailTab: AssetDetailTab;
-  setAssetDetailTab: Dispatch<SetStateAction<AssetDetailTab>>;
+  setAssetDetailTab: (tab: AssetDetailTab) => void;
+  selectedKnowledgeDomain: SportsDomainGroup;
+  setSelectedKnowledgeDomain: (domain: SportsDomainGroup) => void;
   playerRef: RefObject<HTMLVideoElement | null>;
   retryAssetStage: (assetId: string, stage: string) => Promise<void>;
   selectSegment: (assetId: string, segmentId: string, at: number) => void;
@@ -207,6 +209,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     refineAssetGroupVlm,
     assetDetailTab,
     setAssetDetailTab,
+    selectedKnowledgeDomain,
+    setSelectedKnowledgeDomain,
     playerRef,
     retryAssetStage,
     selectSegment,
@@ -249,7 +253,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   } = props;
   const [searchVideoPreview, setSearchVideoPreview] = useState<SearchVideoPreview | null>(null);
   const knowledgeDomains = sportsKnowledge?.domains ?? defaultKnowledgeDomains();
-  const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<SportsDomainGroup>("sports.football");
   const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? "sports.football";
   const observabilityView = observability ? buildObservabilityView(observability) : null;
   const failedJobCount = jobs.filter((job) => job.status === "failed").length;

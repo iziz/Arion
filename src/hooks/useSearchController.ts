@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types";
 import { api, sleep } from "../api";
 import type { SearchScopeMode } from "../consoleTypes";
+import { buildConsoleUrl } from "../navigation";
 import {
   buildSearchAssistantAnswer,
   filterSearchResultsByTrust,
@@ -190,21 +191,13 @@ export function useSearchController({
   }
 
   function buildAssetMomentUrl(assetId: string, segmentId?: string | null, at?: number | null) {
-    const url = new URL(window.location.href);
-    url.searchParams.set("tab", "data");
-    url.searchParams.set("assetTab", "overview");
-    url.searchParams.set("asset", assetId);
-    if (segmentId) {
-      url.searchParams.set("segment", segmentId);
-    } else {
-      url.searchParams.delete("segment");
-    }
-    if (typeof at === "number" && Number.isFinite(at)) {
-      url.searchParams.set("t", at.toFixed(2));
-    } else {
-      url.searchParams.delete("t");
-    }
-    return url.toString();
+    return buildConsoleUrl(window.location.href, {
+      activeTab: "data",
+      selectedAssetId: assetId,
+      selectedSegmentId: segmentId,
+      assetDetailTab: "overview",
+      seekAt: at
+    });
   }
 
   return {
