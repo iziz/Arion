@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { TimelineSegment } from "../../shared/types";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRuntime/pythonRuntimeService";
 import { isSoccerNetActionSpottingConfigured, soccerNetActionModel, soccerNetActionScript, soccerNetPythonBin } from "./runtimeConfig";
 import type { SoccerNetActionSpottingResult } from "./types";
 
@@ -13,6 +14,23 @@ export async function spotSoccerNetActions(filePath: string, timeline: TimelineS
     end: segment.end
   }));
   try {
+    if (isPythonRuntimeServiceMode("vision")) {
+      return await callPythonRuntimeService<SoccerNetActionSpottingResult>(
+        "vision",
+        "/v1/soccernet-action-spotting",
+        {
+          mediaPath: filePath,
+          model: soccerNetActionModel,
+          duration,
+          segments,
+          timeoutMs: Number(process.env.SOCCERNET_ACTION_SPOTTING_TIMEOUT_MS || 0) || undefined
+        },
+        {
+          timeoutMs: Number(process.env.SOCCERNET_ACTION_SPOTTING_TIMEOUT_MS || 0) || undefined,
+          metricKey: "model.vision.soccernet_action.service"
+        }
+      );
+    }
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(soccerNetPythonBin, [soccerNetActionScript, filePath, "--model", soccerNetActionModel], {
         env: process.env,

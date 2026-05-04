@@ -5,6 +5,7 @@ import { defaultCapabilityPolicy, normalizeCapabilityPolicy } from "./domainConf
 import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import { getVectorCount } from "./localVectorStore";
 import * as pgStore from "./postgresStore";
+import { publishRealtimeEvent } from "./services/realtimeEvents";
 import type {
   AssetRecord,
   BillingRecord,
@@ -26,10 +27,6 @@ type Database = {
   billing: BillingRecord[];
 };
 
-type LegacyDatabase = Partial<Database> & {
-  videos?: AssetRecord[];
-};
-
 const dataDir = path.resolve(".data");
 const dbPath = path.join(dataDir, "db.json");
 const eventsPath = path.join(dataDir, "events.ndjson");
@@ -46,7 +43,7 @@ export async function ensureStore() {
     return;
   }
   if (loaded) return;
-  database = migrate(await readJsonFile<LegacyDatabase>(dbPath, () => ({}), "store.db"));
+  database = normalizeDatabase(await readJsonFile<Partial<Database>>(dbPath, () => ({}), "store.db"));
   ensureDefaultIndex();
   await persist();
   loaded = true;
@@ -92,7 +89,11 @@ export async function getAsset(id: string) {
 }
 
 export async function saveAsset(asset: AssetRecord) {
-  if (pgStore.isPostgresEnabled()) return pgStore.saveAsset(asset);
+  if (pgStore.isPostgresEnabled()) {
+    const saved = await pgStore.saveAsset(asset);
+    publishRealtimeEvent("asset.updated", { assetId: saved.id, indexId: saved.indexId, asset: saved });
+    return saved;
+  }
   await ensureStore();
   const existing = database.assets.findIndex((item) => item.id === asset.id);
   if (existing >= 0) {
@@ -108,6 +109,7 @@ export async function saveAsset(asset: AssetRecord) {
     index.updatedAt = new Date().toISOString();
   }
   await persist();
+  publishRealtimeEvent("asset.updated", { assetId: asset.id, indexId: asset.indexId, asset });
   return asset;
 }
 
@@ -124,7 +126,11 @@ export async function getJob(id: string) {
 }
 
 export async function saveJob(job: JobRecord) {
-  if (pgStore.isPostgresEnabled()) return pgStore.saveJob(job);
+  if (pgStore.isPostgresEnabled()) {
+    const saved = await pgStore.saveJob(job);
+    publishRealtimeEvent("job.updated", { jobId: saved.id, assetId: saved.assetId, job: saved });
+    return saved;
+  }
   await ensureStore();
   const existing = database.jobs.findIndex((item) => item.id === job.id);
   if (existing >= 0) {
@@ -133,6 +139,7 @@ export async function saveJob(job: JobRecord) {
     database.jobs.push(job);
   }
   await persist();
+  publishRealtimeEvent("job.updated", { jobId: job.id, assetId: job.assetId, job });
   return job;
 }
 
@@ -168,12 +175,17 @@ export async function listEvents(limit = 80) {
 }
 
 export async function saveEvent(event: EventRecord) {
-  if (pgStore.isPostgresEnabled()) return pgStore.saveEvent(event);
+  if (pgStore.isPostgresEnabled()) {
+    const saved = await pgStore.saveEvent(event);
+    publishRealtimeEvent("event.recorded", { eventId: saved.id, assetId: saved.assetId, jobId: saved.jobId, event: saved });
+    return saved;
+  }
   await ensureStore();
   database.events.push(event);
   database.events = database.events.slice(-500);
   await appendFile(eventsPath, `${JSON.stringify(event)}\n`);
   await persist();
+  publishRealtimeEvent("event.recorded", { eventId: event.id, assetId: event.assetId, jobId: event.jobId, event });
   return event;
 }
 
@@ -277,15 +289,25 @@ function emptyDatabase(): Database {
   };
 }
 
-function migrate(raw: LegacyDatabase): Database {
+function normalizeDatabase(raw: Partial<Database>): Database {
   const migrated = emptyDatabase();
   migrated.indexes = (raw.indexes ?? []).map((index) => ({
     ...index,
     domainIndexing: index.domainIndexing ?? { enabled: false, groups: [], stages: [] },
     capabilityPolicy: normalizeCapabilityPolicy(index.capabilityPolicy, index.domainIndexing)
   }));
-  migrated.assets = raw.assets ?? raw.videos ?? [];
-  migrated.jobs = raw.jobs ?? [];
+  migrated.assets = raw.assets ?? [];
+  migrated.jobs = (raw.jobs ?? []).map((job) => ({
+    ...job,
+    runtimeStages: job.runtimeStages ?? {},
+    stageCheckpoints: job.stageCheckpoints ?? {},
+    parameters: job.parameters
+      ? {
+          retryStage: job.parameters.retryStage ?? null,
+          resumeFromStage: job.parameters.resumeFromStage ?? null
+        }
+      : undefined
+  }));
   migrated.webhooks = raw.webhooks ?? [];
   migrated.events = raw.events ?? [];
   migrated.users = raw.users ?? emptyDatabase().users;
@@ -293,23 +315,12 @@ function migrate(raw: LegacyDatabase): Database {
 
   migrated.assets = migrated.assets.map((asset) => ({
     ...asset,
-    indexId: asset.indexId ?? defaultIndexId,
-    status: normalizeStatus(asset.status),
-    technicalMetadata: asset.technicalMetadata ?? {
-      storageProvider: "local",
-      bucket: "legacy-uploads",
-      objectKey: asset.storedName,
-      checksum: null,
-      frameRate: null,
-      audioCodec: null,
-      videoCodec: null
-    },
     intelligence: {
 	      audio: {
 	        extractedPath: asset.intelligence?.audio?.extractedPath ?? null,
 	        vad: asset.intelligence?.audio?.vad ?? {
 	          available: (asset.intelligence?.audio?.speechSegments?.length ?? 0) > 0,
-	          provider: "legacy",
+	          provider: "none",
 	          error: null
 	        },
 	        speechSegments: asset.intelligence?.audio?.speechSegments ?? [],
@@ -379,21 +390,6 @@ function ensureDefaultIndex() {
   const defaultAssetIds = database.assets.filter((asset) => asset.indexId === defaultIndexId).map((asset) => asset.id);
   index.assetIds = Array.from(new Set([...index.assetIds, ...defaultAssetIds]));
   index.status = index.assetIds.length > 0 ? "ready" : "empty";
-}
-
-function normalizeStatus(status: string): AssetRecord["status"] {
-  if (status === "processing") return "embedding";
-  if (status === "queued" || status === "indexed" || status === "failed") return status;
-  if (
-    status === "probing" ||
-    status === "transcribing" ||
-    status === "scanning" ||
-    status === "sampling" ||
-    status === "embedding" ||
-    status === "uploaded"
-  )
-    return status;
-  return "uploaded";
 }
 
 function isStoredVisualAvailable(visual: AssetRecord["intelligence"]["visual"] | undefined) {

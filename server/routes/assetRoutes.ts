@@ -1,16 +1,15 @@
 import type { Express, RequestHandler } from "express";
 import { analyzeAssetGroup, buildClipDetail, listAssetClips } from "../intelligence";
 import { sendNotFound } from "../http/middleware";
-import { enqueueLocalTask } from "../localQueue";
-import { getObjectPath } from "../localObjectStorage";
-import { logJson, traceJobAsync } from "../observability";
+import { logJson } from "../observability";
 import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
-import { createJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
+import { createQueuedAssetJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
+import { publishQueueOutbox } from "../services/queueOutboxPublisher";
 import { getTrackingSummary, listTrackingRecords } from "../trackingStore";
 import { isVlmWorkerEnabled } from "../vlmWorkerClient";
-import { createAssetFromUpload, enqueueDomainVlmRefinement, normalizeWorkflowStage, runAudioExtractionJob, runIndexingJob, runSpeakerDiarizationJob } from "../workflows/indexingWorkflow";
+import { createAssetFromUpload, normalizeWorkflowStage } from "../workflows/indexingWorkflow";
 import { getAsset, getIndex, listAssets, listIndexes } from "../store";
 import type { JobRecord } from "../../shared/types";
 
@@ -72,11 +71,13 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
 
   app.post("/api/assets", upload.single("video"), async (req, res) => {
     const result = await createAssetFromUpload(req, res, String(req.body.indexId || "default-index"));
+    if (result?.job) await publishQueueOutbox("asset-job", 10);
     if (result) res.status(202).json(result);
   });
 
   app.post("/api/indexes/:id/assets", upload.single("video"), async (req, res) => {
     const result = await createAssetFromUpload(req, res, String(req.params.id));
+    if (result?.job) await publishQueueOutbox("asset-job", 10);
     if (result) res.status(202).json(result);
   });
 
@@ -111,33 +112,14 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
       return;
     }
     const requestedStage = normalizeWorkflowStage(req.body?.stage);
-    const job = await createJob("asset.reindex", asset.indexId, asset.id);
+    const job = await createQueuedAssetJob("asset.reindex", asset.indexId, asset.id, requestedStage ? { retryStage: requestedStage } : undefined);
     const queuedJob = requestedStage
       ? (await updateJob(job.id, {}, `Retry requested from workflow card: ${requestedStage}`)) ?? job
       : job;
-    const sourcePath = getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey);
-    if (requestedStage === "speakers") {
-      enqueueLocalTask(job.id, () =>
-        traceJobAsync("job.diarization", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: "speakers" }, () =>
-          runSpeakerDiarizationJob(job.id, asset.id)
-        )
-      );
-    } else if (requestedStage === "audio" || requestedStage === "vad") {
-      enqueueLocalTask(job.id, () =>
-        traceJobAsync("job.audio_retry", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: requestedStage }, () =>
-          runAudioExtractionJob(job.id, asset.id, sourcePath)
-        )
-      );
-    } else {
+    if (requestedStage !== "speakers" && requestedStage !== "audio" && requestedStage !== "vad") {
       await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
-      enqueueLocalTask(
-        job.id,
-        () =>
-          traceJobAsync("job.indexing", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex" }, () =>
-            runIndexingJob(job.id, asset.id, sourcePath, { retryStage: requestedStage })
-          )
-      );
     }
+    await publishQueueOutbox("asset-job", 10);
     res.status(202).json(queuedJob);
   });
 
@@ -166,8 +148,8 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
       res.status(202).json(activeJob);
       return;
     }
-    const job = await createJob("asset.domain-vlm.refine", asset.indexId, asset.id);
-    enqueueDomainVlmRefinement(job, asset.id);
+    const job = await createQueuedAssetJob("asset.domain-vlm.refine", asset.indexId, asset.id);
+    await publishQueueOutbox("asset-job", 10);
     res.status(202).json(job);
   });
 
@@ -191,10 +173,10 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
         skipped.push({ assetId: asset.id, reason: `active job ${activeJob.id}` });
         continue;
       }
-      const job = await createJob("asset.domain-vlm.refine", asset.indexId, asset.id);
+      const job = await createQueuedAssetJob("asset.domain-vlm.refine", asset.indexId, asset.id);
       jobs.push(job);
-      enqueueDomainVlmRefinement(job, asset.id);
     }
+    await publishQueueOutbox("asset-job", Math.max(10, jobs.length));
     res.status(202).json({
       indexId: index.id,
       queued: jobs.length,

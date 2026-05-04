@@ -3,6 +3,7 @@ import path from "node:path";
 import type { KeyframeRecord, TimelineSegment } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
 import { parsePythonJson } from "../modelRuntime/pythonProcess";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRuntime/pythonRuntimeService";
 import { allowHeuristicDetectorFallback, detectorBackend, detectorConfidence, detectorModel, detectorScript, pythonBin, rfDetrModel } from "./runtimeConfig";
 import type { DetectorResult } from "./types";
 
@@ -26,6 +27,25 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
   }
 
   try {
+    if (isPythonRuntimeServiceMode("vision")) {
+      return await callPythonRuntimeService<DetectorResult>(
+        "vision",
+        "/v1/detect-objects",
+        {
+          images: items,
+          backend: detectorBackend,
+          model: detectorModel,
+          rfDetrModel,
+          confidence: detectorConfidence,
+          allowHeuristicFallback: allowHeuristicDetectorFallback,
+          timeoutMs: Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0) || undefined
+        },
+        {
+          timeoutMs: Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0) || undefined,
+          metricKey: "model.vision.detector.service"
+        }
+      );
+    }
     const stdout = await new Promise<string>((resolve, reject) => {
       const args = [
         detectorScript,

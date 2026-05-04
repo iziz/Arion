@@ -810,7 +810,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   {dbStatus ? (
                     <div className="system-fact-grid">
                       <span><b>Store</b>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</span>
-                      <span><b>pgvector</b>{dbStatus.pgvector ?? "off"}</span>
+                      <span><b>State</b>{dbStatus.operationalState ?? (dbStatus.enabled ? "ready" : "local")}</span>
+                      <span><b>Vector</b>{dbStatus.pgvector ? `${dbStatus.vectorSearchMode ?? "pgvector"} ${dbStatus.pgvector}` : dbStatus.vectorSearchMode ?? "off"}</span>
                       <span><b>Text</b>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
                       <span><b>Visual</b>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} dimensions`}</span>
                     </div>

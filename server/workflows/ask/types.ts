@@ -22,6 +22,7 @@ export type AskRequest = {
 
 export type AskOperationEntry = {
   operation: AskOperation;
+  request: AskRequest;
   response: AskResponse | null;
 };
 

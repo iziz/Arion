@@ -1,6 +1,6 @@
 import type { RuntimeStageReporter } from "./stageReporter";
 
-type PythonProgressEvent = {
+export type PythonProgressEvent = {
   type?: string;
   stage?: string;
   message?: string;
@@ -40,6 +40,19 @@ export function createPythonProgressReporter(fallbackStage: string, reportStage?
       await pending;
     }
   };
+}
+
+export async function reportPythonProgressEvent(fallbackStage: string, reportStage: RuntimeStageReporter | undefined, event: PythonProgressEvent) {
+  if (!reportStage) return;
+  const stage = typeof event.stage === "string" && event.stage.trim() ? event.stage.trim() : fallbackStage;
+  const message = typeof event.message === "string" && event.message.trim() ? event.message.trim() : `${stage} is running`;
+  await reportStage({
+    stage,
+    status: "running",
+    message,
+    progress: normalizeStageProgress(event.progress),
+    log: false
+  });
 }
 
 function parsePythonProgressEvent(line: string): PythonProgressEvent | null {

@@ -2,6 +2,7 @@ import path from "node:path";
 import type { AssetRecord, TimelineSegment, TrackingRecord, TrackingSummary } from "../shared/types";
 import { trustedDomainEvents } from "./evidenceTrust";
 import { readJsonFile, writeJsonFile } from "./jsonFileStore";
+import * as pgStore from "./postgresStore";
 
 type TrackingDatabase = {
   records: TrackingRecord[];
@@ -15,27 +16,32 @@ let loaded = false;
 let writeChain = Promise.resolve();
 
 export async function ensureTrackingStore() {
+  if (pgStore.isPostgresEnabled()) return;
   if (loaded) return;
   trackingDatabase = normalizeTrackingDatabase(await readJsonFile<Partial<TrackingDatabase>>(trackingPath, () => ({ records: [] }), "tracking-store"));
   loaded = true;
 }
 
 export async function upsertAssetTracking(asset: AssetRecord) {
-  await ensureTrackingStore();
   const records = buildTrackingRecords(asset);
+  if (pgStore.isPostgresEnabled()) return pgStore.upsertTrackingRecords(asset.id, records);
+  await ensureTrackingStore();
   trackingDatabase.records = [...trackingDatabase.records.filter((record) => record.assetId !== asset.id), ...records];
   await persistTrackingStore();
   return records;
 }
 
 export async function rebuildTrackingStore(assets: AssetRecord[]) {
+  const records = assets.flatMap((asset) => buildTrackingRecords(asset));
+  if (pgStore.isPostgresEnabled()) return pgStore.rebuildTrackingRecords(records);
   await ensureTrackingStore();
-  trackingDatabase.records = assets.flatMap((asset) => buildTrackingRecords(asset));
+  trackingDatabase.records = records;
   await persistTrackingStore();
   return trackingDatabase.records;
 }
 
 export async function listTrackingRecords(filters: { assetId?: string; segmentId?: string; trackId?: string } = {}) {
+  if (pgStore.isPostgresEnabled()) return pgStore.listTrackingRecords(filters);
   await ensureTrackingStore();
   return trackingDatabase.records
     .filter((record) => !filters.assetId || record.assetId === filters.assetId)

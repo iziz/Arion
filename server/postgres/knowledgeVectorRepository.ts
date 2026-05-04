@@ -54,7 +54,7 @@ export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | un
   const candidateLimit = Math.max(limit * 24, 200);
   const candidates = new Map<string, ReturnType<typeof rowToResult>>();
   if (isVectorExtensionAvailable() && isPgVectorCompatible(queryVector)) {
-    const result = await getPool().query(
+    const pgvectorRows = await getPool().query(
       `select *, 1 - (embedding <=> $1::vector) as score
        from app_knowledge_vectors
        where embedding is not null
@@ -63,7 +63,16 @@ export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | un
        limit $3`,
       [vectorLiteral(queryVector), domainGroup ?? null, candidateLimit]
     );
-    for (const row of result.rows.map(rowToResult)) candidates.set(row.id, row);
+    for (const row of pgvectorRows.rows.map(rowToResult)) candidates.set(row.id, row);
+    const jsonFallbackRows = await getPool().query(
+      `select *
+       from app_knowledge_vectors
+       where embedding is null
+         and ($1::text is null or domain_group = $1)
+       limit $2`,
+      [domainGroup ?? null, candidateLimit]
+    );
+    for (const row of jsonFallbackRows.rows.map(rowToResult)) candidates.set(row.id, row);
   } else {
     const result = await getPool().query(
       "select * from app_knowledge_vectors where ($1::text is null or domain_group = $1)",

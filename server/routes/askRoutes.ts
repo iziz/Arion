@@ -16,11 +16,11 @@ import { listAssets, listIndexes } from "../store";
 export function registerAskRoutes(app: Express) {
   app.post("/api/ask", async (req, res) => {
     const request = parseAskRequest(req.body);
-    res.status(202).json(startAskOperation(request));
+    res.status(202).json(await startAskOperation(request));
   });
 
   app.get("/api/ask/:id", async (req, res) => {
-    const response = getAskOperationResponse(String(req.params.id));
+    const response = await getAskOperationResponse(String(req.params.id));
     if (!response) return sendNotFound(res, "Ask operation not found");
     res.json(response);
   });

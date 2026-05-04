@@ -1,11 +1,9 @@
 import type { Express } from "express";
 import { sendNotFound } from "../http/middleware";
-import { enqueueLocalTask } from "../localQueue";
-import { getObjectPath } from "../localObjectStorage";
-import { logJson, traceJobAsync } from "../observability";
-import { createJob, getActiveAssetJob, updateAsset } from "../services/jobState";
+import { logJson } from "../observability";
+import { createQueuedAssetJob, getActiveAssetJob, updateAsset } from "../services/jobState";
+import { publishQueueOutbox } from "../services/queueOutboxPublisher";
 import { getAsset, getJob, listJobs } from "../store";
-import { enqueueDomainVlmRefinement, runIndexingJob } from "../workflows/indexingWorkflow";
 
 export function registerJobRoutes(app: Express) {
   app.get("/api/jobs", async (_req, res) => {
@@ -36,21 +34,11 @@ export function registerJobRoutes(app: Express) {
       res.status(202).json(activeJob);
       return;
     }
-    const retry = await createJob(job.type === "asset.index" ? "asset.reindex" : job.type, asset.indexId, asset.id);
-    if (retry.type === "asset.domain-vlm.refine") {
-      enqueueDomainVlmRefinement(retry, asset.id);
-    } else {
+    const retry = await createQueuedAssetJob(job.type === "asset.index" ? "asset.reindex" : job.type, asset.indexId, asset.id, job.parameters);
+    if (retry.type !== "asset.domain-vlm.refine") {
       await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
-      enqueueLocalTask(retry.id, () =>
-        traceJobAsync("job.indexing", { jobId: retry.id, assetId: asset.id }, { type: retry.type }, () =>
-          runIndexingJob(
-            retry.id,
-            asset.id,
-            getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey)
-          )
-        )
-      );
     }
+    await publishQueueOutbox("asset-job", 10);
     res.status(202).json(retry);
   });
 }

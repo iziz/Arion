@@ -1,0 +1,1438 @@
+# Arion Code Architecture
+
+## Scope
+
+This document describes the current Arion architecture from the checked-in code. It is based on static code inspection of the frontend, backend, shared types, workflows, storage adapters, and runtime adapters. It is not a runtime benchmark or deployment verification report.
+
+Primary code references:
+
+- `package.json`
+- `vite.config.ts`
+- `src/main.tsx`
+- `src/App.tsx`
+- `src/hooks/useConsoleData.ts`
+- `src/hooks/useSearchController.ts`
+- `src/api.ts`
+- `server/index.ts`
+- `server/routes/*Routes.ts`
+- `server/workflows/*`
+- `server/store.ts`
+- `server/postgres/*`
+- `server/local*Store.ts`
+- `server/localModelRuntime.ts`
+- `server/localEmbeddingRuntime.ts`
+- `server/localVisualEmbeddingRuntime.ts`
+- `server/modelRuntime/pythonRuntimeService.ts`
+- `server/services/redisJobQueue.ts`
+- `server/services/askJobQueue.ts`
+- `server/services/queueOutboxStore.ts`
+- `server/services/queueOutboxPublisher.ts`
+- `server/services/jobStageCheckpoint.ts`
+- `server/services/realtimeEvents.ts`
+- `server/jobWorker.ts`
+- `server/askWorker.ts`
+- `server/services/assetJobRunner.ts`
+- `server/services/mediaLifecycle.ts`
+- `server/observability.ts`
+- `server/vlmWorkerClient.ts`
+- `scripts/arion_model_runtime_service.py`
+- `scripts/qwen_vlm_worker.py`
+- `shared/types.ts`
+
+## Operational Runtime Topology
+
+This is the intended production-style boundary model after the durable queue and media boundary changes. Local development still uses Vite and local filesystem-backed object storage, but those are implementation choices behind the same boundaries.
+
+```mermaid
+flowchart TB
+  Client["Client runtime\nReact + TypeScript"] --> Api["Express API process\n/api route layer"]
+  Client --> MediaDelivery["Media delivery boundary\nobject storage / CDN / reverse proxy"]
+
+  Api --> Services["TypeScript application services\nroutes, workflows, search, knowledge"]
+  Services --> AppState["Application persistence\nPostgreSQL app_* tables\nlocal JSON fallback for development"]
+  Services --> QueueOutbox["Transactional queue outbox\napp_queue_outbox / queue-outbox.json"]
+  QueueOutbox --> AskQueue["Redis + BullMQ\nask operation queue"]
+  QueueOutbox --> AssetQueue["Redis + BullMQ\nasset job queue"]
+
+  AskQueue --> AskWorker["Ask operation worker process\nserver/askWorker.ts"]
+  AssetQueue --> AssetWorker["Asset job worker process\nserver/jobWorker.ts"]
+
+  AskWorker --> AppState
+  AssetWorker --> AppState
+  AskWorker --> QueueOutbox
+  AssetWorker --> QueueOutbox
+
+  Services --> MediaStore["Media object storage\nsource files + generated artifacts"]
+  AssetWorker --> MediaStore
+  MediaDelivery --> MediaStore
+
+  AskWorker --> RuntimeBoundary["Runtime/service boundary"]
+  AssetWorker --> RuntimeBoundary
+  Services --> RuntimeBoundary
+
+  RuntimeBoundary --> PythonServices["Python runtime services\nASR, OCR, Vision, Embedding"]
+  RuntimeBoundary --> VlmService["VLM service\nQwen/LLaVA-style video reasoning"]
+  RuntimeBoundary --> NodeIntegrations["Node runtime integrations\nFFmpeg, OpenAI HTTP client"]
+
+  Services --> Realtime["SSE event stream\n/api/events/stream"]
+  AskWorker --> Realtime
+  AssetWorker --> Realtime
+  Realtime --> Client
+
+  Services --> Observability["Observability sink\nOpenTelemetry, spans, NDJSON logs"]
+  AskWorker --> Observability
+  AssetWorker --> Observability
+```
+
+Operational boundary rules:
+
+- Media binaries are not application persistence. Source videos, keyframes, OCR frames, extracted audio, and generated thumbnails belong to the media object-storage boundary.
+- Application state belongs to the persistence boundary: metadata, jobs, ask operations, events, tracking records, and vector indexes.
+- Express can serve `/media` only in local-static mode. In operational deployment, set `MEDIA_SERVING_MODE=disabled` and serve media through object storage, CDN, or a reverse proxy boundary.
+- Asset indexing and ask execution are both queue-backed. The API process persists operation records and queue outbox entries; worker/API publishers dispatch IDs from the outbox to Redis/BullMQ; worker processes execute the long-running work.
+- Asset indexing stores stage checkpoints in `JobRecord.stageCheckpoints`. Worker recovery preserves checkpoint state and resumes from the failed or interrupted stage when persisted stage outputs are reusable.
+- Frontend progress and ask updates use `/api/events/stream` Server-Sent Events. Initial reads still use normal REST endpoints, but continuous progress updates are event-driven rather than interval polling.
+- Python runtime categories can run as one combined service or be split by `ASR_RUNTIME_SERVICE_URL`, `OCR_RUNTIME_SERVICE_URL`, `VISION_RUNTIME_SERVICE_URL`, and `EMBEDDING_RUNTIME_SERVICE_URL`. The VLM worker remains a separate HTTP boundary through `VLM_WORKER_URL`.
+
+## Detailed Local Development Runtime Topology
+
+```mermaid
+flowchart TB
+  subgraph ClientDev["Client runtime"]
+    Browser["Browser runtime"] --> React["React + TypeScript console\nsrc/main.tsx -> src/App.tsx"]
+  end
+
+  subgraph WebDev["Vite dev server\nlocalhost:5173"]
+    ViteAssets["Frontend assets + HMR"]
+    ViteProxy["Dev proxy\n/api, /media -> localhost:8787"]
+  end
+  Browser --> ViteAssets
+  React -->|"same-origin /api/* and /media/*"| ViteProxy
+
+  subgraph ApiProcess["Express API process\nserver/index.ts - localhost:8787"]
+    ViteProxy --> ExpressEntry["Express app"]
+    ExpressEntry --> CommonHttp["HTTP middleware\ncors, observability, rate limit"]
+    CommonHttp -->|"/media/*"| MediaBoundary["Local media serving boundary\n/media -> .data/object-storage\nMEDIA_SERVING_MODE=local-static"]
+    MediaBoundary -->|"static hit"| ObjectStorage
+    MediaBoundary -.->|"disabled or static miss"| MediaError["media 404/error\nno API route match"]
+    CommonHttp -->|"/api/*"| ApiMiddleware["API middleware\nexpress.json, optional API key"]
+    ApiMiddleware --> Routes["Express route modules\nserver/routes/*Routes.ts"]
+  end
+
+  Routes --> Services["TypeScript application services\nworkflows, job state, search/vector,\nknowledge, events/webhooks, direct store calls"]
+  Services -->|"asset job dispatch"| RedisAssetQueue["Redis + BullMQ asset queue\nJobRecord id"]
+  Services -->|"ask operation dispatch"| RedisAskQueue["Redis + BullMQ ask queue\nAskOperation id"]
+  Services -->|"query-time embeddings,\nVLM health, OpenAI planner"| RuntimeBoundary["Runtime and external service boundary"]
+
+  subgraph WorkerProcess["Asset job worker process\nserver/jobWorker.ts"]
+    RedisAssetQueue --> AssetWorker["BullMQ Worker\nclaim queued JobRecord"]
+    AssetWorker --> Runner["TypeScript asset job runner\nassetJobRunner + workflows"]
+  end
+
+  subgraph AskWorkerProcess["Ask operation worker process\nserver/askWorker.ts"]
+    RedisAskQueue --> AskWorker["BullMQ Worker\nclaim queued AskOperation"]
+    AskWorker --> AskRunner["TypeScript ask operation runner\nrunAskOperation"]
+  end
+
+  Runner -->|"asset indexing runtime"| RuntimeBoundary
+  AskRunner -->|"query-time runtime"| RuntimeBoundary
+  Services --> Persistence
+  Services --> Observability
+  Runner --> Persistence
+  Runner --> Observability
+  AskRunner --> Persistence
+  AskRunner --> Observability
+  CommonHttp --> Observability
+
+  subgraph RuntimeLayer["Model and integration runtimes"]
+    direction LR
+    RuntimeBoundary --> RuntimeClient["TypeScript runtime service client\nserver/modelRuntime/pythonRuntimeService.ts"]
+    RuntimeClient --> RuntimeServices["Python runtime service(s)\nASR, OCR, Vision, Embedding\nPYTHON_RUNTIME_SERVICE_URL or category URLs"]
+    RuntimeServices --> RuntimeScripts["Python runtime scripts\nscripts/arion_model_runtime_service.py -> scripts/* adapters"]
+    RuntimeBoundary --> VlmService["VLM service\nscripts/qwen_vlm_worker.py\nVLM_WORKER_URL"]
+    RuntimeBoundary --> RuntimeIntegrations["Node runtime integrations\nFFmpeg child_process,\nOpenAI HTTP client"]
+  end
+
+  subgraph StorageAndTelemetry["Application state and telemetry sinks"]
+    direction LR
+    Persistence["Application persistence adapters\nmetadata, ask operations,\ntracking, vector stores"] --> LocalPersistence["Application filesystem persistence\n.data/db.json, events.ndjson,\nask/tracking/vector JSON"]
+    Persistence --> PostgresPersistence["Application PostgreSQL persistence\napp_* tables + optional pgvector"]
+    ObjectStorage["Object-storage media files\n.data/object-storage"]
+    Persistence -.->|diagnostic logs only| Observability["Observability sink\nOpenTelemetry SDK, local spans,\nlatency buckets, NDJSON logs"]
+    Observability --> LogFiles["Observability log files\n.data/logs/app.ndjson"]
+  end
+
+  Services --> ObjectStorage
+  Runner --> ObjectStorage
+
+  Contracts["TypeScript shared type contracts\nshared/types.ts"]
+  React -.-> Contracts
+  Routes -.-> Contracts
+  Services -.-> Contracts
+```
+
+## Repository Shape
+
+| Area | Path | Responsibility |
+| --- | --- | --- |
+| Frontend entry | `src/main.tsx` | Mounts React `App` under `React.StrictMode`. |
+| Frontend orchestration | `src/App.tsx` | Owns selected tab, selected asset/index/segment, dialogs, upload, retries, URL state, and passes props to `ConsoleLayout`. |
+| Frontend API client | `src/api.ts` | Thin `fetch` wrapper with JSON parsing, type guards, and form payload helpers. |
+| Frontend data refresh | `src/hooks/useConsoleData.ts` | Performs initial REST hydration, then refreshes operational data from `/api/events/stream` SSE notifications. |
+| Frontend search state | `src/hooks/useSearchController.ts` | Posts `/api/ask`, waits on operation-scoped SSE updates, tracks query plan, orchestration plan, sports answer, and result conversation. |
+| Frontend routing | `src/navigation.ts` | Converts console state to path/query URLs and parses URLs back into console state. |
+| API entry | `server/index.ts` | Creates Express app, applies middleware, registers routes, persists operation records/outbox entries, exposes SSE, and starts listener. |
+| Asset job worker | `server/jobWorker.ts` | Runs BullMQ worker process, recovers interrupted jobs, claims queued `JobRecord`s, and executes long-running asset workflows. |
+| Ask operation worker | `server/askWorker.ts` | Runs BullMQ worker process, recovers interrupted ask operations, claims queued `AskOperation`s, and executes query/search workflows outside the API process. |
+| Shared contract | `shared/types.ts` | Defines assets, indexes, jobs, timeline segments, local intelligence, ask responses, knowledge, tracking, events, metrics, webhooks, and billing records. |
+| Workflow layer | `server/workflows/*` | Coordinates ingestion/indexing, ask/search, analysis, domain VLM refinement, and diarization retry jobs. |
+| Storage adapter | `server/store.ts` | Selects PostgreSQL when `DATABASE_URL` is set; otherwise uses local JSON files. |
+| Postgres adapter | `server/postgres/*` | Creates schema, repositories, vector repositories, status, defaults, and reset logic. |
+| Local runtime adapters | `server/localModelRuntime.ts`, `server/modelRuntime/*` | Coordinates FFmpeg, ASR, OCR, diarization, audio probing, visual sampling, and Python runtime service calls. |
+| Embedding adapters | `server/localEmbeddingRuntime.ts`, `server/localVisualEmbeddingRuntime.ts` | Calls text and visual embedding runtimes and validates dimensions. |
+| Python runtime service | `scripts/arion_model_runtime_service.py` | FastAPI boundary that exposes ASR, OCR, vision, and embedding runtime endpoints. |
+| Python runtimes | `scripts/*.py` | Local model execution for ASR, OCR, scene/object detection, tracking, VLM worker, embeddings, imports, and maintenance. |
+
+## Development Runtime
+
+`package.json` defines the local development topology:
+
+- `npm run dev` runs `dev:api`, `dev:worker`, `dev:ask-worker`, and `dev:web` concurrently.
+- `dev:api` runs `tsx watch server/index.ts`.
+- `dev:worker` runs `tsx watch server/jobWorker.ts`.
+- `dev:ask-worker` runs `tsx watch server/askWorker.ts`.
+- `dev:web` runs `vite --host 0.0.0.0`.
+- `dev:full` also starts the Python runtime service through `models:runtime:ai` and the Python VLM worker through `models:vlm:ai`.
+- The API default port is `8787`.
+- The Vite default port is `5173`.
+- The combined local Python runtime service default port is `8792`.
+- Redis is required for asset job execution and ask operation execution and must be started outside Node. `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
+
+`vite.config.ts` proxies frontend development requests:
+
+- `/api` -> `http://localhost:8787`
+- `/media` -> `http://localhost:8787`
+
+This means frontend code uses same-origin paths such as `/api/assets` and `/media/...`; the dev server forwards them to Express.
+The detailed local topology shows this Vite proxy because it is part of the development runtime. In a production deployment, the static frontend host or reverse proxy can replace this node while Express owns only the `/api` route layer. Local `/media` serving should be disabled in that topology with `MEDIA_SERVING_MODE=disabled`.
+
+## Frontend Architecture
+
+### Entry And Top-Level State
+
+`src/main.tsx` mounts `App`. `src/App.tsx` is the top-level application coordinator. It does not render most page details directly; instead it gathers state and handlers and passes them into `ConsoleLayout`.
+
+Top-level state includes:
+
+- selected index, asset, segment, and job
+- current console tab: `data`, `knowledge`, `search`, or `system`
+- asset detail tab: `overview`, `workflow`, or `timeline`
+- selected sports knowledge domain
+- dialog state for asset group and upload forms
+- busy/message state
+- pending video seek state
+- route synchronization state
+
+### URL State
+
+`src/navigation.ts` maps application state to readable URLs:
+
+- `/system`
+- `/search`
+- `/knowledge`
+- `/knowledge/:domainGroup`
+- `/assets/:indexId`
+- `/asset/:assetId`
+- `/asset/:assetId/:assetDetailTab`
+
+When a selected segment or seek time exists, it is encoded as query parameters:
+
+- `segment`
+- `t`
+- `assetTab`
+
+`App` listens to `popstate`, parses the URL, and updates selected tab/index/asset/segment/seek state.
+
+### Data Refresh
+
+`useConsoleData` is the main data hydration hook. It performs an initial REST read in two batches:
+
+1. Core operational data:
+   - `GET /api/indexes`
+   - `GET /api/assets`
+   - `GET /api/jobs`
+   - `GET /api/events?limit=20`
+2. System and knowledge data:
+   - `GET /api/metrics`
+   - `GET /api/db/status`
+   - `GET /api/observability`
+   - `GET /api/knowledge/sports`
+   - `GET /api/knowledge/sports/vector-store`
+
+After initial hydration, it opens `GET /api/events/stream`. The hook schedules a short debounced REST refresh when it receives `asset.updated`, `job.updated`, `event.recorded`, `outbox.updated`, or `ask.operation.updated`. There is no fixed interval polling loop for progress refresh.
+
+The hook uses `Promise.allSettled` and per-payload type guards. Partial failures are surfaced as refresh warnings instead of discarding all successful data.
+
+### Search Controller
+
+`useSearchController` owns the interactive ask/search state:
+
+- query text
+- search scope mode: all, group, or asset
+- selected search index and asset
+- knowledge layer toggle
+- current `AskResponse`
+- query plan and orchestration plan
+- sports stats answer
+- raw and trust-filtered results
+- local conversation history
+
+The main search flow is:
+
+```mermaid
+sequenceDiagram
+  participant UI as Search UI
+  participant Hook as useSearchController
+  participant Client as src/api.ts fetch
+  participant API as askRoutes
+  participant Ask as Ask operation store
+  participant Outbox as Queue outbox
+  participant Queue as Redis/BullMQ ask queue
+  participant SSE as /api/events/stream
+  participant Worker as askWorker
+
+  UI->>Hook: submit query
+  Hook->>Client: api.post("/api/ask")
+  Client->>API: POST /api/ask via same-origin path; Vite proxy in dev
+  API->>Ask: ensure store, prune, create, persist queued operation
+  API->>Outbox: persist ask-operation outbox entry
+  Outbox->>Queue: publish AskOperation id
+  API-->>Client: 202 AskResponse with operation id
+  Client-->>Hook: started AskResponse
+  Hook->>SSE: open operation-scoped EventSource
+  Queue->>Worker: BullMQ worker receives AskOperation id
+  Worker->>Ask: load persisted request and operation state
+  Note over Worker,SSE: Worker updates operation steps, status, and final response; operationStore emits ask.operation.updated events.
+  Ask-->>SSE: ask.operation.updated
+  SSE-->>Hook: current AskResponse payload
+  Hook->>Hook: update plan, orchestration, answer, results
+```
+
+The client performs one immediate `GET /api/ask/:id` read to cover races, then waits for operation-scoped SSE updates and times out after 48 seconds. The SSE route also emits the current operation snapshot on connect when `operationId` is provided.
+
+### Upload And Reindex Controls
+
+`App.uploadAsset` submits multipart form data to:
+
+- `POST /api/indexes/:id/assets`
+
+The response is validated with `isAssetUploadPayload`. The returned asset and job are inserted optimistically into frontend state, and a refresh follows.
+
+Retry actions call:
+
+- `POST /api/jobs/:id/retry`
+- `POST /api/assets/:id/reindex`
+- `POST /api/assets/:id/domain-vlm/refine`
+- `POST /api/indexes/:id/domain-vlm/refine`
+
+### UI Composition
+
+`ConsoleLayout` receives all state and renders the four console sections:
+
+- `system`: metrics, jobs, events, DB status, observability.
+- `data`: asset groups, uploaded assets, asset details, video player, timeline, workflow.
+- `search`: ask form, search scope, workflow trace, sports answer, results, clip detail.
+- `knowledge`: sports knowledge registry and vector store status.
+
+Most specialized UI is split under:
+
+- `src/components/assets/AssetComponents.tsx`
+- `src/components/SearchPanels.tsx`
+- `src/components/evidence/EvidenceComponents.tsx`
+- `src/components/knowledge/SportsKnowledgePanel.tsx`
+- `src/components/common/ConsolePrimitives.tsx`
+
+## Backend Boot Sequence
+
+`server/index.ts` performs this sequence:
+
+1. Loads `.env` through `server/env.ts`.
+2. Creates the Express app.
+3. Ensures `.data/tmp-uploads` exists.
+4. Cleans stale files from `.data/tmp-uploads` using `UPLOAD_TEMP_MAX_AGE_MS`.
+5. Creates the Multer upload middleware with the configured max upload size.
+6. Creates the in-memory rate limiter.
+7. Applies middleware in order:
+   - `cors()`
+   - `observabilityMiddleware`
+   - rate limit middleware
+   - local `/media` serving boundary from `.data/object-storage` when `MEDIA_SERVING_MODE=local-static`
+   - `express.json({ limit: "2mb" })`
+   - optional API key auth
+8. Registers route groups:
+   - system
+   - index
+   - asset
+   - job
+   - ask
+   - knowledge
+   - orchestration
+   - vector
+   - analysis
+   - webhook
+   - video compatibility aliases
+9. Installs the error handler.
+10. Starts listening on `PORT` or `8787`.
+
+The API process does not execute long-running asset jobs. It persists `JobRecord`s with queue outbox entries and may attempt immediate outbox publication.
+The API process also does not execute ask operations. It persists `AskOperation` records with queue outbox entries and may attempt immediate outbox publication.
+
+## Worker Boot Sequence
+
+`server/jobWorker.ts` performs this sequence:
+
+1. Loads `.env` through `server/env.ts`.
+2. Resolves `JOB_WORKER_ID` and `JOB_QUEUE_RECONCILE_MS`.
+3. Runs `recoverDurableWorkerJobs` before creating the BullMQ worker.
+4. During recovery, cleans stale runtime processes for queued/running asset jobs.
+5. Resets interrupted `running` jobs back to `queued` while preserving `stageCheckpoints` and setting `parameters.resumeFromStage`.
+6. Publishes pending `asset-job` queue outbox entries.
+7. Reconciles queued supported asset jobs into Redis through `enqueueQueuedAssetJobs` as a compatibility repair path.
+8. Creates a Redis/BullMQ worker using `REDIS_URL`, `JOB_QUEUE_NAME`, and `JOB_WORKER_CONCURRENCY`.
+9. Claims queued `JobRecord`s before execution.
+10. Runs the matching workflow through `assetJobRunner`.
+11. Periodically publishes queue outbox entries and reconciles queued jobs using `JOB_QUEUE_RECONCILE_MS`.
+
+## Ask Worker Boot Sequence
+
+`server/askWorker.ts` performs this sequence:
+
+1. Loads `.env` through `server/env.ts`.
+2. Resolves `ASK_WORKER_ID`, `ASK_QUEUE_NAME`, `ASK_WORKER_CONCURRENCY`, and `ASK_QUEUE_RECONCILE_MS`.
+3. Resets interrupted `running` ask operations back to `queued`.
+4. Publishes pending `ask-operation` queue outbox entries.
+5. Reconciles queued ask operations into Redis/BullMQ as a compatibility repair path.
+6. Creates a Redis/BullMQ worker.
+7. Claims queued `AskOperation` records by operation ID.
+8. Runs `runAskOperation` from the persisted request stored with the operation.
+9. Periodically publishes queue outbox entries and reconciles queued ask operations into Redis.
+
+## HTTP Middleware
+
+| Middleware | File | Behavior |
+| --- | --- | --- |
+| CORS | `server/index.ts` | Enables cross-origin requests for local API use. |
+| Observability | `server/observability.ts` | Adds request ID, traceparent, local spans, request metrics, and JSON logs. It runs before both local media serving and API routes. |
+| Rate limiting | `server/http/middleware.ts` | Per-IP in-memory count with configurable requests per minute. Health/status GET endpoints and the SSE stream are exempt. It runs before local media serving and API routes. |
+| Static media | `server/http/mediaServing.ts` | Serves generated and stored media from `/media` only when `MEDIA_SERVING_MODE=local-static`. It is mounted only on the `/media` prefix, so `/api/*` requests skip it. A matching static file response does not enter the API route layer. Operational deployments can set `MEDIA_SERVING_MODE=disabled` and serve media outside the API process. |
+| JSON body | `server/index.ts` | Limits JSON body payloads to `2mb`. |
+| Optional API key | `server/http/middleware.ts` | If `API_KEYS` is unset, API is open. If set, request must match configured keys or local users by `x-api-key`. |
+| Error handler | `server/http/middleware.ts` | Returns JSON errors. Multer file size errors become HTTP 413. |
+
+## API Surface
+
+| Group | Endpoints | File | Main collaborators |
+| --- | --- | --- | --- |
+| System | `GET /api/health`, `/api/metrics`, `/api/db/status`, `/api/storage/status`, `/api/observability`, `/api/model-capabilities`, `/api/users`, `/api/billing`, `/api/events` | `server/routes/systemRoutes.ts` | `store`, `postgresStore`, `localObjectStorage`, `observability`, `modelCapabilities` |
+| Indexes | `GET /api/indexes`, `POST /api/indexes`, `GET /api/indexes/:id`, `PATCH /api/indexes/:id` | `server/routes/indexRoutes.ts` | `store`, `domainConfig`, `localEmbeddingRuntime`, `events` |
+| Assets | `GET /api/assets`, `GET /api/assets/:id`, `POST /api/assets`, `POST /api/indexes/:id/assets`, clip endpoints, tracking endpoints, `POST /api/indexes/:id/analyze`, reindex/domain refinement endpoints | `server/routes/assetRoutes.ts` | `indexingWorkflow`, `redisJobQueue`, `jobState`, `intelligence`, `trackingStore`, `events` |
+| Jobs | `GET /api/jobs`, `GET /api/jobs/:id`, `POST /api/jobs/:id/retry` | `server/routes/jobRoutes.ts` | `store`, `jobState`, `redisJobQueue` |
+| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/sports/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `openaiQueryPlanner`, `sportsKnowledgeQa`, `vlmWorkerClient` |
+| Knowledge | sports snapshot, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `sportsKnowledge`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
+| Vectors | `GET /api/vector-search`, `GET /api/visual-search`, `POST /api/vector-store/rebuild` | `server/routes/vectorRoutes.ts` | `localEmbeddingRuntime`, `localVisualEmbeddingRuntime`, vector stores, `vectorMaintenance` |
+| Orchestration | `GET /api/orchestrate/plan` | `server/routes/orchestrationRoutes.ts` | `orchestrator`, query planning, asset scoping |
+| Analysis | `POST /api/analyze`, `POST /api/assets/:id/analyze` | `server/routes/analysisRoutes.ts` | `analysisWorkflow` |
+| Webhooks | `GET /api/webhooks`, `POST /api/webhooks`, `POST /api/webhooks/:id/test`, `POST /api/webhooks/:id/retry` | `server/routes/webhookRoutes.ts` | `store`, `events` |
+| Video aliases | `GET /api/videos`, `GET /api/videos/:id`, `POST /api/videos`, `POST /api/videos/:id/analyze` | `server/routes/videoRoutes.ts` | asset storage and analysis compatibility wrappers |
+
+## Shared Domain Model
+
+`shared/types.ts` is the contract between frontend and backend.
+
+### IndexRecord
+
+An index is the asset group. It contains:
+
+- model names for search, analysis, and embedding
+- enabled modalities
+- optional domain indexing config
+- optional capability policy
+- associated asset IDs
+- status and timestamps
+
+### AssetRecord
+
+An asset is an uploaded media item. It contains:
+
+- media identity and storage metadata
+- ingest/indexing status and progress
+- duration, dimensions, codec metadata
+- tags and summary
+- timeline segments
+- keyframes
+- local intelligence output
+- error and timestamps
+
+### TimelineSegment
+
+A timeline segment is the primary retrieval unit. It contains:
+
+- time range
+- label and transcript
+- scene data:
+  - image summary
+  - speech/subtitle/screen text evidence
+  - optional VLM evidence
+  - optional vision evidence
+- optional domain evidence:
+  - domain groups
+  - captions and labels
+  - structured events
+  - scope values
+  - search text
+  - confidence and trust
+- retrieval metadata:
+  - tags
+  - modalities
+  - embedding vector
+  - thumbnail path
+  - evidence sources
+  - scene boundary metadata
+
+### LocalIntelligence
+
+`LocalIntelligence` stores model/runtime outputs attached to an asset:
+
+- audio extraction and VAD speech/music regions
+- Whisper ASR transcript, language, confidence, segments
+- WhisperX speaker diarization
+- PaddleOCR tokens and frames
+- visual sampler labels, color, brightness, and motion score
+- model trace strings
+
+### JobRecord
+
+Jobs track async work:
+
+- type: `asset.index`, `asset.reindex`, `asset.domain-vlm.refine`, or `webhook.test`
+- status: queued, running, succeeded, failed
+- stage and progress
+- optional parameters, currently used for retry stage recovery
+- optional asset/index IDs
+- per-runtime stage records
+- logs, error, and timestamps
+
+### AskOperation And AskResponse
+
+Ask operations are server-side async operation records. They are kept in an in-memory map while the API process is running and persisted through the ask operation store. The response shape includes:
+
+- operation status and step trace
+- route: pending, stat QA, moment retrieval, empty, or error
+- answer
+- query plan
+- orchestration plan
+- optional sports stats answer
+- search results
+- warnings
+
+### SearchResult
+
+Search results bundle:
+
+- full asset
+- matching index
+- selected timeline segments
+- generated clips
+- ranking scores
+- explanation strings
+- query plan
+- knowledge evidence
+- match reasons
+- verification checks
+
+### Knowledge And Tracking
+
+Sports knowledge includes competitions, teams, players, match activities, and facts. Tracking records are derived from timeline vision evidence and connect ball/player/link track IDs to segment ranges.
+
+## Ingestion And Indexing
+
+### Upload Flow
+
+```mermaid
+sequenceDiagram
+  participant FE as React App
+  participant HTTP as Same-origin HTTP path
+  participant API as assetRoutes
+  participant Upload as Multer
+  participant Storage as localObjectStorage
+  participant Jobs as jobState
+  participant Events as events service
+  participant Store as Store Adapter
+  participant Outbox as Queue Outbox
+  participant Queue as Redis/BullMQ Queue
+  participant Worker as jobWorker
+  participant Job as Indexing Workflow
+
+  FE->>HTTP: fetch POST /api/indexes/:id/assets multipart
+  HTTP->>API: route request; Vite proxy forwards in dev
+  API->>Upload: upload.single("video") route middleware
+  Upload-->>API: req.file and req.body
+  API->>Storage: putUploadedObject(tempPath, originalName, generated asset id)
+  API->>Store: saveVideo queued AssetRecord
+  API->>Jobs: createQueuedAssetJob("asset.index")
+  Jobs->>Store: save queued JobRecord
+  Jobs->>Outbox: create asset-job outbox entry
+  API->>Events: recordEvent("asset.uploaded")
+  Events->>Store: saveEvent
+  API->>Outbox: publish pending asset-job entries
+  Outbox->>Queue: enqueue Redis asset job by JobRecord id
+  API-->>HTTP: 202 { asset, job }
+  HTTP-->>FE: 202 { asset, job }
+  Queue->>Worker: BullMQ worker receives job id
+  Worker->>Jobs: claim queued JobRecord
+  Worker->>Job: runIndexingJob(jobId, assetId, storedPath)
+```
+
+`createAssetFromUpload` creates the asset with `status: "queued"` and `progress: 5`, stores the source media, creates an `asset.index` job with a queue outbox entry, and records an event. The route attempts immediate outbox publication, and `server/jobWorker.ts` continues outbox publishing and executes the indexing workflow.
+
+### Redis Backed Asset Job Queue
+
+Asset job durability is split between persisted job records and Redis execution dispatch:
+
+- `JobRecord` is persisted through `store.ts`, backed by local JSON or Postgres.
+- `JobRecord.parameters` stores replay-critical parameters such as the normalized retry stage.
+- `server/services/queueOutboxStore.ts` stores Redis dispatch requests before publication.
+- In Postgres mode, `createQueuedAssetJob` writes the `JobRecord` and `app_queue_outbox` entry in one transaction through `saveJobWithQueueOutbox`.
+- `server/services/queueOutboxPublisher.ts` publishes pending outbox entries to Redis/BullMQ by `JobRecord.id`.
+- `server/services/redisJobQueue.ts` remains the BullMQ adapter used by the outbox publisher and worker reconciliation.
+- `server/jobWorker.ts` owns long-running job execution outside the Express API process.
+- `server/services/assetJobRunner.ts` maps persisted asset job type and parameters back to executable workflow functions.
+- On worker boot, `recoverDurableWorkerJobs` cleans stale runtime processes, preserves checkpoint state, marks interrupted running jobs queued, and records `parameters.resumeFromStage`.
+- Worker startup and worker intervals publish pending queue outbox entries. Legacy queued-job reconciliation remains as a compatibility repair path.
+- A recovered indexing job resumes from the failed or interrupted checkpoint when the stage output is already persisted and reusable.
+
+### Indexing Pipeline
+
+`runIndexingJob` is the core indexing workflow:
+
+```mermaid
+flowchart TD
+  Start["runIndexingJob\nasset.index or asset.reindex"] --> Probe["Probe media\nffprobe"]
+  Probe --> Runtime["Local model runtime\nFFmpeg audio/VAD\nASR service\nOCR service\nvisual sampler"]
+  Runtime --> Scene["Scene detection\nPySceneDetect fallback FFmpeg"]
+  Scene --> Timeline["Build local timeline\ntext, OCR, visual, scene data"]
+  Timeline --> Keyframes["Generate keyframes\nFFmpeg"]
+  Keyframes --> Snapshot["Persist timeline/keyframe snapshot"]
+  Snapshot --> VideoVlm{"videoVlmAnalysis enabled?"}
+  VideoVlm -->|no| VisionDetect
+  VideoVlm -->|yes| VideoVlmWorker{"VLM_WORKER_URL configured?"}
+  VideoVlmWorker -->|yes| VideoVlmRun["Analyze timeline keyframes\nVLM worker"]
+  VideoVlmWorker -->|no and optional| VisionDetect
+  VideoVlmWorker -->|no and required| Failure["Fail job\nRequiredCapabilityUnavailableError"]
+  VideoVlmRun --> VisionDetect["Detect objects if visionDetector enabled\napply detections"]
+  VisionDetect -.->|required unavailable| Failure
+  VisionDetect --> VisionHeuristic["Apply local vision tracking heuristics"]
+  VisionHeuristic --> VisionTracks["Detect tracks if visionTracker enabled\napply tracks"]
+  VisionTracks -.->|required unavailable| Failure
+  VisionTracks --> Classify["Apply event classification"]
+  Classify --> SoccerNet{"sports.football index\nand SoccerNet enabled\nand configured or required?"}
+  SoccerNet -->|yes| SoccerNetRun["Action spotting\nSoccerNet runtime"]
+  SoccerNetRun -.->|required unavailable| Failure
+  SoccerNet -->|no| DomainIndex
+  SoccerNetRun --> DomainIndex{"domainIndexing enabled?"}
+  DomainIndex -->|yes| Domain["Domain timeline enrichment\nsports events and scope"]
+  DomainIndex -->|no| TextEmbed
+  Domain --> DomainVlm{"domainVlmRefinement enabled?"}
+  DomainVlm -->|no| TextEmbed
+  DomainVlm -->|yes| DomainVlmWorker{"VLM_WORKER_URL configured?"}
+  DomainVlmWorker -->|yes| DomainVlmRun["Refine sports events\nVLM worker"]
+  DomainVlmWorker -->|no and optional| TextEmbed
+  DomainVlmWorker -->|no and required| Failure
+  DomainVlmRun --> TextEmbed["Text embeddings\nsentence-transformers script"]
+  TextEmbed --> TextVector["Upsert text vectors"]
+  TextVector --> VisualEmbed["Try visual embeddings\nOpenCLIP script"]
+  VisualEmbed --> VisualVector["Upsert visual vectors\npossibly empty on unavailable visual embedding"]
+  VisualVector --> Finalize["Save indexed asset\nupsert tracking\ncomplete job\nrecord billing"]
+```
+
+Stage details:
+
+1. `probe`
+   - Calls `probeVideo` from `server/intelligence.ts`.
+   - Updates duration, width, height, frame rate, audio codec, and video codec.
+2. `local-model-runtime`
+   - `runLocalModelRuntime` coordinates:
+     - audio extraction and VAD through FFmpeg
+     - audio presence probing through ffprobe
+     - visual frame sampling through FFmpeg raw frames
+     - Whisper ASR through the ASR runtime service
+     - optional WhisperX diarization through the ASR runtime service
+     - PaddleOCR through generated OCR frames and the OCR runtime service
+   - Cached runtime outputs are reused unless a retry stage forces a rerun.
+   - Runtime stages report progress into `JobRecord.runtimeStages`.
+3. `scene-detection`
+   - Attempts Python scene detection through the Vision runtime service.
+   - Falls back to FFmpeg scene detection if Python scene detection returns no boundaries.
+4. `timeline`
+   - Calls `buildLocalIndex` to create searchable segments from local intelligence and scene windows.
+5. `keyframes`
+   - Generates one keyframe per segment under `.data/object-storage/generated/assets/:assetId/keyframes`.
+   - After a successful indexing run, unreferenced generated media for the asset is pruned.
+6. `video-vlm`
+   - Optional, controlled by capability policy and `VLM_WORKER_URL`.
+   - Uses `analyzeTimelineWithVlm`.
+7. `vision-detection` and `vision-tracking`
+   - Object detection uses the Vision runtime service.
+   - Tracking uses the Vision runtime service.
+   - The output is merged into timeline `sceneData.vision`.
+8. Event classification
+   - `applyEventClassification` derives event labels from text and vision features.
+9. `soccernet-action`
+   - Optional football action spotting when index domain includes `sports.football` and the capability is enabled/configured.
+10. `domain-index`
+   - Sports indexes enrich segments with domain captions, labels, events, scope, and search text.
+11. `domain-vlm`
+   - Optional VLM refinement of sports event metadata.
+12. `embed`
+   - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
+   - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
+13. `vector-upsert-text`
+   - Writes text timeline vectors to local JSON or Postgres.
+14. `visual-embedding`
+   - `embedKeyframes` calls the Embedding runtime service in OpenCLIP image mode.
+   - Visual embedding dimension is validated against `VISUAL_EMBEDDING_DIMENSIONS` or the default `768`.
+15. `vector-upsert-visual`
+   - Writes visual vectors to local JSON or Postgres.
+16. `finalize`
+   - Saves the asset as `indexed`.
+   - Upserts tracking records.
+   - Marks the job succeeded.
+   - Emits `asset.indexing.succeeded`.
+   - Records local billing units based on duration.
+
+If an error escapes the workflow, the active checkpoint is marked failed, the asset is marked failed, the job is marked failed, an error log is written, and `asset.indexing.failed` is emitted.
+
+### Stage Checkpoint And Resume
+
+`server/services/jobStageCheckpoint.ts` stores indexing checkpoint state in `JobRecord.stageCheckpoints`.
+
+Checkpointed stages are:
+
+- `probe`
+- `local-model-runtime`
+- `timeline`
+- `video-vlm`
+- `vision-detection`
+- `vision-tracking`
+- `domain-index`
+- `embed`
+- `vector-upsert-text`
+- `visual-embedding`
+- `vector-upsert-visual`
+- `finalize`
+
+Each checkpoint stores status, message, progress, timestamps, errors, and attempt count. `runIndexingJob` wraps each durable stage with checkpoint start/complete/fail calls. The resume path only skips a completed checkpoint when the corresponding persisted output can be verified from `AssetRecord` or the completed checkpoint itself:
+
+- `probe` requires persisted media metadata.
+- `local-model-runtime` requires persisted intelligence or model trace output.
+- `timeline` requires persisted timeline and keyframe snapshots.
+- VLM and vision stages require matching model trace output.
+- `embed` requires persisted segment embeddings.
+- Vector upsert stages use checkpoint completion because vector writes are external to the asset JSON but are idempotent by asset/vector IDs.
+- `finalize` requires the asset to be persisted as `indexed`.
+
+Worker recovery now preserves checkpoint state. `recoverDurableWorkerJobs` sets `parameters.resumeFromStage` to the failed, running, or current checkpoint stage instead of resetting progress to the beginning. Manual retry stages still override the resume gate and rerun the requested stage plus downstream stages.
+
+### Reindex And Specialized Retry Jobs
+
+Asset reindexing is routed through `POST /api/assets/:id/reindex`.
+
+Supported normalized retry stages include:
+
+- `input`
+- `probe`
+- `audio`
+- `vad`
+- `asr`
+- `speakers`
+- `ocr`
+- `visual`
+- `timeline`
+- `domain`
+- `vector`
+- `ready`
+- `videoVlm`
+
+Special retry paths:
+
+- `speakers` runs `runSpeakerDiarizationJob`.
+- `audio` and `vad` run `runAudioExtractionJob`.
+- Other stages run the full indexing workflow with `retryStage`.
+- Domain VLM refinement can run as a standalone `asset.domain-vlm.refine` job.
+
+Duplicate active asset jobs are rejected by returning the active job with `x-existing-job: true`.
+
+## Ask, Search, And Analysis
+
+### Ask Operation Flow
+
+`POST /api/ask` parses the request, ensures the persisted ask operation store is loaded, creates an operation record, persists the original request with that record, and writes an ask-operation queue outbox entry. The outbox publisher dispatches the operation ID to Redis/BullMQ. `server/askWorker.ts` executes `runAskOperation` outside the API process. If immediate Redis dispatch fails, the operation remains `queued`, the outbox entry remains pending/failed with retry metadata, and the ask worker publisher retries it later.
+
+```mermaid
+flowchart TD
+  Request["POST /api/ask"] --> Ensure["Ensure ask operation store\nand prune old completed entries"]
+  Ensure --> Operation["Create queued AskOperation\npersist request before 202 response"]
+  Operation --> Outbox["Persist ask-operation outbox entry"]
+  Outbox --> Dispatch{"Immediate outbox publish succeeded?"}
+  Dispatch -->|yes| Queue["Enqueue AskOperation id\nRedis/BullMQ"]
+  Dispatch -->|no| QueuedOnly["Keep operation queued\nkeep outbox retry pending"]
+  Queue --> Response["Return 202 AskResponse\nwith operation id"]
+  QueuedOnly --> Response
+  Queue --> Worker["askWorker receives operation id"]
+  Worker --> Run["Run persisted AskRequest"]
+  Run --> Scope["Scope assets\nasset/index/domain/tag/modality"]
+  Scope --> Plan["Query planning\nrules + optional OpenAI planner"]
+  Plan --> KnowledgeAnswer{"Sports stat QA?"}
+  KnowledgeAnswer -->|yes| Stats["Answer from imported sports knowledge"]
+  KnowledgeAnswer -->|no| SkipStats["Skip direct sports-stat answer"]
+  Stats --> StatSeed{"Answered stat QA\nand moment retrieval requested?"}
+  StatSeed -->|yes| RewriteStat["Rewrite plan from sports answer"]
+  StatSeed -->|no| MetadataSeed
+  SkipStats --> MetadataSeed["Optionally rewrite leaderboard moment query\nfrom scoped asset metadata"]
+  RewriteStat --> Orchestrate["Build orchestration plan"]
+  MetadataSeed --> Orchestrate
+  Orchestrate --> DirectStat{"Answered stat QA\nand no retrieval seed?"}
+  DirectStat -->|yes| CompleteStats["Complete stat_qa response"]
+  DirectStat -->|no| Retrieval["Execute search pipeline"]
+  Retrieval --> Analysis{"Analysis required?"}
+  Analysis -->|yes| Generate["Build grounded local analysis answer"]
+  Analysis -->|no| Answer["Build video search answer"]
+  CompleteStats --> Complete["Complete AskResponse"]
+  Generate --> Complete
+  Answer --> Complete
+  Run -->|caught error| Failed["Persist failed AskResponse"]
+```
+
+Operation steps are appended with owner, input, output, status, timings, and errors. `operationStore` publishes `ask.operation.updated` realtime events whenever the operation changes. The frontend listens through `/api/events/stream?operationId=...` instead of polling `GET /api/ask/:id` in a loop.
+
+### Query Planning
+
+Query planning has two layers:
+
+1. `server/queryPlanner.ts`
+   - Rule-based Korean/English parsing.
+   - Detects competitions, players, seasons, sports stat questions, event types, pass types, field zones, and player inventory queries.
+   - Produces a `DomainQueryPlan`.
+2. `server/openaiQueryPlanner.ts`
+   - Optional refinement through OpenAI Responses API.
+   - Runs only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off.
+   - Merges LLM output into the rule plan with allow-lists for routes, metrics, roles, event types, pass types, and field zones.
+   - Falls back to the rule plan on error and adds a warning.
+
+### Orchestration
+
+`server/orchestrator.ts` converts the query plan and available scoped assets into an `OrchestrationPlan`.
+
+It decides:
+
+- mode: search, analysis, or stat QA
+- identity readiness
+- scope readiness
+- retrieval engine:
+  - `semantic_retrieval`
+  - `structured_domain`
+  - `hybrid`
+- whether analysis generation is required
+- warnings and fallbacks
+
+### Search Pipeline
+
+`executeSearchPipeline` performs retrieval:
+
+1. Scope assets by asset ID, index ID, domain group, tag, modality, and explicit asset references in the query.
+2. Decide whether the sports knowledge layer applies.
+3. Ground the query with sports knowledge when applicable.
+4. Expand the query with domain aliases.
+5. Embed the text query.
+6. Attempt visual text embedding for visual vector search.
+7. Search text vectors.
+8. Search visual vectors when the visual query vector is available.
+9. Search sports knowledge vectors when the sports knowledge layer applies.
+10. Merge grounding evidence and knowledge vector evidence.
+11. Call `searchAssets` to rank and verify matching timeline segments.
+
+Text vector query flow:
+
+- `embedQueryText`
+- `searchVectors`
+
+Visual query flow:
+
+- `embedVisualQuery`
+- `searchVisualVectors`
+
+Knowledge vector flow:
+
+- `searchKnowledgeVectors`
+- `knowledgeVectorHitToEvidence`
+
+### Synchronous Search Endpoints
+
+`GET /api/search` exposes a synchronous search path using the same query planning and `executeSearchPipeline` machinery. For sports stat questions, it may return a `409` instructing clients to use the sports answer endpoint unless it can build a seeded retrieval plan.
+
+### Analysis
+
+Analysis is exposed through:
+
+- `POST /api/analyze`
+- `POST /api/assets/:id/analyze`
+- `POST /api/indexes/:id/analyze`
+
+Asset-level analysis uses `analyzeAndEmit`, which requires the asset to be indexed and then calls `analyzeAsset`. Asset-group analysis calls `analyzeAssetGroup`. Successful analysis records an `analysis.completed` event, delivers matching webhooks, and records billing.
+
+## Sports Knowledge And Domain Layer
+
+### Sports Knowledge Registry
+
+`server/sportsKnowledge.ts` contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
+
+- competition matching
+- player alias matching
+- team matching
+- season helpers
+- player upsert/delete
+- provider data merging
+
+The sports snapshot includes:
+
+- domains
+- competitions
+- teams
+- players
+- match activities
+- facts
+
+### Provider Imports
+
+Knowledge import routes call provider-specific importers:
+
+- Football-Data
+- football-data.co.uk
+- StatBunker or Kaggle source mode
+- StatsBomb open data
+- nflverse
+
+The imported knowledge is merged into the local sports knowledge store.
+
+### Sports Stats QA
+
+`server/sportsKnowledgeQa.ts` answers supported aggregate sports stat questions directly from imported sports knowledge. It does not treat video retrieval as the authoritative source for aggregate totals.
+
+Supported metric families include football and American-football metrics:
+
+- goals
+- assists
+- appearances
+- minutes
+- cards
+- points
+- touchdowns
+- passing yards
+- passing touchdowns
+- rushing yards
+- receiving yards
+- sacks
+- interceptions
+
+### Knowledge Grounding
+
+`server/knowledgeGrounding.ts` builds evidence for retrieval:
+
+- competition scope
+- player profiles
+- rosters
+- match activities
+- facts
+- video scope evidence already present in indexed segments
+
+The result becomes both retrieval text and structured `KnowledgeEvidence`.
+
+### Domain Indexing
+
+Sports domain indexing is configured on `IndexRecord.domainIndexing`.
+
+Supported domain groups:
+
+- `sports.football`
+- `sports.american_football`
+
+When enabled, timeline segments can receive:
+
+- domain group membership
+- domain captions
+- labels
+- structured football or American-football events
+- scope values for competition, season, teams, and players
+- confidence and trust
+- searchable domain text
+- optional domain VLM quality metadata
+
+Capability policies control whether VLM, detector, tracker, SoccerNet, and diarization steps are disabled, optional, or required.
+
+## Storage Architecture
+
+### Object Storage
+
+`server/localObjectStorage.ts` stores uploaded media under:
+
+- `.data/object-storage/:provider/:bucket/assets/:assetId/source.ext`
+
+The default local provider is `local-s3`. `LOCAL_OBJECT_PROVIDER` can switch to `local-s3` or `local-r2`. Generated artifacts such as audio, OCR frames, and keyframes also live under the public media root.
+
+Upload/media lifecycle:
+
+- Multer writes incoming files to `.data/tmp-uploads`.
+- `createAssetFromUpload` moves the temp file into object storage through `putUploadedObject`.
+- Validation failures after Multer upload discard the temp file.
+- API boot removes stale temp uploads older than `UPLOAD_TEMP_MAX_AGE_MS`.
+- Source media is retained under `assets/:assetId/source.ext`.
+- Generated media is written under `generated/assets/:assetId`.
+- Successful indexing and audio retry prune generated files that are no longer referenced by the saved `AssetRecord`.
+- Stored source checksum is a file SHA-256 digest.
+
+`/media` serves:
+
+- `.data/object-storage`
+
+This path is exposed through `server/http/mediaServing.ts` only when `MEDIA_SERVING_MODE=local-static`.
+`/api/*` requests do not pass through this middleware because the mounted `/media` prefix does not match.
+Operational deployments should set `MEDIA_SERVING_MODE=disabled` and serve the object-storage media through a dedicated object storage, CDN, or reverse proxy boundary.
+
+`GET /api/storage/status` reports the application persistence boundary and the media storage boundary separately. It intentionally does not describe object-storage media as database persistence.
+
+### Metadata Store Adapter
+
+`server/store.ts` is the main persistence boundary.
+
+When `DATABASE_URL` is set:
+
+- the store delegates to `server/postgresStore.ts`
+- Postgres tables are created on demand through `ensurePostgresStore`
+- related operational adapters also delegate through `server/postgresStore.ts` for ask operations and tracking records
+
+When `DATABASE_URL` is unset:
+
+- records are persisted in local JSON files:
+  - `.data/db.json`
+  - `.data/events.ndjson`
+- ask operations and tracking records use their own local JSON files
+
+Local JSON reads detect corrupt JSON, copy a backup with a timestamped suffix, log an error, and throw a repair-required error.
+
+### Postgres Schema
+
+`server/postgres/schema.ts` creates:
+
+- `app_indexes`
+- `app_assets`
+- `app_jobs`
+- `app_ask_operations`
+- `app_webhooks`
+- `app_events`
+- `app_users`
+- `app_billing`
+- `app_vectors`
+- `app_visual_vectors`
+- `app_knowledge_vectors`
+- `app_tracking_records`
+- `app_schema_migrations`
+
+If the `vector` extension is available:
+
+- `app_vectors.embedding` is created as `vector(EMBEDDING_DIMENSIONS)`.
+- `app_knowledge_vectors.embedding` is created as `vector(EMBEDDING_DIMENSIONS)`.
+- `app_visual_vectors.embedding` is created as `vector(VISUAL_EMBEDDING_DIMENSIONS)`.
+- HNSW cosine indexes are attempted for those vector columns.
+
+If `pgvector` is unavailable, embeddings remain queryable through JSON fallback with application-level cosine similarity. If vector dimensions change, the pgvector column is recreated while `embedding_json` is preserved. Search supplements pgvector results with JSON scoring for rows that do not have a populated vector column.
+
+`GET /api/db/status` reports:
+
+- Postgres readiness and degraded state.
+- pgvector extension version or install error.
+- active vector search mode: `pgvector` or `json-fallback`.
+- vector column type, expected type, HNSW index presence, and row counts for each vector table.
+- schema migration records and aggregate metrics.
+
+### Vector Stores
+
+Text vectors:
+
+- Local file: `.data/vector-store.json`
+- Postgres table: `app_vectors`
+- Built from timeline segment embedding text.
+
+Visual vectors:
+
+- Local file: `.data/visual-vector-store.json`
+- Postgres table: `app_visual_vectors`
+- Built from generated keyframes.
+
+Knowledge vectors:
+
+- Local file: `.data/knowledge-vector-store.json`
+- Postgres table: `app_knowledge_vectors`
+- Built from sports knowledge documents.
+
+Vector search uses cosine similarity. Postgres uses pgvector distance when available and compatible, and uses JSON scoring for fallback rows or environments without pgvector.
+
+### Tracking Store
+
+`server/trackingStore.ts` stores derived ball/player/link tracking records.
+
+When `DATABASE_URL` is set:
+
+- tracking records are persisted in `app_tracking_records`
+
+When `DATABASE_URL` is unset:
+
+- tracking records are persisted in `.data/tracking-db.json`
+
+Tracking records are rebuilt from asset timeline vision evidence and can be filtered by asset, segment, or track ID.
+Postgres upserts and rebuilds are wrapped in transactions so a failed rebuild does not leave a partially replaced tracking set committed.
+
+### Ask Operation Store
+
+`server/workflows/ask/operationStore.ts` stores async ask operation state.
+
+When `DATABASE_URL` is set:
+
+- ask operation entries are persisted in `app_ask_operations`
+
+When `DATABASE_URL` is unset:
+
+- ask operation entries are persisted in `.data/ask-operations.json`
+
+The in-memory map remains a process-local cache over persisted operation state. Initial operation creation is persisted before the API returns `202`, later state writes are serialized, and persistence failures are recorded through observability logs. Persisted completed or failed operations can be read after an API restart. Interrupted running operations are reset to `queued` by the ask worker and rerun from the beginning.
+The persisted entry includes the original `AskRequest`, so an ask worker can execute an operation from the durable operation ID without depending on API process memory.
+
+### Events, Webhooks, And Billing
+
+Events and billing go through the same store adapter as assets and jobs.
+
+`server/services/events.ts` provides:
+
+- `recordEvent`
+- `deliverEvent`
+- `deliverWebhook`
+- `recordBilling`
+
+Webhook behavior:
+
+- Active webhooks receive events they subscribe to.
+- `log://` URLs are marked delivered without a network request.
+- HTTP webhooks are sent with a 2.5 second timeout.
+- Failed deliveries get exponential retry timestamps up to 60 seconds.
+- Delivery history is capped at 30 entries per webhook.
+
+## Runtime Adapters
+
+### Local Model Runtime
+
+`server/localModelRuntime.ts` coordinates the local media intelligence pipeline.
+
+Runtime stages:
+
+- audio extraction and VAD
+- visual sampling
+- audio waveform presence check
+- ASR
+- diarization
+- OCR
+
+The runtime can reuse cached asset intelligence unless a retry explicitly forces the stage. It publishes partial intelligence during long indexing jobs so the frontend can show incremental progress.
+
+### Python Runtime Service Boundary
+
+Long-running model runtimes are called through a service boundary instead of being owned directly by the Express API process. The default local service is `scripts/arion_model_runtime_service.py`, a FastAPI process that wraps the existing Python runtime scripts.
+
+The Node side is split by runtime category:
+
+- ASR service: Whisper and WhisperX through `ASR_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
+- OCR service: PaddleOCR through `OCR_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
+- Vision service: scene detection, object detection, tracking, and SoccerNet action spotting through `VISION_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
+- Embedding service: text and visual embeddings through `EMBEDDING_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
+- VLM service: Qwen/LLaVA-style video and domain refinement through `VLM_WORKER_URL`.
+
+The initial local deployment can run a single combined Python runtime service on port `8792`. Production or multi-host development can split ASR, OCR, Vision, and Embedding into separate services by setting the category-specific URLs; the Node worker code continues to call the same TypeScript runtime interface.
+
+`server/processRole.ts` prevents asset model runtime execution from the API process. Asset indexing runtime is allowed from the BullMQ worker and maintenance scripts; API-side search embeddings can still call the Embedding runtime service because they are query-time service calls, not asset indexing workflows.
+
+Important scripts include:
+
+- `scripts/whisper_transcribe.py`
+- `scripts/whisperx_diarize.py`
+- `scripts/paddle_ocr_extract.py`
+- `scripts/embed_text.py`
+- `scripts/embed_visual.py`
+- `scripts/detect_scenes.py`
+- `scripts/detect_objects.py`
+- `scripts/track_objects.py`
+- `scripts/qwen_vlm_worker.py`
+- `scripts/soccernet_action_spotting.py`
+
+`PYTHON_RUNTIME_MODE=service` routes model work through HTTP runtime services. `PYTHON_RUNTIME_MODE=direct` keeps local script execution available for development and migration checks. `PYTHON_RUNTIME_SERVICE_ATTEMPTS` controls transient HTTP call retries before the workflow records the runtime stage as failed.
+
+### Capability Policy
+
+Capability modes are:
+
+- `disabled`
+- `optional`
+- `required`
+
+Capabilities:
+
+- `whisperXDiarization`
+- `videoVlmAnalysis`
+- `visionDetector`
+- `visionTracker`
+- `soccerNetActionSpotting`
+- `domainVlmRefinement`
+
+Optional unavailable capabilities are recorded in traces/logs where applicable. Required unavailable capabilities throw `RequiredCapabilityUnavailableError` and fail the job.
+
+### VLM Worker
+
+`server/vlmWorkerClient.ts` is the HTTP client for VLM operations:
+
+- video segment description
+- sports domain event refinement
+- health check
+
+It is enabled when `VLM_WORKER_URL` is configured. The local `dev:full` command starts `scripts/qwen_vlm_worker.py` through the `.venv-ai` Python path.
+
+### OpenAI Query Planner
+
+`server/openaiQueryPlanner.ts` optionally calls the OpenAI Responses API for query plan refinement. The implementation is guarded by:
+
+- `OPENAI_API_KEY`
+- `OPENAI_QUERY_PLANNER` not being `off` or `false`
+
+It uses a rules-first plan, then merges an allow-listed LLM plan. If the remote call fails, the rules plan is returned with a fallback warning.
+
+## Observability
+
+`server/observability.ts` implements local observability:
+
+- request ID generation or propagation from `x-request-id`
+- W3C `traceparent` response header
+- OpenTelemetry local in-memory span exporter
+- recent spans buffer
+- recent JSON log buffer
+- latency buckets for requests, jobs, stages, model runtimes, embeddings, and search operations
+- NDJSON log persistence at `.data/logs/app.ndjson`
+
+`GET /api/observability` returns:
+
+- trace exporter type
+- log format and path
+- recent logs
+- recent spans
+- all latency metrics
+- model runtime metrics
+- stage metrics
+- request metrics
+
+Noisy successful status GET requests and the SSE stream path are suppressed from console output unless `CONSOLE_LOG_LEVEL=all`, but logs are still managed through the internal logging path.
+
+Python runtime service calls are logged with category-specific metric keys such as `model.asr.whisper.service`, `model.ocr.paddle.service`, `model.vision.detector.service`, and `model.embedding.text.query.service`. Each log records the selected runtime-service URL, duration, service-reported duration, job context, and asset context when available.
+
+## Failure And Recovery Behavior
+
+### HTTP Errors
+
+The Express error handler returns JSON:
+
+- upload size failures become `413`
+- known errors with `statusCode` use that status
+- all others become `500`
+
+### Runtime Failures
+
+`runRuntimeStage` reports stage start, success, failure, and heartbeat messages. Recoverable model runtime tasks can return unavailable fallback payloads instead of throwing. Whether this fails the job depends on the capability policy.
+
+Runtime-service HTTP failures are retried according to `PYTHON_RUNTIME_SERVICE_ATTEMPTS`. If all attempts fail, the TypeScript workflow records the runtime stage as failed. Optional capabilities can continue with unavailable payloads; required capabilities fail the job through the existing capability policy path.
+
+### Job Recovery
+
+On worker startup, `recoverDurableWorkerJobs` scans queued or running jobs left from a previous worker process:
+
+- Stale runtime processes are cleaned through `cleanupStaleRuntimeProcesses` before jobs are re-dispatched.
+- Supported queued asset jobs are reconciled into Redis/BullMQ through `redisJobQueue`.
+- Supported job types are `asset.index`, `asset.reindex`, and `asset.domain-vlm.refine`.
+- Reindex retry stage is recovered from `JobRecord.parameters.retryStage`; older log-only records are still parsed as a compatibility fallback.
+- Running jobs are reset to `queued` and rerun from the beginning of the matching workflow.
+- BullMQ jobs are keyed by `JobRecord.id`, so reconciliation is idempotent for already-enqueued jobs.
+
+### Ask Operation Durability
+
+Ask operations are stored in an in-memory `Map`, persisted by `server/workflows/ask/operationStore.ts`, and dispatched through the queue outbox before Redis/BullMQ publication.
+
+Implications from the code:
+
+- Local mode persists entries to `.data/ask-operations.json`.
+- Postgres mode persists entries to `app_ask_operations`.
+- The API process persists the original request and a queue outbox entry, then publishes only the `AskOperation.id`.
+- In Postgres mode, `saveAskOperation(..., { queueDispatch: true })` writes `app_ask_operations` and `app_queue_outbox` in one transaction.
+- Redis dispatch failure does not mark a newly created ask operation as failed. The operation remains `queued`, and the outbox entry retains retry state.
+- `server/askWorker.ts` loads the persisted request, runs `runAskOperation`, and persists step/status/result updates.
+- Completed or failed operations can be retrieved after an API restart until they are pruned.
+- Running operations are reset to `queued` by the ask worker on restart and rerun from the beginning.
+- Completed or failed operations are pruned from both the cache and the persistent store when the operation set grows beyond the configured in-code threshold.
+- Ask operation execution is durable at the operation-record level, not checkpoint-resume level.
+
+### Realtime Event Push
+
+`server/services/realtimeEvents.ts` implements the local Server-Sent Events bus. `GET /api/events/stream` keeps a same-origin SSE connection open and emits typed events:
+
+- `asset.updated`
+- `job.updated`
+- `ask.operation.updated`
+- `event.recorded`
+- `outbox.updated`
+
+The frontend still performs an initial REST read for full state hydration. Continuous console refresh is driven by SSE events in `src/hooks/useConsoleData.ts`, and ask completion waits on operation-scoped SSE events in `src/hooks/useSearchController.ts`. This replaces interval polling for progress and ask result updates. The SSE bus is in-process; production deployments that run multiple API instances should back this event fanout with shared pub/sub or route clients consistently to the publishing instance.
+
+## Concurrency And Durability Characteristics
+
+| Concern | Current implementation |
+| --- | --- |
+| API process | Express process for HTTP, local media serving when enabled, route handling, queue outbox writes, immediate outbox publish attempts, and SSE fanout. |
+| Asset jobs | Redis/BullMQ execution queue plus separate `server/jobWorker.ts` process. |
+| Asset queue durability | `JobRecord` plus queue outbox are the source of truth. Redis/BullMQ is the execution queue. Postgres mode writes the job and outbox in one transaction. Worker startup publishes pending outbox entries and reconciles queued records. |
+| Asset checkpoint durability | `JobRecord.stageCheckpoints` records checkpoint status. Interrupted indexing jobs preserve checkpoints and resume from the failed or interrupted stage when outputs are reusable. |
+| Ask operations | Queue outbox plus Redis/BullMQ execution queue and separate `server/askWorker.ts` process. Persisted `AskOperation` entries include the original request. Running execution restarts from the beginning after worker recovery. |
+| Metadata durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
+| Vector durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
+| Tracking durability | Local JSON by default, Postgres when `DATABASE_URL` is set. |
+| Local JSON writes | Serialized through promise chains in each store module. |
+| Runtime parallelism | Asset job worker concurrency is controlled by `JOB_WORKER_CONCURRENCY`; some local model stages can also run concurrently based on `LOCAL_MODEL_HEAVY_CONCURRENCY`. |
+| Frontend refresh | SSE event push through `/api/events/stream`; initial hydration remains REST. |
+
+## Environment-Driven Behavior
+
+Selected environment variables used by the implementation:
+
+| Variable | Effect |
+| --- | --- |
+| `PORT` | API port, default `8787`. |
+| `REDIS_URL` | Redis URL for BullMQ asset job and ask operation dispatch/execution, default `redis://127.0.0.1:6379`. |
+| `JOB_QUEUE_NAME` | BullMQ queue name, default `arion:asset-jobs`. |
+| `JOB_WORKER_CONCURRENCY` | Number of asset jobs a worker process can run concurrently, default `1`. |
+| `JOB_QUEUE_RECONCILE_MS` | Worker interval for reconciling queued `JobRecord`s into Redis, default `15000`. |
+| `ASK_QUEUE_NAME` | BullMQ queue name for ask operation execution, default `arion:ask-operations`. |
+| `ASK_WORKER_CONCURRENCY` | Number of ask operations an ask worker can run concurrently, default `2`. |
+| `ASK_QUEUE_RECONCILE_MS` | Ask worker interval for reconciling queued `AskOperation`s into Redis, default `15000`. |
+| `DATABASE_URL` | Enables Postgres storage. |
+| `POSTGRES_APPLICATION_NAME` | Sets the Postgres connection application name, default `arion`. |
+| `POSTGRES_POOL_MAX` | Sets the Node `pg` pool max size, default `10`. |
+| `POSTGRES_CONNECTION_TIMEOUT_MS` | Sets Postgres connection timeout, default `5000`. |
+| `POSTGRES_IDLE_TIMEOUT_MS` | Sets idle connection timeout, default `30000`. |
+| `POSTGRES_REQUIRE_PGVECTOR` | Fails startup when pgvector is unavailable if set to `true`. |
+| `PGSSLMODE` / `POSTGRES_SSLMODE` | Enables Postgres TLS when set to `require`. |
+| `API_KEYS` | Enables API-key auth when non-empty. |
+| `RATE_LIMIT_PER_MINUTE` | Sets in-memory rate limit, default `600`. |
+| `MEDIA_SERVING_MODE` | `local-static` serves `.data/object-storage` through Express `/media`; `disabled` removes local media serving for object storage/CDN deployments. |
+| `MEDIA_STATIC_MAX_AGE` | Cache-control max age for local static media serving, default `1h`. |
+| `UPLOAD_MAX_BYTES` | Upload limit, default 8GB. |
+| `UPLOAD_TEMP_MAX_AGE_MS` | Max age for stale `.data/tmp-uploads` files cleaned on API boot, default `86400000`. |
+| `LOCAL_OBJECT_PROVIDER` | `local-s3` or `local-r2`. |
+| `LOCAL_OBJECT_BUCKET` | Object storage bucket name, default `video-assets`. |
+| `LOCAL_AI_PYTHON` | Python executable for local AI scripts. |
+| `ARION_PROCESS_ROLE` | Optional process role override: `api`, `worker`, or `script`; normally inferred from the entrypoint. |
+| `ALLOW_API_MODEL_RUNTIME` | Emergency development override for running asset model runtime in the API process. Default is blocked. |
+| `PYTHON_RUNTIME_MODE` | `service` routes model work through HTTP runtime services; `direct` runs scripts from Node for local development checks. |
+| `PYTHON_RUNTIME_SERVICE_URL` | Default combined Python runtime service URL, default `http://127.0.0.1:8792`. |
+| `PYTHON_RUNTIME_SERVICE_HOST` / `PYTHON_RUNTIME_SERVICE_PORT` | Host and port used by `scripts/arion_model_runtime_service.py`. |
+| `PYTHON_RUNTIME_SERVICE_TIMEOUT_MS` | Default HTTP timeout for Python runtime service calls when a stage-specific timeout is not provided. |
+| `PYTHON_RUNTIME_SERVICE_ATTEMPTS` | Number of transient runtime-service call attempts, default `1`. |
+| `ASR_RUNTIME_SERVICE_URL` | Optional ASR service override for Whisper and WhisperX. |
+| `OCR_RUNTIME_SERVICE_URL` | Optional OCR service override for PaddleOCR. |
+| `VISION_RUNTIME_SERVICE_URL` | Optional vision service override for scene detection, object detection, tracking, and SoccerNet action spotting. |
+| `EMBEDDING_RUNTIME_SERVICE_URL` | Optional embedding service override for text and visual embeddings. |
+| `WHISPER_MODEL` | Whisper model, default `large-v3`. |
+| `WHISPER_BACKEND` | Whisper backend mode. |
+| `WHISPER_LANGUAGE` | ASR language hint or auto mode. |
+| `WHISPERX_MODEL` | WhisperX model. |
+| `WHISPERX_HF_TOKEN` / `HF_TOKEN` | Enables pyannote-backed diarization where required. |
+| `PADDLEOCR_LANG` | OCR language selection. |
+| `EMBEDDING_MODEL` | Text embedding model, default `intfloat/multilingual-e5-base`. |
+| `EMBEDDING_DIMENSIONS` | Text and knowledge vector dimensions, default `768`. |
+| `VISUAL_EMBEDDING_MODEL` | Visual model name, default `ViT-L-14`. |
+| `VISUAL_EMBEDDING_PRETRAINED` | Visual model pretrained weights, default `datacomp_xl_s13b_b90k`. |
+| `VISUAL_EMBEDDING_DIMENSIONS` | Visual vector dimensions, default `768`. |
+| `VLM_WORKER_URL` | Enables VLM worker calls. |
+| `OPENAI_API_KEY` | Enables optional OpenAI query planner. |
+| `OPENAI_QUERY_PLANNER` | Disables OpenAI planner when `off` or `false`. |
+| `CAPABILITY_*` | Sets capability modes for runtime stages. |
+| `VISION_DETECTOR_BACKEND` | Selects vision detector backend. |
+| `VISION_TRACKER` | Selects Ultralytics tracker config. |
+| `SOCCERNET_ACTION_SPOTTING_COMMAND` / `SOCCERNET_ACTION_SPOTS_JSON` | Enables SoccerNet-style action spotting. |
+
+## Maintenance Scripts
+
+The repo includes TypeScript and Python maintenance scripts:
+
+- Postgres:
+  - `scripts/postgres_check.ts`
+  - `scripts/migrate_to_postgres.ts`
+  - `scripts/postgres_seed.ts`
+  - `scripts/postgres_reset.ts`
+- Knowledge import:
+  - `scripts/import_football_data.ts`
+  - `scripts/import_football_data_uk.ts`
+  - `scripts/import_nflverse.ts`
+  - `scripts/import_statbunker.ts`
+  - `scripts/import_statsbomb_open_data.ts`
+  - `scripts/sync_current_sports_knowledge.ts`
+- Rebuild:
+  - `scripts/rebuild_embeddings.ts`
+  - `scripts/rebuild_knowledge_vectors.ts`
+  - `scripts/rebuild_all_indexes.ts`
+  - `scripts/refine_vlm_domain.ts`
+- Runtime diagnostics:
+  - `scripts/model_doctor.py`
+- Runtime workers and adapters:
+  - `scripts/arion_model_runtime_service.py`
+  - ASR, OCR, VLM, embedding, scene detection, object detection, tracking, and SoccerNet scripts.
+
+## Extension Boundaries
+
+The code is already organized around replaceable adapters:
+
+- Object storage can be replaced behind `localObjectStorage`.
+- Metadata storage can be replaced behind `store.ts`.
+- Text, visual, and knowledge vector storage can be replaced behind vector store modules.
+- Redis/BullMQ is isolated behind `redisJobQueue`, and workflow execution is isolated behind `assetJobRunner`.
+- Ask operation execution is isolated behind `askJobQueue` and `askWorker`.
+- Python runtime categories can be moved independently by configuring ASR, OCR, Vision, and Embedding service URLs.
+- VLM worker is already a separate HTTP boundary.
+- Query planning can run rules-only or rules plus remote OpenAI refinement.
+- Webhook delivery is isolated in `server/services/events.ts`.
+
+## Current Implementation Constraints
+
+These are direct consequences of the code shape:
+
+- Asset job execution is separated from the API process, Redis-backed, and checkpointed at durable indexing stage boundaries.
+- Redis is required for execution dispatch, while persisted operation records and queue outbox entries remain the source of truth for recovery and status.
+- Ask operations are worker-backed and durable at the operation-record level, but ask execution is not checkpoint-resume based; interrupted running ask operations are reset to queued and rerun from the beginning.
+- Local `/media` serving is explicit and configurable. Production-style deployments should set `MEDIA_SERVING_MODE=disabled` and serve media outside the API process.
+- Frontend progress and ask updates are pushed through in-process SSE. Multi-instance production deployments need shared pub/sub or sticky routing for cross-process fanout.
+- Postgres enables durable metadata/vector storage. Queue recovery can also read local JSON mode, but Postgres is the stronger operational backing store.
+- API key auth is optional and disabled when `API_KEYS` is unset.
+- CORS is enabled globally.
+- Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.
+- Visual embedding failures do not necessarily fail indexing; they are logged and traced as unavailable unless policy requires downstream capabilities elsewhere.
+- Aggregate sports stat answers come from imported sports knowledge, not from video moment counts.

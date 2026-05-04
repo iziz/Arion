@@ -81,6 +81,7 @@ const noisyPollingPaths = new Set([
   "/api/assets",
   "/api/jobs",
   "/api/events",
+  "/api/events/stream",
   "/api/webhooks",
   "/api/metrics",
   "/api/db/status",

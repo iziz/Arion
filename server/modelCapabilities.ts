@@ -2,6 +2,8 @@ import path from "node:path";
 import type { CapabilityMode, CapabilityPolicy, IndexRecord } from "../shared/types";
 import { defaultCapabilityPolicy, normalizeCapabilityPolicy } from "./domainConfig";
 import { parsePythonJson, runPythonScriptOnExit } from "./modelRuntime/pythonProcess";
+import { callPythonRuntimeService, getPythonRuntimeTopology, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
+import { getVlmWorkerTopology } from "./vlmWorkerClient";
 
 export type CapabilityName = keyof CapabilityPolicy;
 
@@ -38,15 +40,30 @@ export function assertCapabilityAvailable(index: IndexRecord, capability: Capabi
 
 export async function getRuntimeCapabilities() {
   const doctorScript = path.resolve("scripts", "model_doctor.py");
-  const { stdout } = await runPythonScriptOnExit([doctorScript], {
-    timeout: Number(process.env.MODEL_DOCTOR_TIMEOUT_MS || 0) || 15000,
-    maxBuffer: 1024 * 1024
-  });
-  const raw = parsePythonJson<Record<string, unknown>>(stdout);
+  const timeout = Number(process.env.MODEL_DOCTOR_TIMEOUT_MS || 0) || 15000;
+  const raw = isPythonRuntimeServiceMode("runtime")
+    ? await callPythonRuntimeService<Record<string, unknown>>(
+        "runtime",
+        "/v1/model-doctor",
+        { timeoutMs: timeout },
+        { timeoutMs: timeout, metricKey: "model.doctor.service" }
+      )
+    : parsePythonJson<Record<string, unknown>>(
+        (
+          await runPythonScriptOnExit([doctorScript], {
+            timeout,
+            maxBuffer: 1024 * 1024
+          })
+        ).stdout
+      );
   const whisperCppReady = Boolean(raw.whisper_cpp && raw.whisper_cpp_model);
   return {
     checkedAt: new Date().toISOString(),
     python: String(raw.python ?? "unknown"),
+    runtimeTopology: {
+      python: getPythonRuntimeTopology(),
+      vlm: getVlmWorkerTopology()
+    },
     tools: {
       ffmpeg: Boolean(raw.ffmpeg),
       ffprobe: Boolean(raw.ffprobe)

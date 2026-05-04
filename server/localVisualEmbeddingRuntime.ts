@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import type { KeyframeRecord, TimelineSegment } from "../shared/types";
 import { getPublicMediaRoot } from "./localObjectStorage";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const visualScript = path.resolve("scripts", "embed_visual.py");
@@ -106,6 +107,23 @@ async function embedPayload(items: string[], mode: VisualMode) {
 
 async function runVisualProcess(items: string[], mode: VisualMode): Promise<VisualResult> {
   try {
+    if (isPythonRuntimeServiceMode("embedding")) {
+      return await callPythonRuntimeService<VisualResult>(
+        "embedding",
+        "/v1/embed-visual",
+        {
+          items,
+          mode,
+          model: visualModel,
+          pretrained: visualPretrained,
+          timeoutMs: Number(process.env.VISUAL_EMBEDDING_TIMEOUT_MS || 0) || undefined
+        },
+        {
+          timeoutMs: Number(process.env.VISUAL_EMBEDDING_TIMEOUT_MS || 0) || undefined,
+          metricKey: `model.embedding.visual.${mode}.service`
+        }
+      );
+    }
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(pythonBin, [visualScript, "--model", visualModel, "--pretrained", visualPretrained, "--mode", mode], {
         stdio: ["pipe", "pipe", "pipe"]

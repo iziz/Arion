@@ -8,6 +8,7 @@ import { applyDiarizationToAsrSegments, runSpeechRuntime } from "./modelRuntime/
 import { inspectAudioPresence, inspectVisualFrames } from "./modelRuntime/visualSampler";
 import { runRuntimeStage, type RuntimeStageReporter } from "./modelRuntime/stageReporter";
 import { logJson, recordLatency, traceAsync } from "./observability";
+import { assertWorkerOrScriptBoundary } from "./processRole";
 
 export { applyDiarizationToAsrSegments, runWhisperXDiarizationForAsset } from "./modelRuntime/speechRuntime";
 
@@ -25,6 +26,7 @@ export async function runLocalModelRuntime(
   reportStage?: RuntimeStageReporter,
   options: LocalModelRuntimeOptions = {}
 ): Promise<LocalIntelligence> {
+  assertWorkerOrScriptBoundary("Local model runtime");
   const languageHints = inferLanguageHints(asset);
   const forceStages = new Set(options.forceStages ?? []);
   const audio = await getAudioRuntimeResult(filePath, asset, reportStage, forceStages);

@@ -3,12 +3,31 @@ import type { AssetRecord, JobRecord, KnowledgeVectorStoreStatus, MetricsSummary
 export type DatabaseStatus = {
   enabled: boolean;
   storage?: string;
+  ready?: boolean;
+  operationalState?: "ready" | "degraded";
   postgres?: string;
   pgvector?: string | null;
+  pgvectorRequired?: boolean;
+  pgvectorInstallError?: string | null;
+  vectorSearchMode?: "pgvector" | "json-fallback";
   embeddingColumn?: string | null;
   expectedEmbeddingDimensions?: number;
   visualEmbeddingColumn?: string | null;
   expectedVisualEmbeddingDimensions?: number;
+  vectorTables?: Array<{
+    table: string;
+    column: string;
+    columnType: string | null;
+    expectedColumnType: string;
+    hnswIndex: boolean;
+    totalRows: number;
+    jsonRows: number;
+    pgvectorRows: number;
+    searchMode: "pgvector" | "json-fallback";
+    ready: boolean;
+    issues: string[];
+  }>;
+  issues?: string[];
   migrations?: Array<{ version: string; description: string; applied_at: string }>;
   metrics: MetricsSummary;
 };

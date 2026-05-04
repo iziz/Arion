@@ -329,7 +329,7 @@ function buildGroupAnalysisSubject(index: IndexRecord, assets: AssetRecord[], ch
     timeline: chapters,
     keyframes: [],
     technicalMetadata: {
-      storageProvider: "local",
+      storageProvider: "local-s3",
       bucket: "analysis",
       objectKey: index.id,
       checksum: null,

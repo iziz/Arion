@@ -1,9 +1,12 @@
 import type { Express } from "express";
-import { getQueueDepth } from "../localQueue";
+import { mediaServingMode } from "../http/config";
+import { getObjectStorageStatus } from "../localObjectStorage";
 import { getRuntimeCapabilities } from "../modelCapabilities";
 import { getObservabilitySnapshot } from "../observability";
 import { getPostgresStatus, isPostgresEnabled } from "../postgresStore";
 import { getMetrics, listBilling, listEvents, listUsers } from "../store";
+import { registerRealtimeSubscriber, writeSseComment, writeSseHeaders, writeSseRealtimeEvent } from "../services/realtimeEvents";
+import { getAskOperationResponse } from "../workflows/askWorkflow";
 
 export function registerSystemRoutes(app: Express) {
   app.get("/api/health", async (_req, res) => {
@@ -11,7 +14,8 @@ export function registerSystemRoutes(app: Express) {
   });
 
   app.get("/api/metrics", async (_req, res) => {
-    res.json({ ...(await getMetrics()), queueDepth: getQueueDepth() });
+    const metrics = await getMetrics();
+    res.json({ ...metrics, queueDepth: metrics.runningJobs });
   });
 
   app.get("/api/db/status", async (_req, res) => {
@@ -20,6 +24,21 @@ export function registerSystemRoutes(app: Express) {
       return;
     }
     res.json(await getPostgresStatus());
+  });
+
+  app.get("/api/storage/status", async (_req, res) => {
+    res.json({
+      applicationPersistence: {
+        storage: isPostgresEnabled() ? "postgres" : "local-json",
+        durableForProduction: isPostgresEnabled()
+      },
+      mediaStorage: {
+        ...getObjectStorageStatus(),
+        servingMode: mediaServingMode,
+        servedByApiProcess: mediaServingMode === "local-static"
+      },
+      note: "Application state and binary media are separate storage boundaries."
+    });
   });
 
   app.get("/api/observability", async (_req, res) => {
@@ -44,5 +63,24 @@ export function registerSystemRoutes(app: Express) {
 
   app.get("/api/events", async (req, res) => {
     res.json(await listEvents(Number(req.query.limit ?? 80)));
+  });
+
+  app.get("/api/events/stream", async (req, res) => {
+    writeSseHeaders(res);
+    const operationId = req.query.operationId ? String(req.query.operationId) : null;
+    const heartbeat = setInterval(() => writeSseComment(res, "heartbeat"), 15000);
+    const unsubscribe = registerRealtimeSubscriber(res, {
+      jobId: req.query.jobId ? String(req.query.jobId) : null,
+      assetId: req.query.assetId ? String(req.query.assetId) : null,
+      operationId
+    });
+    if (operationId) {
+      const response = await getAskOperationResponse(operationId);
+      if (response) writeSseRealtimeEvent(res, "ask.operation.updated", { operationId, operation: response.operation, response });
+    }
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
   });
 }

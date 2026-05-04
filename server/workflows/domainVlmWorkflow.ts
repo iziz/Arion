@@ -1,13 +1,12 @@
 import { withDomainSegment } from "../domainIndex";
-import { enqueueLocalTask } from "../localQueue";
 import { embedTimelineSegments } from "../localEmbeddingRuntime";
 import { upsertAssetVectors } from "../localVectorStore";
-import { logJson, traceAsync, traceJobAsync } from "../observability";
-import { createJob, updateJob } from "../services/jobState";
+import { logJson, traceAsync } from "../observability";
+import { updateJob } from "../services/jobState";
 import { getAsset, getIndex, saveAsset } from "../store";
 import { upsertAssetTracking } from "../trackingStore";
 import { getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
-import type { AssetRecord, IndexRecord, JobRecord, TimelineSegment } from "../../shared/types";
+import type { AssetRecord, IndexRecord, TimelineSegment } from "../../shared/types";
 
 export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
   const assetWithTimeline = { ...asset, timeline };
@@ -98,12 +97,6 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
       "error"
     );
   }
-}
-
-export function enqueueDomainVlmRefinement(job: JobRecord, assetId: string) {
-  enqueueLocalTask(job.id, () =>
-    traceJobAsync("job.domain_vlm.refine", { jobId: job.id, assetId }, { type: job.type }, () => runDomainVlmRefineJob(job.id, assetId))
-  );
 }
 
 function ensureDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {

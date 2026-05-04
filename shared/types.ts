@@ -13,7 +13,12 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
 export type JobType = "asset.index" | "asset.reindex" | "asset.domain-vlm.refine" | "webhook.test";
 
-export type StorageProvider = "local" | "local-s3" | "local-r2";
+export type JobParameters = {
+  retryStage?: string | null;
+  resumeFromStage?: string | null;
+};
+
+export type StorageProvider = "local-s3" | "local-r2";
 
 export type WebhookEventType =
   | "asset.uploaded"
@@ -936,6 +941,18 @@ export type RuntimeStageRecord = {
   completedAt: string | null;
 };
 
+export type JobStageCheckpoint = {
+  stage: string;
+  status: "running" | "succeeded" | "failed" | "skipped";
+  message: string;
+  progress: number;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  attempts: number;
+};
+
 export type JobRecord = {
   id: string;
   type: JobType;
@@ -944,7 +961,9 @@ export type JobRecord = {
   progress: number;
   indexId: string | null;
   assetId: string | null;
+  parameters?: JobParameters;
   runtimeStages?: Record<string, RuntimeStageRecord>;
+  stageCheckpoints?: Record<string, JobStageCheckpoint>;
   logs: JobLog[];
   error: string | null;
   createdAt: string;

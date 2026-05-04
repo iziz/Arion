@@ -102,11 +102,11 @@ export function isVisualPgVectorCompatible(vector: number[]) {
 }
 
 export function getExpectedEmbeddingDimensions() {
-  return Number(process.env.EMBEDDING_DIMENSIONS || 768);
+  return parsePositiveInteger(process.env.EMBEDDING_DIMENSIONS, 768);
 }
 
 export function getExpectedVisualEmbeddingDimensions() {
-  return Number(process.env.VISUAL_EMBEDDING_DIMENSIONS || 768);
+  return parsePositiveInteger(process.env.VISUAL_EMBEDDING_DIMENSIONS, 768);
 }
 
 export function cosineSimilarity(a: number[], b: number[]) {
@@ -115,4 +115,9 @@ export function cosineSimilarity(a: number[], b: number[]) {
   let dot = 0;
   for (let index = 0; index < length; index += 1) dot += a[index] * b[index];
   return Math.max(0, Number(dot.toFixed(3)));
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }

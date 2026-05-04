@@ -1,5 +1,17 @@
 export { closePostgresStore, isPostgresEnabled } from "./postgres/connection";
 export {
+  deleteAskOperationEntries,
+  listAskOperationEntries,
+  upsertAskOperationEntry
+} from "./postgres/askOperationRepository";
+export {
+  listPendingQueueOutboxEntries,
+  saveJobWithQueueOutbox,
+  saveQueueOutboxEntry,
+  updateQueueOutboxEntry,
+  upsertAskOperationEntryWithQueueOutbox
+} from "./postgres/outboxRepository";
+export {
   getAsset,
   getIndex,
   getJob,
@@ -38,3 +50,8 @@ export {
   upsertAssetVectors,
   upsertAssetVisualVectors
 } from "./postgres/vectorRepository";
+export {
+  listTrackingRecords,
+  rebuildTrackingRecords,
+  upsertTrackingRecords
+} from "./postgres/trackingRepository";

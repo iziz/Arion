@@ -90,6 +90,16 @@ export function getVlmWorkerModelName() {
   return process.env.VLM_WORKER_MODEL?.trim() || "qwen2.5-vl-local-worker";
 }
 
+export function getVlmWorkerTopology() {
+  const url = getVlmWorkerUrl();
+  return {
+    boundary: "separate-vlm-service",
+    enabled: Boolean(url),
+    serviceUrl: url || null,
+    model: getVlmWorkerModelName()
+  };
+}
+
 export async function checkVlmWorkerHealth() {
   const url = getVlmWorkerUrl();
   if (!url) return { enabled: false, ok: false, model: getVlmWorkerModelName(), error: "VLM_WORKER_URL is not configured." };

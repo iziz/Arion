@@ -4,7 +4,8 @@ import type { AssetRecord, CapabilityMode, LocalIntelligence, WhisperSegment } f
 import { getObjectPath, getPublicMediaRoot } from "../localObjectStorage";
 import { traceAsync } from "../observability";
 import { parsePythonJson, runPythonScriptOnExit } from "./pythonProcess";
-import { createPythonProgressReporter } from "./pythonProgress";
+import { createPythonProgressReporter, reportPythonProgressEvent } from "./pythonProgress";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./pythonRuntimeService";
 import { runRuntimeStage, type RuntimeStageReporter } from "./stageReporter";
 
 const whisperScript = path.resolve("scripts", "whisper_transcribe.py");
@@ -88,16 +89,25 @@ function disabledDiarizationResult(): DiarizationResult {
 async function runWhisper(filePath: string, language: string | null, duration: number | null, reportStage?: RuntimeStageReporter): Promise<WhisperResult> {
   const progressReporter = createPythonProgressReporter("asr", reportStage);
   try {
-    const args = [whisperScript, filePath, "--model", process.env.WHISPER_MODEL || "large-v3"];
-    if (language) args.push("--language", language);
     const timeout = getWhisperTimeoutMs(duration);
-    const { stdout } = await runPythonScriptOnExit(args, {
-      maxBuffer: 1024 * 1024 * 4,
-      timeout,
-      onStderr: progressReporter.handleChunk
-    });
-    await progressReporter.flush();
-    const parsed = parsePythonJson<WhisperResult>(stdout);
+    const parsed = isPythonRuntimeServiceMode("asr")
+      ? await callPythonRuntimeService<WhisperResult>(
+          "asr",
+          "/v1/whisper",
+          {
+            mediaPath: filePath,
+            model: process.env.WHISPER_MODEL || "large-v3",
+            backend: process.env.WHISPER_BACKEND || "auto",
+            language,
+            timeoutMs: timeout
+          },
+          {
+            timeoutMs: timeout,
+            metricKey: "model.asr.whisper.service",
+            onProgress: (event) => reportPythonProgressEvent("asr", reportStage, event)
+          }
+        )
+      : await runWhisperDirect(filePath, language, timeout, progressReporter);
     return {
       available: Boolean(parsed.available),
       provider: parsed.provider || "whisper",
@@ -122,6 +132,23 @@ async function runWhisper(filePath: string, language: string | null, duration: n
   }
 }
 
+async function runWhisperDirect(
+  filePath: string,
+  language: string | null,
+  timeout: number | undefined,
+  progressReporter: ReturnType<typeof createPythonProgressReporter>
+) {
+  const args = [whisperScript, filePath, "--model", process.env.WHISPER_MODEL || "large-v3"];
+  if (language) args.push("--language", language);
+  const { stdout } = await runPythonScriptOnExit(args, {
+    maxBuffer: 1024 * 1024 * 4,
+    timeout,
+    onStderr: progressReporter.handleChunk
+  });
+  await progressReporter.flush();
+  return parsePythonJson<WhisperResult>(stdout);
+}
+
 function getWhisperTimeoutMs(duration: number | null) {
   const configured = Number(process.env.WHISPER_TIMEOUT_MS || 0);
   if (Number.isFinite(configured) && configured > 0) return configured;
@@ -130,16 +157,21 @@ function getWhisperTimeoutMs(duration: number | null) {
 
 async function runWhisperXDiarization(audioPath: string, language: string | null, segmentsJsonPath?: string): Promise<DiarizationResult> {
   try {
-    const args = [whisperXScript, audioPath, "--model", process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3"];
-    if (language) args.push("--language", language);
-    if (segmentsJsonPath) args.push("--segments-json", segmentsJsonPath);
-    const hfToken = process.env.WHISPERX_HF_TOKEN || process.env.HF_TOKEN;
-    const { stdout } = await runPythonScriptOnExit(args, {
-      maxBuffer: 1024 * 1024 * 4,
-      timeout: Number(process.env.WHISPERX_TIMEOUT_MS || 0) || undefined,
-      env: hfToken ? { ...process.env, WHISPERX_HF_TOKEN: hfToken, HF_TOKEN: process.env.HF_TOKEN ?? hfToken } : process.env
-    });
-    const parsed = parsePythonJson<DiarizationResult>(stdout);
+    const timeout = Number(process.env.WHISPERX_TIMEOUT_MS || 0) || undefined;
+    const parsed = isPythonRuntimeServiceMode("asr")
+      ? await callPythonRuntimeService<DiarizationResult>(
+          "asr",
+          "/v1/whisperx",
+          {
+            audioPath,
+            model: process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3",
+            language,
+            segmentsJsonPath,
+            timeoutMs: timeout
+          },
+          { timeoutMs: timeout, metricKey: "model.diarization.whisperx.service" }
+        )
+      : await runWhisperXDiarizationDirect(audioPath, language, segmentsJsonPath, timeout);
     return {
       available: Boolean(parsed.available),
       provider: parsed.provider || "whisperx",
@@ -158,6 +190,19 @@ async function runWhisperXDiarization(audioPath: string, language: string | null
       error: error instanceof Error ? error.message : "WhisperX execution failed"
     };
   }
+}
+
+async function runWhisperXDiarizationDirect(audioPath: string, language: string | null, segmentsJsonPath: string | undefined, timeout: number | undefined) {
+  const args = [whisperXScript, audioPath, "--model", process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3"];
+  if (language) args.push("--language", language);
+  if (segmentsJsonPath) args.push("--segments-json", segmentsJsonPath);
+  const hfToken = process.env.WHISPERX_HF_TOKEN || process.env.HF_TOKEN;
+  const { stdout } = await runPythonScriptOnExit(args, {
+    maxBuffer: 1024 * 1024 * 4,
+    timeout,
+    env: hfToken ? { ...process.env, WHISPERX_HF_TOKEN: hfToken, HF_TOKEN: process.env.HF_TOKEN ?? hfToken } : process.env
+  });
+  return parsePythonJson<DiarizationResult>(stdout);
 }
 
 export async function runWhisperXDiarizationForAsset(asset: AssetRecord): Promise<LocalIntelligence["diarization"]> {

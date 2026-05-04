@@ -4,17 +4,22 @@ import { logJson } from "../observability";
 
 const runtimeScripts = ["whisper_transcribe.py", "whisperx_diarize.py", "paddle_ocr_extract.py"] as const;
 
-export async function cleanupStaleRuntimeProcesses(jobs: JobRecord[]) {
+type RuntimeProcessCleanupOptions = {
+  staleAssetIds?: Iterable<string>;
+};
+
+export async function cleanupStaleRuntimeProcesses(jobs: JobRecord[], options: RuntimeProcessCleanupOptions = {}) {
   const activeAssetIds = new Set(
     jobs
       .filter((job) => job.assetId && (job.status === "queued" || job.status === "running"))
       .map((job) => job.assetId as string)
   );
-  const staleAssetIds = new Set(
-    jobs
-      .filter((job) => job.assetId && !activeAssetIds.has(job.assetId))
-      .map((job) => job.assetId as string)
-  );
+  const staleAssetIds = new Set<string>(Array.from(options.staleAssetIds ?? []));
+  for (const job of jobs) {
+    if (job.assetId && !activeAssetIds.has(job.assetId)) {
+      staleAssetIds.add(job.assetId);
+    }
+  }
   if (staleAssetIds.size === 0) return { roots: 0, terminated: 0, pids: [] as number[] };
 
   const table = await listProcessTable();

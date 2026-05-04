@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import type { TimelineSegment } from "../shared/types";
 import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "./evidenceTrust";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const embedScript = path.resolve("scripts", "embed_text.py");
@@ -116,6 +117,22 @@ async function embedTexts(texts: string[], kind: EmbeddingKind) {
 
 async function runSentenceTransformers(texts: string[], kind: EmbeddingKind): Promise<EmbedTextResult> {
   try {
+    if (isPythonRuntimeServiceMode("embedding")) {
+      return await callPythonRuntimeService<EmbedTextResult>(
+        "embedding",
+        "/v1/embed-text",
+        {
+          texts,
+          kind,
+          model: embeddingModel,
+          timeoutMs: Number(process.env.EMBEDDING_TIMEOUT_MS || 0) || undefined
+        },
+        {
+          timeoutMs: Number(process.env.EMBEDDING_TIMEOUT_MS || 0) || undefined,
+          metricKey: `model.embedding.text.${kind}.service`
+        }
+      );
+    }
     const stdout = await runPythonEmbeddingProcess(texts, kind);
     return JSON.parse(stdout) as EmbedTextResult;
   } catch (error) {

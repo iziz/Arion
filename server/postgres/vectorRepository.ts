@@ -73,26 +73,36 @@ export async function upsertAssetVisualVectors(_indexId: string, assetId: string
   const db = getPool();
   await db.query("delete from app_visual_vectors where asset_id = $1", [assetId]);
   for (const record of records) {
-    const pgVector = isVisualPgVectorCompatible(record.vector) ? vectorLiteral(record.vector) : null;
-    await db.query(
-      `insert into app_visual_vectors(
-        id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, model, embedding_json, embedding
-      )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)`,
-      [
-        record.id,
-        record.indexId,
-        record.assetId,
-        record.segmentId,
-        record.keyframeId,
-        record.keyframePath,
-        record.start,
-        record.end,
-        record.model,
-        JSON.stringify(record.vector),
-        pgVector
-      ]
-    );
+    const values = [
+      record.id,
+      record.indexId,
+      record.assetId,
+      record.segmentId,
+      record.keyframeId,
+      record.keyframePath,
+      record.start,
+      record.end,
+      record.model,
+      JSON.stringify(record.vector)
+    ];
+    if (isVectorExtensionAvailable()) {
+      const pgVector = isVisualPgVectorCompatible(record.vector) ? vectorLiteral(record.vector) : null;
+      await db.query(
+        `insert into app_visual_vectors(
+          id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, model, embedding_json, embedding
+        )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)`,
+        [...values, pgVector]
+      );
+    } else {
+      await db.query(
+        `insert into app_visual_vectors(
+          id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, model, embedding_json
+        )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        values
+      );
+    }
   }
 }
 
@@ -111,7 +121,7 @@ export async function rebuildVisualVectorStore(records: VisualVectorRecord[]) {
 export async function searchVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
   await ensurePostgresStore();
   if (isVectorExtensionAvailable() && isPgVectorCompatible(queryVector)) {
-    const result = await getPool().query(
+    const pgvectorRows = await getPool().query(
       `select *, 1 - (embedding <=> $1::vector) as score
        from app_vectors
        where embedding is not null
@@ -120,7 +130,17 @@ export async function searchVectors(indexId: string | undefined, queryVector: nu
        limit $3`,
       [vectorLiteral(queryVector), indexId ?? null, limit]
     );
-    return result.rows.map(vectorRowToResult);
+    const jsonFallbackRows = await getPool().query(
+      `select *
+       from app_vectors
+       where embedding is null
+         and ($1::text is null or index_id = $1)`,
+      [indexId ?? null]
+    );
+    return mergeVectorResults([
+      ...pgvectorRows.rows.map(vectorRowToResult),
+      ...jsonFallbackRows.rows.map((row) => ({ ...vectorRowToResult(row), score: cosineSimilarity(queryVector, row.embedding_json ?? []) }))
+    ]).slice(0, limit);
   }
 
   const result = await getPool().query("select * from app_vectors where ($1::text is null or index_id = $1)", [indexId ?? null]);
@@ -134,7 +154,7 @@ export async function searchVectors(indexId: string | undefined, queryVector: nu
 export async function searchVisualVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
   await ensurePostgresStore();
   if (isVectorExtensionAvailable() && isVisualPgVectorCompatible(queryVector)) {
-    const result = await getPool().query(
+    const pgvectorRows = await getPool().query(
       `select *, 1 - (embedding <=> $1::vector) as score
        from app_visual_vectors
        where embedding is not null
@@ -143,7 +163,17 @@ export async function searchVisualVectors(indexId: string | undefined, queryVect
        limit $3`,
       [vectorLiteral(queryVector), indexId ?? null, limit]
     );
-    return result.rows.map(visualVectorRowToResult);
+    const jsonFallbackRows = await getPool().query(
+      `select *
+       from app_visual_vectors
+       where embedding is null
+         and ($1::text is null or index_id = $1)`,
+      [indexId ?? null]
+    );
+    return mergeVectorResults([
+      ...pgvectorRows.rows.map(visualVectorRowToResult),
+      ...jsonFallbackRows.rows.map((row) => ({ ...visualVectorRowToResult(row), score: cosineSimilarity(queryVector, row.embedding_json ?? []) }))
+    ]).slice(0, limit);
   }
 
   const result = await getPool().query("select * from app_visual_vectors where ($1::text is null or index_id = $1)", [indexId ?? null]);
@@ -166,4 +196,14 @@ export async function getVisualVectorCount() {
   await ensurePostgresStore();
   const result = await getPool().query("select count(*)::int as count from app_visual_vectors");
   return result.rows[0].count as number;
+}
+
+function mergeVectorResults<T extends { id: string; score: number }>(rows: T[]) {
+  const byId = new Map<string, T>();
+  for (const row of rows) {
+    const existing = byId.get(row.id);
+    if (!existing || row.score > existing.score) byId.set(row.id, row);
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => b.score - a.score);
 }

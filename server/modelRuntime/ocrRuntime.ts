@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import type { OcrBox, OcrFrameResult } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
 import { parsePythonJson, runPythonScriptOnExit } from "./pythonProcess";
-import { createPythonProgressReporter } from "./pythonProgress";
+import { createPythonProgressReporter, reportPythonProgressEvent } from "./pythonProgress";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./pythonRuntimeService";
 import type { RuntimeStageReporter } from "./stageReporter";
 import { toPublicMediaPath } from "./mediaPath";
 
@@ -127,28 +128,26 @@ async function runPaddleOcrLanguage(
 ): Promise<PaddleResult> {
   const progressReporter = createPythonProgressReporter("ocr", reportStage);
   try {
-    const { stdout } = await runPythonScriptOnExit(
-      [
-        paddleOcrScript,
-        framesDir,
-        "--lang",
-        language,
-        "--subtitle-interval",
-        String(subtitleIntervalSeconds),
-        "--full-interval",
-        String(fullFrameIntervalSeconds),
-        "--workers",
-        String(workers)
-      ],
-      {
-        maxBuffer: 1024 * 1024 * 4,
-        timeout: Number(process.env.PADDLEOCR_TIMEOUT_MS || 0) || undefined,
-        env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True" },
-        onStderr: progressReporter.handleChunk
-      }
-    );
-    await progressReporter.flush();
-    const parsed = parsePythonJson<PaddleResult>(stdout);
+    const timeout = Number(process.env.PADDLEOCR_TIMEOUT_MS || 0) || undefined;
+    const parsed = isPythonRuntimeServiceMode("ocr")
+      ? await callPythonRuntimeService<PaddleResult>(
+          "ocr",
+          "/v1/paddleocr",
+          {
+            framesDir,
+            language,
+            subtitleIntervalSeconds,
+            fullIntervalSeconds: fullFrameIntervalSeconds,
+            workers,
+            timeoutMs: timeout
+          },
+          {
+            timeoutMs: timeout,
+            metricKey: "model.ocr.paddle.service",
+            onProgress: (event) => reportPythonProgressEvent("ocr", reportStage, event)
+          }
+        )
+      : await runPaddleOcrLanguageDirect(framesDir, language, subtitleIntervalSeconds, fullFrameIntervalSeconds, workers, timeout, progressReporter);
     return {
       available: Boolean(parsed.available),
       provider: parsed.provider || "paddleocr",
@@ -162,6 +161,39 @@ async function runPaddleOcrLanguage(
     await progressReporter.flush();
     return unavailablePaddleResult(error instanceof Error ? error.message : "PaddleOCR execution failed", language);
   }
+}
+
+async function runPaddleOcrLanguageDirect(
+  framesDir: string,
+  language: string,
+  subtitleIntervalSeconds: number,
+  fullFrameIntervalSeconds: number,
+  workers: number,
+  timeout: number | undefined,
+  progressReporter: ReturnType<typeof createPythonProgressReporter>
+) {
+  const { stdout } = await runPythonScriptOnExit(
+    [
+      paddleOcrScript,
+      framesDir,
+      "--lang",
+      language,
+      "--subtitle-interval",
+      String(subtitleIntervalSeconds),
+      "--full-interval",
+      String(fullFrameIntervalSeconds),
+      "--workers",
+      String(workers)
+    ],
+    {
+      maxBuffer: 1024 * 1024 * 4,
+      timeout,
+      env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True" },
+      onStderr: progressReporter.handleChunk
+    }
+  );
+  await progressReporter.flush();
+  return parsePythonJson<PaddleResult>(stdout);
 }
 
 function unavailablePaddleResult(error: string, language = "unknown"): PaddleResult {

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { TimelineSegment } from "../../shared/types";
 import { parsePythonJson } from "../modelRuntime/pythonProcess";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRuntime/pythonRuntimeService";
 import { detectorModel, pythonBin, trackerName, trackerScript } from "./runtimeConfig";
 import type { TrackerResult } from "./types";
 
@@ -22,6 +23,25 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
   }
 
   try {
+    if (isPythonRuntimeServiceMode("vision")) {
+      return await callPythonRuntimeService<TrackerResult>(
+        "vision",
+        "/v1/track-objects",
+        {
+          mediaPath: filePath,
+          segments: items,
+          model: detectorModel,
+          tracker: trackerName,
+          confidence: process.env.VISION_TRACKER_CONF || "0.2",
+          vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3",
+          timeoutMs: Number(process.env.VISION_TRACKER_TIMEOUT_MS || 0) || undefined
+        },
+        {
+          timeoutMs: Number(process.env.VISION_TRACKER_TIMEOUT_MS || 0) || undefined,
+          metricKey: "model.vision.tracker.service"
+        }
+      );
+    }
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(
         pythonBin,

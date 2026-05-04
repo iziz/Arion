@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import type { StorageProvider } from "../shared/types";
@@ -28,13 +29,12 @@ export async function putUploadedObject(tempPath: string, originalName: string, 
     bucket,
     objectKey,
     absolutePath,
-    checksum: createHash("sha256").update(`${provider}:${bucket}:${objectKey}:${info.size}`).digest("hex"),
+    checksum: await sha256File(absolutePath),
     size: info.size
   };
 }
 
 export function getObjectPath(provider: StorageProvider, bucket: string, objectKey: string) {
-  if (provider === "local") return path.resolve("uploads", objectKey);
   return path.join(rootDir, provider, bucket, objectKey);
 }
 
@@ -42,7 +42,26 @@ export function getPublicMediaRoot() {
   return rootDir;
 }
 
+export function getObjectStorageStatus() {
+  return {
+    storage: "local-object-storage",
+    provider: normalizeProvider(process.env.LOCAL_OBJECT_PROVIDER),
+    bucket: process.env.LOCAL_OBJECT_BUCKET || "video-assets",
+    rootDir
+  };
+}
+
 function normalizeProvider(value?: string): StorageProvider {
   if (value === "local-s3" || value === "local-r2") return value;
   return "local-s3";
+}
+
+function sha256File(filePath: string) {
+  return new Promise<string>((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }

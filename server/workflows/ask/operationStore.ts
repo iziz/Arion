@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AskOperation, AskResponse } from "../../../shared/types";
+import { readJsonFile, writeJsonFile } from "../../jsonFileStore";
+import { logJson } from "../../observability";
+import * as pgStore from "../../postgresStore";
+import { createAskOperationOutboxEntry, saveAskOperationWithQueueOutbox } from "../../services/queueOutboxStore";
+import { publishRealtimeEvent } from "../../services/realtimeEvents";
 import type { AskOperationEntry, AskRequest } from "./types";
 
 const askOperations = new Map<string, AskOperationEntry>();
+const askOperationPath = path.resolve(".data", "ask-operations.json");
+let loaded = false;
+let writeChain = Promise.resolve();
 
 export function createAskOperation(request: AskRequest) {
   const now = new Date().toISOString();
@@ -19,16 +28,33 @@ export function createAskOperation(request: AskRequest) {
       error: null,
       steps: []
     } satisfies AskOperation,
+    request,
     response: null
   };
 }
 
-export function saveAskOperation(entry: AskOperationEntry) {
+export async function saveAskOperation(entry: AskOperationEntry, options: { queueDispatch?: boolean } = {}) {
   askOperations.set(entry.operation.id, entry);
+  const snapshot = cloneAskOperationEntry(entry);
+  if (options.queueDispatch && pgStore.isPostgresEnabled()) {
+    await saveAskOperationWithQueueOutbox(snapshot, createAskOperationOutboxEntry(entry.operation.id));
+  } else {
+    await persistAskOperation(snapshot);
+    if (options.queueDispatch) await saveAskOperationWithQueueOutbox(snapshot, createAskOperationOutboxEntry(entry.operation.id));
+  }
+  publishAskOperation(entry);
 }
 
-export function getAskOperationEntry(operationId: string) {
+export async function getAskOperationEntry(operationId: string) {
+  await ensureAskOperationStore();
+  await refreshAskOperationStore();
   return askOperations.get(operationId) ?? null;
+}
+
+export async function listAskOperations() {
+  await ensureAskOperationStore();
+  await refreshAskOperationStore();
+  return Array.from(askOperations.values()).map(cloneAskOperationEntry);
 }
 
 export function updateAskOperation(entry: AskOperationEntry, patch: Partial<Pick<AskOperation, "status" | "route" | "error" | "completedAt">>) {
@@ -37,6 +63,9 @@ export function updateAskOperation(entry: AskOperationEntry, patch: Partial<Pick
     ...patch,
     updatedAt: new Date().toISOString()
   };
+  askOperations.set(entry.operation.id, entry);
+  void queuePersistAskOperation(entry);
+  publishAskOperation(entry);
 }
 
 export function completeAskOperation(entry: AskOperationEntry, response: Omit<AskResponse, "operation"> & { operation: AskOperation }) {
@@ -50,6 +79,8 @@ export function completeAskOperation(entry: AskOperationEntry, response: Omit<As
     ...response,
     operation: entry.operation
   };
+  void queuePersistAskOperation(entry);
+  publishAskOperation(entry);
 }
 
 export function failAskOperation(entry: AskOperationEntry, message: string) {
@@ -69,6 +100,8 @@ export function failAskOperation(entry: AskOperationEntry, message: string) {
     results: [],
     warnings: [message]
   };
+  void queuePersistAskOperation(entry);
+  publishAskOperation(entry);
 }
 
 export function toAskResponse(entry: AskOperationEntry): AskResponse {
@@ -84,12 +117,139 @@ export function toAskResponse(entry: AskOperationEntry): AskResponse {
   };
 }
 
-export function pruneAskOperations() {
+export async function pruneAskOperations() {
+  await ensureAskOperationStore();
   const entries = Array.from(askOperations.values());
   if (entries.length < 80) return;
   const removable = entries
     .filter((entry) => entry.operation.status === "succeeded" || entry.operation.status === "failed")
     .sort((a, b) => new Date(a.operation.updatedAt).getTime() - new Date(b.operation.updatedAt).getTime())
     .slice(0, Math.max(0, entries.length - 60));
-  for (const entry of removable) askOperations.delete(entry.operation.id);
+  const ids = removable.map((entry) => entry.operation.id);
+  for (const id of ids) askOperations.delete(id);
+  await deletePersistedAskOperations(ids);
+}
+
+export async function ensureAskOperationStore() {
+  if (loaded) return;
+  askOperations.clear();
+  await mergePersistedAskOperationEntries();
+  loaded = true;
+}
+
+async function refreshAskOperationStore() {
+  await mergePersistedAskOperationEntries();
+}
+
+async function persistAskOperation(entry: AskOperationEntry) {
+  if (pgStore.isPostgresEnabled()) {
+    await pgStore.upsertAskOperationEntry(entry);
+    return;
+  }
+  if (!loaded) return;
+  await writeJsonFile(askOperationPath, Array.from(askOperations.values()));
+}
+
+async function queuePersistAskOperation(entry: AskOperationEntry) {
+  const snapshot = cloneAskOperationEntry(entry);
+  writeChain = writeChain
+    .then(() => persistAskOperation(snapshot))
+    .catch((error) => {
+      logAskOperationPersistenceError(snapshot.operation.id, error);
+    });
+  await writeChain;
+}
+
+async function deletePersistedAskOperations(ids: string[]) {
+  if (ids.length === 0) return;
+  const deleteTask = writeChain.then(async () => {
+    if (pgStore.isPostgresEnabled()) {
+      await pgStore.deleteAskOperationEntries(ids);
+      return;
+    }
+    await writeJsonFile(askOperationPath, Array.from(askOperations.values()));
+  });
+  writeChain = deleteTask.catch((error) => {
+    logJson("error", "ask.operation.prune", "Failed to prune persisted ask operations", {
+      operationIds: ids,
+      error: error instanceof Error ? error.message : "Unknown persistence error"
+    });
+  });
+  await deleteTask;
+}
+
+function cloneAskOperationEntry(entry: AskOperationEntry): AskOperationEntry {
+  return JSON.parse(JSON.stringify(entry)) as AskOperationEntry;
+}
+
+async function mergePersistedAskOperationEntries() {
+  const entries = pgStore.isPostgresEnabled()
+    ? await pgStore.listAskOperationEntries()
+    : await readJsonFile<AskOperationEntry[]>(askOperationPath, () => [], "ask-operations");
+  for (const entry of entries) {
+    const normalized = normalizeAskOperationEntry(entry);
+    if (!normalized) continue;
+    const current = askOperations.get(normalized.operation.id);
+    if (!current || new Date(normalized.operation.updatedAt).getTime() >= new Date(current.operation.updatedAt).getTime()) {
+      askOperations.set(normalized.operation.id, normalized);
+    }
+  }
+}
+
+function logAskOperationPersistenceError(operationId: string, error: unknown) {
+  logJson("error", "ask.operation.persist", "Failed to persist ask operation", {
+    operationId,
+    error: error instanceof Error ? error.message : "Unknown persistence error"
+  });
+}
+
+function publishAskOperation(entry: AskOperationEntry) {
+  publishRealtimeEvent("ask.operation.updated", {
+    operationId: entry.operation.id,
+    operation: entry.operation,
+    response: toAskResponse(entry)
+  });
+}
+
+function normalizeAskOperationEntry(value: unknown): AskOperationEntry | null {
+  if (!isAskOperationEntryLike(value)) return null;
+  const operation = value.operation;
+  return {
+    operation,
+    request: isAskRequest(value.request) ? value.request : requestFromOperation(operation),
+    response: isAskResponse(value.response) ? value.response : null
+  };
+}
+
+function isAskOperationEntryLike(value: unknown): value is Partial<AskOperationEntry> & { operation: AskOperation } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "operation" in value &&
+    typeof (value as { operation?: { id?: unknown } }).operation?.id === "string"
+  );
+}
+
+function isAskRequest(value: unknown): value is AskRequest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { query?: unknown }).query === "string" &&
+    typeof (value as { explicitFilters?: unknown }).explicitFilters === "object" &&
+    (value as { explicitFilters?: unknown }).explicitFilters !== null &&
+    typeof (value as { useKnowledgeLayer?: unknown }).useKnowledgeLayer === "boolean"
+  );
+}
+
+function isAskResponse(value: unknown): value is AskOperationEntry["response"] {
+  return value === null || (typeof value === "object" && value !== null && "operation" in value);
+}
+
+function requestFromOperation(operation: AskOperation): AskRequest {
+  return {
+    query: operation.query,
+    explicitFilters: {},
+    indexId: operation.indexId ?? undefined,
+    useKnowledgeLayer: true
+  };
 }

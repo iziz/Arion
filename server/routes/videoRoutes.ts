@@ -1,5 +1,6 @@
 import type { Express, RequestHandler } from "express";
 import { sendNotFound } from "../http/middleware";
+import { publishQueueOutbox } from "../services/queueOutboxPublisher";
 import { getVideo, listVideos } from "../store";
 import { analyzeAndEmit, createAssetFromUpload } from "../workflows/indexingWorkflow";
 
@@ -18,6 +19,7 @@ export function registerVideoRoutes(app: Express, upload: UploadMiddleware) {
 
   app.post("/api/videos", upload.single("video"), async (req, res) => {
     const result = await createAssetFromUpload(req, res, String(req.body.indexId || "default-index"));
+    if (result?.job) await publishQueueOutbox("asset-job", 10);
     if (result) res.status(202).json(result);
   });
 

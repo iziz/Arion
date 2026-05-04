@@ -1,27 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { getAsset, getJob, listJobs, saveAsset, saveJob } from "../store";
-import { logJson } from "../observability";
 import type { AssetRecord, JobRecord } from "../../shared/types";
-import { cleanupStaleRuntimeProcesses } from "./runtimeProcessCleanup";
+import { createAssetJobOutboxEntry, saveJobWithQueueOutbox } from "./queueOutboxStore";
 
-export async function createJob(type: JobRecord["type"], indexId: string | null, assetId: string | null) {
-  const now = new Date().toISOString();
-  const job: JobRecord = {
-    id: randomUUID(),
-    type,
-    status: "queued",
-    stage: "queued",
-    progress: 0,
-    indexId,
-    assetId,
-    runtimeStages: {},
-    logs: [{ at: now, level: "info", message: "Job queued" }],
-    error: null,
-    createdAt: now,
-    updatedAt: now,
-    completedAt: null
-  };
+export async function createJob(type: JobRecord["type"], indexId: string | null, assetId: string | null, parameters?: JobRecord["parameters"]) {
+  const job = buildJob(type, indexId, assetId, parameters);
   return saveJob(job);
+}
+
+export async function createQueuedAssetJob(
+  type: JobRecord["type"],
+  indexId: string | null,
+  assetId: string | null,
+  parameters?: JobRecord["parameters"]
+) {
+  const job = buildJob(type, indexId, assetId, parameters);
+  return saveJobWithQueueOutbox(job, createAssetJobOutboxEntry(job.id));
 }
 
 export async function getActiveAssetJob(assetId: string) {
@@ -56,43 +50,23 @@ export async function updateAsset(id: string, patch: Partial<AssetRecord>) {
   });
 }
 
-export async function recoverDetachedLocalJobs() {
-  const jobs = await listJobs();
-  const detachedJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
-  for (const job of detachedJobs) {
-    const asset = job.assetId ? await getAsset(job.assetId) : null;
-    const isRetryJob = job.type === "asset.reindex" || job.logs.some((entry) => /Retry requested/i.test(entry.message));
-    const hasPreviousIndex = Boolean(asset?.timeline.length && (asset.status === "indexed" || isRetryJob));
-    const hasPartialIndex = Boolean(asset?.timeline.length);
-    const message = hasPreviousIndex
-      ? "Detached local job recovered after server restart; previous indexed data was preserved."
-      : hasPartialIndex
-        ? "Detached local job recovered after server restart; partial indexed data was preserved, but retry is required."
-      : "Detached local job recovered after server restart; retry is required.";
-    await updateJob(
-      job.id,
-      {
-        status: "failed",
-        stage: "stale",
-        error: message,
-        completedAt: new Date().toISOString()
-      },
-      message,
-      "warn"
-    );
-    if (asset) {
-      await updateAsset(asset.id, {
-        status: hasPreviousIndex ? "indexed" : "failed",
-        progress: hasPreviousIndex ? 100 : asset.progress,
-        error: hasPreviousIndex ? null : message
-      });
-    }
-  }
-  if (detachedJobs.length > 0) {
-    logJson("warn", "jobs.detached.recovered", "Recovered detached local jobs after server restart", { count: detachedJobs.length });
-  }
-  const cleaned = await cleanupStaleRuntimeProcesses(await listJobs());
-  if (cleaned.terminated > 0) {
-    logJson("warn", "jobs.detached.runtime_cleanup", "Cleaned stale runtime processes after job recovery", cleaned);
-  }
+function buildJob(type: JobRecord["type"], indexId: string | null, assetId: string | null, parameters?: JobRecord["parameters"]) {
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    type,
+    status: "queued",
+    stage: "queued",
+    progress: 0,
+    indexId,
+    assetId,
+    ...(parameters ? { parameters } : {}),
+    runtimeStages: {},
+    stageCheckpoints: {},
+    logs: [{ at: now, level: "info", message: "Job queued" }],
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null
+  } satisfies JobRecord;
 }

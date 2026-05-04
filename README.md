@@ -9,7 +9,13 @@ Arion is a local TwelveLabs-like service prototype for video ingest, index manag
 - Async indexing and reindexing jobs with progress states
 - `ffprobe` metadata extraction
 - Local S3/R2-style object storage under `.data/object-storage`
-- Local queue runner for indexing and reindexing jobs
+- Configurable local `/media` serving boundary for development, with production mode that disables API-process media serving
+- Redis/BullMQ worker process for indexing and reindexing jobs
+- Redis/BullMQ ask operation queue with a separate TypeScript ask worker process
+- Queue outbox dispatch for asset jobs and ask operations
+- Indexing stage checkpoints with checkpoint-aware worker recovery
+- Server-Sent Events progress updates through `/api/events/stream`
+- Python model runtime service boundary for ASR, OCR, vision, and embedding runtimes
 - Whisper `large-v3` adapter for real local ASR, without metadata-as-transcript fallback
 - FFmpeg audio extraction and local VAD/music-region detection
 - Optional WhisperX speaker diarization when `whisperx` and a Hugging Face token are configured
@@ -38,28 +44,31 @@ Arion is a local TwelveLabs-like service prototype for video ingest, index manag
 
 ```text
 React Console
-  -> Express API
-  -> Index / Asset / Job Services
-  -> Local Object Storage Adapter
-  -> Local Queue Runner
-  -> ffprobe Metadata
-  -> Local ASR / OCR / Visual Runtime
-  -> Local Timeline + Sentence-Transformers Embedding Index
-  -> OpenCLIP Keyframe Visual Index
-  -> Local Vector Store
-  -> Search / Analyze APIs
-  -> Webhook Dispatcher
-  -> Local Billing Ledger
-  -> Event Log
-  -> Observability: OpenTelemetry Spans + JSON Logs + Latency Metrics
+  -> Express API Process
+     -> TypeScript Application Services
+        -> Queue Outbox -> Redis/BullMQ Ask Queue -> Ask Worker Process
+        -> Queue Outbox -> Redis/BullMQ Asset Queue -> Asset Job Worker Process
+        -> SSE Event Stream: /api/events/stream
+        -> Runtime Service Boundary
+           -> Python Runtime Services: ASR / OCR / Vision / Embedding
+           -> VLM Worker Service
+           -> Node Runtime Integrations: FFmpeg / OpenAI HTTP
+        -> Application Persistence: PostgreSQL app_* tables or local JSON in development
+        -> Media Object Storage: source media and generated artifacts
+        -> Observability Sink: OpenTelemetry spans, NDJSON logs, latency metrics
+  -> Media Delivery Boundary
+     -> Object storage / CDN / reverse proxy in production
+     -> Express /media static serving only in local-static development mode
 ```
 
-The indexing and analysis logic is intentionally adapter-friendly. The local deterministic implementation can later be replaced with production ASR, OCR, embedding models, vector databases, and queue infrastructure.
+The indexing, search, and analysis logic is adapter-friendly. Production-oriented boundaries are explicit: application state is separate from binary media storage, long-running work runs in worker processes, and model runtimes are reached through service boundaries.
 
 ## Commands
 
 ```bash
 npm install
+# Start Redis separately, for example:
+docker run --rm -p 6379:6379 redis:7
 npm run dev
 npm run build
 npm run db:check
@@ -70,9 +79,12 @@ npm run embeddings:rebuild
 npm run text:repair
 npm run models:doctor
 npm run models:doctor:ai
+npm run models:runtime
+npm run models:runtime:ai
 ```
 
-The web app runs on `http://localhost:5173`, and the API runs on `http://localhost:8787`.
+The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
+Asset job execution and ask operation execution require Redis; `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
 Local environment values are loaded from `.env` automatically when present.
 
 ## API
@@ -80,7 +92,9 @@ Local environment values are loaded from `.env` automatically when present.
 - `GET /api/health`
 - `GET /api/metrics`
 - `GET /api/db/status`
+- `GET /api/storage/status`
 - `GET /api/observability`
+- `GET /api/model-capabilities`
 - `GET /api/users`
 - `GET /api/billing`
 - `GET /api/events`
@@ -92,6 +106,8 @@ Local environment values are loaded from `.env` automatically when present.
 - `POST /api/assets/:id/reindex`
 - `GET /api/jobs`
 - `POST /api/jobs/:id/retry`
+- `POST /api/ask`
+- `GET /api/ask/:id`
 - `GET /api/search?q=...`
 - `GET /api/vector-search?q=...`
 - `GET /api/visual-search?q=...`
@@ -112,7 +128,16 @@ Local environment values are loaded from `.env` automatically when present.
 - A lightweight in-memory rate limiter protects the local API. Set `RATE_LIMIT_PER_MINUTE` to override the default local limit of `600`.
 - Webhook URLs beginning with `log://` are marked delivered without a network call.
 - Set `LOCAL_OBJECT_PROVIDER=local-s3` or `LOCAL_OBJECT_PROVIDER=local-r2` to switch the local object-storage namespace.
+- Set `MEDIA_SERVING_MODE=local-static` to serve `.data/object-storage` through Express `/media` during local development.
+- Set `MEDIA_SERVING_MODE=disabled` for production-style deployments where media is served by object storage, CDN, or a reverse proxy boundary instead of the API process.
+- Set `MEDIA_STATIC_MAX_AGE=1h` or another cache-control max age for local static media responses.
 - Set `UPLOAD_MAX_BYTES=8589934592` or another byte value to adjust the local upload limit. The default is 8GB.
+- Set `UPLOAD_TEMP_MAX_AGE_MS=86400000` to control stale temp upload cleanup on API boot.
+- Set `ASK_QUEUE_NAME`, `ASK_WORKER_CONCURRENCY`, and `ASK_QUEUE_RECONCILE_MS` to tune the durable ask operation queue and worker reconciliation behavior.
+- Set `PYTHON_RUNTIME_MODE=service` to route Python model work through HTTP runtime services. Set `PYTHON_RUNTIME_MODE=direct` for local script execution during development.
+- Set `PYTHON_RUNTIME_SERVICE_URL=http://127.0.0.1:8792` for the default combined local runtime service.
+- Set `ASR_RUNTIME_SERVICE_URL`, `OCR_RUNTIME_SERVICE_URL`, `VISION_RUNTIME_SERVICE_URL`, or `EMBEDDING_RUNTIME_SERVICE_URL` to move those runtimes to separate hosts without changing the Node worker code.
+- Set `PYTHON_RUNTIME_SERVICE_ATTEMPTS=2` or higher to retry transient runtime-service call failures before the workflow records the stage as failed.
 - Set `LOCAL_AI_PYTHON=/path/to/python` if Whisper/PaddleOCR are installed in a dedicated virtual environment.
 - Set `WHISPER_MODEL=large-v3|large-v3-turbo|small|medium|...` to choose the local Whisper model.
 - Set `WHISPER_BACKEND=whispercpp`, `WHISPER_CPP_BIN=/path/to/whisper-cli`, and `WHISPER_CPP_MODEL=/path/to/ggml-large-v3-turbo.bin` to use whisper.cpp for ASR.
@@ -143,6 +168,14 @@ python3 -m venv .venv-ai
 python -m pip install -r requirements.local-ai.txt
 LOCAL_AI_PYTHON="$PWD/.venv-ai/bin/python" npm run dev
 ```
+
+Run the model runtime service with the same Python environment used for local AI dependencies:
+
+```bash
+npm run models:runtime:ai
+```
+
+`npm run dev:full` starts the Python runtime service, the optional VLM worker, the Express API, the Redis-backed asset worker, the Redis-backed ask worker, and the Vite frontend together.
 
 The runtime extracts 16 kHz mono WAV audio with FFmpeg, derives speech/music regions with FFmpeg VAD-style silence detection, then tries `faster-whisper` first and `openai-whisper` second. WhisperX diarization is optional because pyannote-backed diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg and can try multiple OCR language candidates when `PADDLEOCR_LANG=auto`.
 The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, `sentence-transformers`, and optional `ultralytics`/`rfdetr`/`SoccerNet` backends.
@@ -187,6 +220,13 @@ npm run db:seed
 npm run dev
 ```
 
+Operational settings:
+
+- `POSTGRES_POOL_MAX` controls the Node `pg` pool size.
+- `POSTGRES_CONNECTION_TIMEOUT_MS` and `POSTGRES_IDLE_TIMEOUT_MS` control pool behavior.
+- `POSTGRES_REQUIRE_PGVECTOR=true` fails startup when the `vector` extension is unavailable.
+- `PGSSLMODE=require` enables TLS for hosted Postgres connections.
+
 The app creates these tables automatically:
 
 - `app_indexes`
@@ -198,15 +238,21 @@ The app creates these tables automatically:
 - `app_billing`
 - `app_vectors`
 - `app_visual_vectors`
+- `app_knowledge_vectors`
+- `app_tracking_records`
+- `app_ask_operations`
+- `app_schema_migrations`
 
-If the `vector` extension is available, `app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(768)` columns and vector distance search uses pgvector. If the extension is unavailable, vectors are still stored in PostgreSQL as JSON and searched in the app process as a local fallback.
+If the `vector` extension is available, `app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(768)` columns and vector distance search uses pgvector. If the extension is unavailable, vectors are still stored in PostgreSQL as JSON and searched in the app process as a fallback.
 Visual vectors are stored in `app_visual_vectors.embedding vector(512)` when pgvector is available.
-Segments with missing or incompatible embeddings keep their JSON vector payload but leave the pgvector column empty, so migrations can safely preserve older local data.
+Segments with missing or incompatible embeddings keep their JSON vector payload but leave the pgvector column empty. Search supplements pgvector results with JSON scoring for rows that do not have a populated vector column, so migrations can safely preserve older local data.
+`npm run db:check` reports Postgres readiness, pgvector mode, vector columns, HNSW indexes, vector row counts, migrations, and metrics.
 `npm run db:reset` truncates app tables and recreates the default local user/index. It does not delete object-storage files under `.data/object-storage`.
 
 ## Production Extension Points
 
 - Replace local uploads with S3, R2, GCS, or Azure Blob Storage.
-- Replace in-memory async jobs with Redis, SQS, Pub/Sub, Kafka, or RabbitMQ.
+- Serve media through object storage, CDN, or a reverse proxy with `MEDIA_SERVING_MODE=disabled` in the API process.
+- Replace Redis/BullMQ with SQS, Pub/Sub, Kafka, or RabbitMQ if the deployment needs a managed queue.
 - Add multimodal image/keyframe embeddings, shot detection, and stronger ranking signals.
 - Add tenant isolation, production metering, external OpenTelemetry exporters, and hosted log/metric backends.

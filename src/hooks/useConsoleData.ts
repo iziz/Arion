@@ -36,6 +36,7 @@ export function useConsoleData() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const refreshPromise = useRef<Promise<void> | null>(null);
+  const refreshTimer = useRef<number | null>(null);
 
   const runningJobCount = useMemo(
     () => jobs.filter((job) => job.status === "running" || job.status === "queued").length,
@@ -111,9 +112,31 @@ export function useConsoleData() {
 
   useEffect(() => {
     void refresh();
-    const interval = window.setInterval(() => void refresh(), runningJobCount > 0 ? 1500 : 4000);
-    return () => window.clearInterval(interval);
-  }, [refresh, runningJobCount]);
+    const source = new EventSource("/api/events/stream");
+    const scheduleRefresh = () => {
+      if (refreshTimer.current !== null) return;
+      refreshTimer.current = window.setTimeout(() => {
+        refreshTimer.current = null;
+        void refresh();
+      }, 150);
+    };
+    const eventTypes = ["asset.updated", "job.updated", "event.recorded", "outbox.updated", "ask.operation.updated"];
+    for (const eventType of eventTypes) source.addEventListener(eventType, scheduleRefresh);
+    source.onerror = () => {
+      setMessage((current) => current || "Realtime updates disconnected; refresh will resume when the server reconnects.");
+    };
+    source.onopen = () => {
+      setMessage((current) => (current.startsWith("Realtime updates disconnected") ? "" : current));
+    };
+    return () => {
+      for (const eventType of eventTypes) source.removeEventListener(eventType, scheduleRefresh);
+      source.close();
+      if (refreshTimer.current !== null) {
+        window.clearTimeout(refreshTimer.current);
+        refreshTimer.current = null;
+      }
+    };
+  }, [refresh]);
 
   return {
     indexes,

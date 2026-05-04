@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
 import { logJson } from "./observability";
 
 const execFileAsync = promisify(execFile);
@@ -30,7 +31,57 @@ export async function detectSceneBoundaries(filePath: string, duration: number |
 
 async function detectSceneBoundariesWithPySceneDetect(filePath: string, duration: number | null): Promise<SceneBoundary[]> {
   try {
-    const stdout = await new Promise<string>((resolve, reject) => {
+    const parsed = isPythonRuntimeServiceMode("vision")
+      ? await callPythonRuntimeService<{
+          available?: boolean;
+          detector?: string;
+          boundaries?: Array<{ at?: unknown; score?: unknown; source?: unknown; detector?: unknown }>;
+        }>(
+          "vision",
+          "/v1/detect-scenes",
+          {
+            mediaPath: filePath,
+            detector: process.env.SCENE_DETECTOR || "adaptive",
+            threshold: process.env.SCENE_CONTENT_THRESHOLD || "27.0",
+            adaptiveThreshold: process.env.SCENE_ADAPTIVE_THRESHOLD || "3.0",
+            minSceneLen: process.env.SCENE_MIN_LEN_FRAMES || "15",
+            timeoutMs: Number(process.env.SCENE_TIMEOUT_MS || 0) || undefined
+          },
+          {
+            timeoutMs: Number(process.env.SCENE_TIMEOUT_MS || 0) || undefined,
+            metricKey: "model.vision.scene_detection.service"
+          }
+        )
+      : await detectSceneBoundariesWithPySceneDetectDirect(filePath);
+    if (!parsed.available || !Array.isArray(parsed.boundaries)) {
+      logJson("warn", "scene_detection.pyscenedetect.unavailable", "PySceneDetect returned no usable scene boundaries", {
+        filePath,
+        detector: parsed.detector ?? process.env.SCENE_DETECTOR ?? "adaptive",
+        available: parsed.available ?? null
+      });
+      return [];
+    }
+    return normalizeBoundaries(
+      parsed.boundaries.map((boundary) => ({
+        at: Number(boundary.at),
+        score: typeof boundary.score === "number" ? boundary.score : null,
+        source: "pyscenedetect",
+        detector: typeof boundary.detector === "string" ? boundary.detector : parsed.detector || "adaptive"
+      })),
+      duration
+    );
+  } catch (error) {
+    logJson("warn", "scene_detection.pyscenedetect.failed", "PySceneDetect scene boundary detection failed", {
+      filePath,
+      detector: process.env.SCENE_DETECTOR || "adaptive",
+      error: error instanceof Error ? error.message : "Unknown PySceneDetect failure"
+    });
+    return [];
+  }
+}
+
+async function detectSceneBoundariesWithPySceneDetectDirect(filePath: string) {
+  const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(
         pythonBin,
         [
@@ -70,36 +121,11 @@ async function detectSceneBoundariesWithPySceneDetect(filePath: string, duration
         else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `PySceneDetect exited with code ${code}`));
       });
     });
-    const parsed = JSON.parse(stdout) as {
-      available?: boolean;
-      detector?: string;
-      boundaries?: Array<{ at?: unknown; score?: unknown; source?: unknown; detector?: unknown }>;
-    };
-    if (!parsed.available || !Array.isArray(parsed.boundaries)) {
-      logJson("warn", "scene_detection.pyscenedetect.unavailable", "PySceneDetect returned no usable scene boundaries", {
-        filePath,
-        detector: parsed.detector ?? process.env.SCENE_DETECTOR ?? "adaptive",
-        available: parsed.available ?? null
-      });
-      return [];
-    }
-    return normalizeBoundaries(
-      parsed.boundaries.map((boundary) => ({
-        at: Number(boundary.at),
-        score: typeof boundary.score === "number" ? boundary.score : null,
-        source: "pyscenedetect",
-        detector: typeof boundary.detector === "string" ? boundary.detector : parsed.detector || "adaptive"
-      })),
-      duration
-    );
-  } catch (error) {
-    logJson("warn", "scene_detection.pyscenedetect.failed", "PySceneDetect scene boundary detection failed", {
-      filePath,
-      detector: process.env.SCENE_DETECTOR || "adaptive",
-      error: error instanceof Error ? error.message : "Unknown PySceneDetect failure"
-    });
-    return [];
-  }
+  return JSON.parse(stdout) as {
+    available?: boolean;
+    detector?: string;
+    boundaries?: Array<{ at?: unknown; score?: unknown; source?: unknown; detector?: unknown }>;
+  };
 }
 
 async function detectSceneBoundariesWithFfmpeg(filePath: string, duration: number | null): Promise<SceneBoundary[]> {

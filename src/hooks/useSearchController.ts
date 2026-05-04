@@ -8,7 +8,7 @@ import type {
   SearchResult,
   SportsKnowledgeAnswer
 } from "../../shared/types";
-import { api, sleep } from "../api";
+import { api } from "../api";
 import type { SearchScopeMode } from "../consoleTypes";
 import { buildConsoleUrl } from "../navigation";
 import {
@@ -127,7 +127,7 @@ export function useSearchController({
         useKnowledgeLayer
       });
       setAskResponse(started);
-      const completed = await pollAskOperation(started.operation.id);
+      const completed = await waitForAskOperation(started.operation.id);
       setAskResponse(completed);
       setQueryPlan(completed.queryPlan);
       setOrchestrationPlan(completed.orchestrationPlan);
@@ -156,14 +156,48 @@ export function useSearchController({
     }
   }
 
-  async function pollAskOperation(operationId: string) {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      await sleep(400);
-      const next = await api.get<AskResponse>(`/api/ask/${operationId}`);
-      setAskResponse(next);
-      if (next.operation.status === "succeeded" || next.operation.status === "failed") return next;
+  async function waitForAskOperation(operationId: string) {
+    return new Promise<AskResponse>((resolve, reject) => {
+      let settled = false;
+      const source = new EventSource(`/api/events/stream?operationId=${encodeURIComponent(operationId)}`);
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("Ask operation timed out while waiting for server trace."));
+      }, 48_000);
+      const onUpdate = (event: Event) => {
+        const response = readAskResponseEvent(event, operationId);
+        if (response) finish(response);
+      };
+      const finish = (response: AskResponse) => {
+        setAskResponse(response);
+        if (response.operation.status !== "succeeded" && response.operation.status !== "failed") return;
+        cleanup();
+        resolve(response);
+      };
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        source.removeEventListener("ask.operation.updated", onUpdate);
+        source.close();
+      };
+      source.addEventListener("ask.operation.updated", onUpdate);
+      void api.get<AskResponse>(`/api/ask/${operationId}`).then(finish).catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    });
+  }
+
+  function readAskResponseEvent(event: Event, operationId: string) {
+    try {
+      const message = event as MessageEvent<string>;
+      const parsed = JSON.parse(message.data) as { payload?: { operationId?: unknown; response?: unknown } };
+      if (parsed.payload?.operationId !== operationId) return null;
+      return parsed.payload.response as AskResponse;
+    } catch {
+      return null;
     }
-    throw new Error("Ask operation timed out while waiting for server trace.");
   }
 
   function appendSearchTurn(

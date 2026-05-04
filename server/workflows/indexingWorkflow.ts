@@ -1,7 +1,6 @@
 import type { Request, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { buildLocalIndex, probeVideo, withSceneData } from "../intelligence";
-import { enqueueLocalTask } from "../localQueue";
 import { embedTimelineSegments, getEmbeddingModelName } from "../localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../keyframes";
@@ -19,16 +18,24 @@ import { detectSceneBoundaries } from "../sceneDetection";
 import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "../soccernet";
 import { upsertAssetTracking } from "../trackingStore";
 import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
-import { logJson, traceAsync, traceJobAsync } from "../observability";
+import { logJson, traceAsync } from "../observability";
 import { normalizeUploadedText } from "../textEncoding";
 import { createDefaultIndex, getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
-import { createJob, updateAsset, updateJob } from "../services/jobState";
+import { createQueuedAssetJob, updateAsset, updateJob } from "../services/jobState";
+import {
+  completeJobStageCheckpoint,
+  failActiveJobStageCheckpoint,
+  shouldRunJobStage,
+  startJobStageCheckpoint,
+  type JobStageOrder
+} from "../services/jobStageCheckpoint";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
+import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/mediaLifecycle";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
 import type { AssetRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
 
 export { analyzeAndEmit } from "./analysisWorkflow";
-export { enqueueDomainVlmRefinement, enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
+export { enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
 export { runSpeakerDiarizationJob } from "./diarizationWorkflow";
 
 export async function createAssetFromUpload(req: Request, res: Response, indexId: string) {
@@ -42,6 +49,7 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
     await saveIndex(index);
   }
   if (!index) {
+    await discardUploadTempFile(req.file);
     res.status(404).json({ error: "Index not found" });
     return null;
   }
@@ -50,7 +58,13 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
   const originalName = normalizeUploadedText(req.file.originalname);
   const title = normalizeUploadedText(req.body.title || originalName.replace(/\.[^.]+$/, ""));
   const description = normalizeUploadedText(req.body.description || "");
-  const stored = await putUploadedObject(req.file.path, originalName, randomUUID());
+  let stored: Awaited<ReturnType<typeof putUploadedObject>>;
+  try {
+    stored = await putUploadedObject(req.file.path, originalName, randomUUID());
+  } catch (error) {
+    await discardUploadTempFile(req.file);
+    throw error;
+  }
   const assetId = stored.objectKey.split("/")[1] ?? randomUUID();
   const asset: AssetRecord = {
     id: assetId,
@@ -86,11 +100,8 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
   };
 
   await saveVideo(asset);
-  const job = await createJob("asset.index", index.id, asset.id);
+  const job = await createQueuedAssetJob("asset.index", index.id, asset.id);
   await recordEvent("asset.uploaded", "Asset uploaded", { indexId: index.id, assetId: asset.id, jobId: job.id });
-  enqueueLocalTask(job.id, () =>
-    traceJobAsync("job.indexing", { jobId: job.id, assetId: asset.id }, { type: "asset.index" }, () => runIndexingJob(job.id, asset.id, stored.absolutePath))
-  );
   return { asset, job };
 }
 
@@ -99,376 +110,444 @@ type RunIndexingJobOptions = {
 };
 
 const runtimeStageUpdateQueues = new Map<string, Promise<void>>();
+const indexingCheckpointOrder = [
+  "probe",
+  "local-model-runtime",
+  "timeline",
+  "video-vlm",
+  "vision-detection",
+  "vision-tracking",
+  "domain-index",
+  "embed",
+  "vector-upsert-text",
+  "visual-embedding",
+  "vector-upsert-visual",
+  "finalize"
+] as const satisfies JobStageOrder;
 
 export async function runIndexingJob(jobId: string, assetId: string, filePath: string, options: RunIndexingJobOptions = {}) {
   try {
-    await updateJob(jobId, { status: "running", stage: "probe", progress: 12 }, "Started media probing");
-    await updateAsset(assetId, { status: "probing", progress: 12 });
-    await emitForAsset("asset.indexing.started", "Indexing started", assetId, jobId);
-    await sleep(300);
+    await runCheckpointedIndexingStage(jobId, "probe", 38, "Probe and sampling complete", options.retryStage, () => assetHasProbeMetadata(assetId), async () => {
+      await updateJob(jobId, { status: "running", stage: "probe", progress: 12 }, "Started media probing");
+      await updateAsset(assetId, { status: "probing", progress: 12 });
+      await emitForAsset("asset.indexing.started", "Indexing started", assetId, jobId);
+      await sleep(300);
 
-    const metadata = await traceAsync("stage.probe", { jobId, assetId }, () => probeVideo(filePath), "stage.probe");
-    const current = await getAsset(assetId);
-    if (!current) return;
-    await saveAsset({
-      ...current,
-      duration: metadata.duration,
-      width: metadata.width,
-      height: metadata.height,
-      technicalMetadata: {
-        ...current.technicalMetadata,
-        frameRate: metadata.frameRate,
-        audioCodec: metadata.audioCodec,
-        videoCodec: metadata.videoCodec
-      },
-      status: "sampling",
-      progress: 38,
-      updatedAt: new Date().toISOString()
+      const metadata = await traceAsync("stage.probe", { jobId, assetId }, () => probeVideo(filePath), "stage.probe");
+      const current = await getAsset(assetId);
+      if (!current) throw new Error("Asset not found during media probing.");
+      await saveAsset({
+        ...current,
+        duration: metadata.duration,
+        width: metadata.width,
+        height: metadata.height,
+        technicalMetadata: {
+          ...current.technicalMetadata,
+          frameRate: metadata.frameRate,
+          audioCodec: metadata.audioCodec,
+          videoCodec: metadata.videoCodec
+        },
+        status: "sampling",
+        progress: 38,
+        updatedAt: new Date().toISOString()
+      });
+      await updateJob(jobId, { stage: "sample", progress: 38 }, "Generated local frame/audio sampling plan");
+      await emitForAsset("asset.indexing.progress", "Sampling complete", assetId, jobId, { progress: 38 });
+      await sleep(250);
     });
-    await updateJob(jobId, { stage: "sample", progress: 38 }, "Generated local frame/audio sampling plan");
-    await emitForAsset("asset.indexing.progress", "Sampling complete", assetId, jobId, { progress: 38 });
-    await sleep(250);
 
-    await updateAsset(assetId, { status: "transcribing", progress: 40 });
-    await updateJob(jobId, { stage: "local-model-runtime", progress: 40 }, "Running local ASR/OCR/visual model runtime");
-    const runtimeInput = await getAsset(assetId);
-    if (!runtimeInput) return;
-    const runtimeIndex = (await getIndex(runtimeInput.indexId)) ?? createDefaultIndex();
-    const runtimePolicy = resolveCapabilityPolicy(runtimeIndex);
-    const intelligence = await traceAsync(
-      "stage.local_model_runtime",
-      { jobId, assetId },
-      () =>
-        runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event, { keepJobStage: true }), {
-          forceStages: getForcedRuntimeStages(options.retryStage),
-          whisperXDiarization: runtimePolicy.whisperXDiarization,
-          onPartial: (_stage, partial) => mergeLocalRuntimePartial(assetId, partial)
-        }),
-      "stage.local_model_runtime"
-    );
-    assertCapabilityAvailable(
-      runtimeIndex,
-      "whisperXDiarization",
-      intelligence.diarization.provider !== "none" && intelligence.diarization.segments.length > 0,
-      intelligence.diarization.error ?? "WhisperX did not return speaker segments."
-    );
-    await updateAsset(assetId, { status: "scanning", progress: 60, intelligence });
-    await updateJob(jobId, { stage: "scan", progress: 60 }, "Local ASR, OCR, and visual scan complete");
-    await emitForAsset("asset.indexing.progress", "Local model runtime complete", assetId, jobId, { progress: 60 });
-    await sleep(250);
-
-    await updateAsset(assetId, { status: "embedding", progress: 68 });
-    await updateJob(jobId, { stage: "timeline", progress: 68 }, "Building searchable timeline and scene windows");
-    await emitForAsset("asset.indexing.progress", "Timeline indexing started", assetId, jobId, { progress: 68 });
-
-    const refreshed = await getAsset(assetId);
-    if (!refreshed) return;
-    const index = (await getIndex(refreshed.indexId)) ?? createDefaultIndex();
-    const embeddingIndex =
-      index.models.embedding === getEmbeddingModelName()
-        ? index
-        : {
-            ...index,
-            models: { ...index.models, embedding: getEmbeddingModelName() },
-            updatedAt: new Date().toISOString()
-          };
-    if (embeddingIndex !== index) await saveIndex(embeddingIndex);
-    const capabilityPolicy = resolveCapabilityPolicy(embeddingIndex);
-    const sceneBoundaries = await traceAsync(
-      "stage.scene_detection",
-      { jobId, assetId },
-      () => detectSceneBoundaries(filePath, refreshed.duration),
-      "stage.scene_detection"
-    );
-    await updateJob(jobId, { stage: "scene-detection", progress: 72 }, `Detected ${sceneBoundaries.length} scene boundaries`);
-    const output = await traceAsync(
-      "stage.timeline_build",
-      { jobId, assetId, sceneBoundaries: sceneBoundaries.length },
-      async () => buildLocalIndex(refreshed, embeddingIndex, sceneBoundaries),
-      "stage.timeline_build"
-    );
-    await updateJob(jobId, { stage: "keyframes", progress: 74 }, "Generating timeline keyframes");
-    await updateAsset(assetId, { status: "embedding", progress: 74 });
-    const keyframes = await traceAsync(
-      "stage.keyframes",
-      { jobId, assetId, segments: output.timeline.length },
-      () => generateKeyframes(filePath, refreshed.id, output.timeline, refreshed.duration),
-      "stage.keyframes"
-    );
-    const thumbnailTimeline = output.timeline.map((segment) => {
-      const keyframe = keyframes.find((item) => item.segmentId === segment.id);
-      const thumbnailPath = keyframe?.path || null;
-      return {
-        ...segment,
-        thumbnailPath,
-        sceneData: segment.sceneData
-          ? {
-              ...segment.sceneData,
-              image: {
-                ...segment.sceneData.image,
-                thumbnailPath,
-                keyframeAt: keyframe?.at ?? segment.sceneData.image.keyframeAt
-              }
-            }
-          : undefined
-      };
-    });
-    await persistIndexingSnapshot(assetId, {
-      status: "embedding",
-      progress: 76,
-      tags: output.tags,
-      summary: output.summary,
-      timeline: thumbnailTimeline,
-      keyframes
-    });
-    let videoVlmTrace = "";
-    let videoVlmTimeline: AssetRecord["timeline"] = thumbnailTimeline;
-    const shouldRunVideoVlm =
-      isCapabilityEnabled(embeddingIndex, "videoVlmAnalysis") &&
-      (isVlmWorkerEnabled() || isCapabilityRequired(embeddingIndex, "videoVlmAnalysis"));
-    if (shouldRunVideoVlm) {
-      assertCapabilityAvailable(embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
-      await updateJob(jobId, { stage: "video-vlm", progress: 76 }, `Analyzing timeline keyframes with ${getVlmWorkerModelName()}`);
-      const videoVlm = await traceAsync(
-        "model.vlm.video_segment",
-        { jobId, assetId, segments: thumbnailTimeline.length, model: getVlmWorkerModelName() },
+    await runCheckpointedIndexingStage(jobId, "local-model-runtime", 60, "Local ASR, OCR, and visual runtime complete", options.retryStage, () => assetHasRuntimeIntelligence(assetId), async () => {
+      await updateAsset(assetId, { status: "transcribing", progress: 40 });
+      await updateJob(jobId, { stage: "local-model-runtime", progress: 40 }, "Running local ASR/OCR/visual model runtime");
+      const runtimeInput = await getAsset(assetId);
+      if (!runtimeInput) throw new Error("Asset not found before local model runtime.");
+      const runtimeIndex = (await getIndex(runtimeInput.indexId)) ?? createDefaultIndex();
+      const runtimePolicy = resolveCapabilityPolicy(runtimeIndex);
+      const intelligence = await traceAsync(
+        "stage.local_model_runtime",
+        { jobId, assetId },
         () =>
-          analyzeTimelineWithVlm({ ...refreshed, timeline: thumbnailTimeline }, thumbnailTimeline, {
-            onProgress: async (event) => {
-              await updateJob(
-                jobId,
-                { stage: "video-vlm", progress: Number((76 + event.progress * 0.02).toFixed(2)) },
-                `[video-vlm:${event.status}] ${event.message}`
-              );
-            }
+          runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event, { keepJobStage: true }), {
+            forceStages: getForcedRuntimeStages(options.retryStage),
+            whisperXDiarization: runtimePolicy.whisperXDiarization,
+            onPartial: (_stage, partial) => mergeLocalRuntimePartial(assetId, partial)
           }),
-        "model.vlm.video_segment"
+        "stage.local_model_runtime"
       );
-      videoVlmTimeline = videoVlm.timeline;
-      videoVlmTrace = videoVlm.attemptedSegments > 0
-        ? `video-vlm:${videoVlm.model}:${videoVlm.describedSegments}/${videoVlm.attemptedSegments}:invalid=${videoVlm.invalidSegments}:failed=${videoVlm.failedSegments}`
-        : "video-vlm-unavailable:No timeline keyframes were available for video VLM analysis.";
-      await updateJob(
-        jobId,
-        { stage: "video-vlm", progress: 78 },
-        `Video VLM analysis completed for ${videoVlm.describedSegments}/${videoVlm.attemptedSegments} attempted segments (${videoVlm.invalidSegments} invalid, ${videoVlm.failedSegments} failed)`
+      assertCapabilityAvailable(
+        runtimeIndex,
+        "whisperXDiarization",
+        intelligence.diarization.provider !== "none" && intelligence.diarization.segments.length > 0,
+        intelligence.diarization.error ?? "WhisperX did not return speaker segments."
       );
+      await updateAsset(assetId, { status: "scanning", progress: 60, intelligence });
+      await updateJob(jobId, { stage: "scan", progress: 60 }, "Local ASR, OCR, and visual scan complete");
+      await emitForAsset("asset.indexing.progress", "Local model runtime complete", assetId, jobId, { progress: 60 });
+      await sleep(250);
+    });
+
+    const timelineStage = await runCheckpointedIndexingStage(jobId, "timeline", 76, "Timeline, scene windows, and keyframes ready", options.retryStage, () => assetHasTimelineSnapshot(assetId), async () => {
+      await updateAsset(assetId, { status: "embedding", progress: 68 });
+      await updateJob(jobId, { stage: "timeline", progress: 68 }, "Building searchable timeline and scene windows");
+      await emitForAsset("asset.indexing.progress", "Timeline indexing started", assetId, jobId, { progress: 68 });
+
+      const refreshed = await getAsset(assetId);
+      if (!refreshed) throw new Error("Asset not found before timeline build.");
+      const index = (await getIndex(refreshed.indexId)) ?? createDefaultIndex();
+      const embeddingIndex =
+        index.models.embedding === getEmbeddingModelName()
+          ? index
+          : {
+              ...index,
+              models: { ...index.models, embedding: getEmbeddingModelName() },
+              updatedAt: new Date().toISOString()
+            };
+      if (embeddingIndex !== index) await saveIndex(embeddingIndex);
+      const sceneBoundaries = await traceAsync(
+        "stage.scene_detection",
+        { jobId, assetId },
+        () => detectSceneBoundaries(filePath, refreshed.duration),
+        "stage.scene_detection"
+      );
+      await updateJob(jobId, { stage: "scene-detection", progress: 72 }, `Detected ${sceneBoundaries.length} scene boundaries`);
+      const output = await traceAsync(
+        "stage.timeline_build",
+        { jobId, assetId, sceneBoundaries: sceneBoundaries.length },
+        async () => buildLocalIndex(refreshed, embeddingIndex, sceneBoundaries),
+        "stage.timeline_build"
+      );
+      await updateJob(jobId, { stage: "keyframes", progress: 74 }, "Generating timeline keyframes");
+      await updateAsset(assetId, { status: "embedding", progress: 74 });
+      const keyframes = await traceAsync(
+        "stage.keyframes",
+        { jobId, assetId, segments: output.timeline.length },
+        () => generateKeyframes(filePath, refreshed.id, output.timeline, refreshed.duration),
+        "stage.keyframes"
+      );
+      const thumbnailTimeline = attachKeyframesToTimeline(output.timeline, keyframes);
       await persistIndexingSnapshot(assetId, {
         status: "embedding",
-        progress: 78,
+        progress: 76,
         tags: output.tags,
         summary: output.summary,
-        timeline: videoVlmTimeline,
-        keyframes,
-        modelTrace: [videoVlmTrace]
+        timeline: thumbnailTimeline,
+        keyframes
       });
-      if (videoVlm.errors.length > 0) {
-        logJson("warn", "model.vlm.video_segment.partial", "Video VLM analysis had partial failures", {
-          jobId,
-          assetId,
-          errors: videoVlm.errors
-        });
-      }
-    } else {
-      videoVlmTrace = isCapabilityEnabled(embeddingIndex, "videoVlmAnalysis")
-        ? "video-vlm-unavailable:VLM_WORKER_URL is not configured."
-        : "video-vlm-unavailable:Video VLM analysis disabled by capability policy.";
-      assertCapabilityAvailable(embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
-    }
-    await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting players and ball candidates in keyframes");
-    await updateAsset(assetId, { status: "embedding", progress: 78 });
-    const detections = isCapabilityEnabled(embeddingIndex, "visionDetector")
-      ? await traceAsync(
-          "stage.vision_detection",
-          { jobId, assetId, segments: videoVlmTimeline.length },
-          () => detectTimelineObjects(videoVlmTimeline, keyframes),
-          "stage.vision_detection"
-        )
-      : { available: false, provider: "disabled", model: capabilityPolicy.visionDetector, frames: [], error: "Vision detector disabled by capability policy." };
-    const detectorTrace = detections.available
-      ? `vision-detector:${detections.provider}:${detections.model}:${detections.frames.length}`
-      : `vision-detector-unavailable:${detections.error ?? "detector unavailable"}`;
-    assertCapabilityAvailable(embeddingIndex, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
-    const trackedV0Timeline = applyVisionTracking(applyVisionDetections(videoVlmTimeline, detections));
-    await persistIndexingSnapshot(assetId, {
-      status: "embedding",
-      progress: 79,
-      tags: output.tags,
-      summary: output.summary,
-      timeline: trackedV0Timeline,
-      keyframes,
-      modelTrace: [videoVlmTrace, detectorTrace]
+      return { refreshed, embeddingIndex, capabilityPolicy: resolveCapabilityPolicy(embeddingIndex), output, keyframes, thumbnailTimeline };
+    }, async () => {
+      const asset = await requireAsset(assetId);
+      const index = (await getIndex(asset.indexId)) ?? createDefaultIndex();
+      return {
+        refreshed: asset,
+        embeddingIndex: index,
+        capabilityPolicy: resolveCapabilityPolicy(index),
+        output: { tags: asset.tags, summary: asset.summary, timeline: asset.timeline },
+        keyframes: asset.keyframes,
+        thumbnailTimeline: asset.timeline
+      };
     });
-    await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking players and ball candidates over video");
-    const tracks = isCapabilityEnabled(embeddingIndex, "visionTracker")
-      ? await traceAsync(
-          "stage.vision_tracking",
-          { jobId, assetId, segments: trackedV0Timeline.length },
-          () => detectTimelineTracks(filePath, trackedV0Timeline),
-          "stage.vision_tracking"
-        )
-      : { available: false, provider: "disabled", model: detections.model, tracker: capabilityPolicy.visionTracker, segments: [], error: "Vision tracker disabled by capability policy." };
-    const trackerTrace = tracks.available
-      ? `vision-tracker:${tracks.provider}:${tracks.tracker}:${tracks.segments.length}`
-      : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
-    assertCapabilityAvailable(embeddingIndex, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
-    const detectedTimeline = applyEventClassification(applyVisionTracks(trackedV0Timeline, tracks));
-    await persistIndexingSnapshot(assetId, {
-      status: "embedding",
-      progress: 80,
-      tags: output.tags,
-      summary: output.summary,
-      timeline: detectedTimeline,
-      keyframes,
-      modelTrace: [videoVlmTrace, detectorTrace, trackerTrace]
-    });
-    let soccerNetTrace = "";
-    let actionTimeline = detectedTimeline;
-    const shouldRunSoccerNet =
-      embeddingIndex.domainIndexing?.groups.includes("sports.football") &&
-      isCapabilityEnabled(embeddingIndex, "soccerNetActionSpotting") &&
-      (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(embeddingIndex, "soccerNetActionSpotting"));
-    if (shouldRunSoccerNet) {
-      await updateJob(jobId, { stage: "soccernet-action", progress: 81 }, `Running SoccerNet action spotting with ${soccerNetActionModel}`);
-      const soccerNetResult = await traceAsync(
-        "model.soccernet.action_spotting",
-        { jobId, assetId, model: soccerNetActionModel, segments: detectedTimeline.length },
-        () => spotSoccerNetActions(filePath, detectedTimeline, refreshed.duration),
-        "model.soccernet.action_spotting"
-      );
-      soccerNetTrace = soccerNetResult.available
-        ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
-        : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`;
-      if (!soccerNetResult.available) {
-        logJson("warn", "model.soccernet.action_spotting.unavailable", "SoccerNet action spotting unavailable", {
-          jobId,
-          assetId,
-          error: soccerNetResult.error
-        });
-      }
-      assertCapabilityAvailable(embeddingIndex, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
-      actionTimeline = applySoccerNetActionSpots(detectedTimeline, soccerNetResult);
-    }
-    let timelineForDomain = embeddingIndex.domainIndexing?.enabled
-      ? enrichDomainTimeline({ ...refreshed, timeline: actionTimeline }, embeddingIndex, actionTimeline)
-      : actionTimeline;
-    if (embeddingIndex.domainIndexing?.enabled) {
-      const domainEvents = timelineForDomain.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
-      await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Sports domain event layer ready with ${domainEvents} event candidates`);
-      const shouldRunDomainVlm =
-        isCapabilityEnabled(embeddingIndex, "domainVlmRefinement") &&
-        (isVlmWorkerEnabled() || isCapabilityRequired(embeddingIndex, "domainVlmRefinement"));
-      if (shouldRunDomainVlm) {
-        assertCapabilityAvailable(embeddingIndex, "domainVlmRefinement", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
-        await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports event metadata with ${getVlmWorkerModelName()}`);
-        const vlmRefinement = await traceAsync(
-          "model.vlm.sports_domain",
-          { jobId, assetId, segments: timelineForDomain.length, model: getVlmWorkerModelName() },
+
+    let videoVlmTrace = traceFromAsset(timelineStage.refreshed, "video-vlm") ?? "";
+    let videoVlmTimeline: AssetRecord["timeline"] = timelineStage.thumbnailTimeline;
+    const shouldRunVideoVlm =
+      isCapabilityEnabled(timelineStage.embeddingIndex, "videoVlmAnalysis") &&
+      (isVlmWorkerEnabled() || isCapabilityRequired(timelineStage.embeddingIndex, "videoVlmAnalysis"));
+    if (shouldRunVideoVlm) {
+      const videoVlmStage = await runCheckpointedIndexingStage(jobId, "video-vlm", 78, "Video VLM analysis complete", options.retryStage, () => assetHasModelTrace(assetId, "video-vlm"), async () => {
+        assertCapabilityAvailable(timelineStage.embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
+        await updateJob(jobId, { stage: "video-vlm", progress: 76 }, `Analyzing timeline keyframes with ${getVlmWorkerModelName()}`);
+        const videoVlm = await traceAsync(
+          "model.vlm.video_segment",
+          { jobId, assetId, segments: timelineStage.thumbnailTimeline.length, model: getVlmWorkerModelName() },
           () =>
-            refineSportsDomainTimelineWithVlm({ ...refreshed, timeline: timelineForDomain }, embeddingIndex, timelineForDomain, {
+            analyzeTimelineWithVlm({ ...timelineStage.refreshed, timeline: timelineStage.thumbnailTimeline }, timelineStage.thumbnailTimeline, {
               onProgress: async (event) => {
                 await updateJob(
                   jobId,
-                  { stage: "domain-vlm", progress: 82 + Math.round(event.progress * 0.01) },
-                  `[domain-vlm:${event.status}] ${event.message}`
+                  { stage: "video-vlm", progress: Number((76 + event.progress * 0.02).toFixed(2)) },
+                  `[video-vlm:${event.status}] ${event.message}`
                 );
               }
             }),
-          "model.vlm.sports_domain"
+          "model.vlm.video_segment"
         );
-        timelineForDomain = vlmRefinement.timeline;
+        const trace = videoVlm.attemptedSegments > 0
+          ? `video-vlm:${videoVlm.model}:${videoVlm.describedSegments}/${videoVlm.attemptedSegments}:invalid=${videoVlm.invalidSegments}:failed=${videoVlm.failedSegments}`
+          : "video-vlm-unavailable:No timeline keyframes were available for video VLM analysis.";
         await updateJob(
           jobId,
-          { stage: "domain-vlm", progress: 83 },
-          `Sports event VLM refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
+          { stage: "video-vlm", progress: 78 },
+          `Video VLM analysis completed for ${videoVlm.describedSegments}/${videoVlm.attemptedSegments} attempted segments (${videoVlm.invalidSegments} invalid, ${videoVlm.failedSegments} failed)`
         );
-        if (vlmRefinement.errors.length > 0) {
-          logJson("warn", "model.vlm.sports_domain.partial", "Sports event VLM refinement had partial failures", {
+        await persistIndexingSnapshot(assetId, {
+          status: "embedding",
+          progress: 78,
+          tags: timelineStage.output.tags,
+          summary: timelineStage.output.summary,
+          timeline: videoVlm.timeline,
+          keyframes: timelineStage.keyframes,
+          modelTrace: [trace]
+        });
+        if (videoVlm.errors.length > 0) {
+          logJson("warn", "model.vlm.video_segment.partial", "Video VLM analysis had partial failures", { jobId, assetId, errors: videoVlm.errors });
+        }
+        return { trace, timeline: videoVlm.timeline };
+      }, async () => {
+        const asset = await requireAsset(assetId);
+        return { trace: traceFromAsset(asset, "video-vlm") ?? "", timeline: asset.timeline };
+      });
+      videoVlmTrace = videoVlmStage.trace;
+      videoVlmTimeline = videoVlmStage.timeline;
+    } else {
+      videoVlmTrace = isCapabilityEnabled(timelineStage.embeddingIndex, "videoVlmAnalysis")
+        ? "video-vlm-unavailable:VLM_WORKER_URL is not configured."
+        : "video-vlm-unavailable:Video VLM analysis disabled by capability policy.";
+      assertCapabilityAvailable(timelineStage.embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
+      await completeJobStageCheckpoint(jobId, "video-vlm", 78, videoVlmTrace, "skipped");
+    }
+
+    const detectionStage = await runCheckpointedIndexingStage(jobId, "vision-detection", 79, "Vision detection complete", options.retryStage, () => assetHasModelTrace(assetId, "vision-detector"), async () => {
+      await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting players and ball candidates in keyframes");
+      await updateAsset(assetId, { status: "embedding", progress: 78 });
+      const detections = isCapabilityEnabled(timelineStage.embeddingIndex, "visionDetector")
+        ? await traceAsync(
+            "stage.vision_detection",
+            { jobId, assetId, segments: videoVlmTimeline.length },
+            () => detectTimelineObjects(videoVlmTimeline, timelineStage.keyframes),
+            "stage.vision_detection"
+          )
+        : { available: false, provider: "disabled", model: timelineStage.capabilityPolicy.visionDetector, frames: [], error: "Vision detector disabled by capability policy." };
+      const detectorTrace = detections.available
+        ? `vision-detector:${detections.provider}:${detections.model}:${detections.frames.length}`
+        : `vision-detector-unavailable:${detections.error ?? "detector unavailable"}`;
+      assertCapabilityAvailable(timelineStage.embeddingIndex, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
+      const trackedV0Timeline = applyVisionTracking(applyVisionDetections(videoVlmTimeline, detections));
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 79,
+        tags: timelineStage.output.tags,
+        summary: timelineStage.output.summary,
+        timeline: trackedV0Timeline,
+        keyframes: timelineStage.keyframes,
+        modelTrace: [videoVlmTrace, detectorTrace]
+      });
+      return { detectorTrace, trackedV0Timeline };
+    }, async () => {
+      const asset = await requireAsset(assetId);
+      return { detectorTrace: traceFromAsset(asset, "vision-detector") ?? "", trackedV0Timeline: asset.timeline };
+    });
+
+    const trackingStage = await runCheckpointedIndexingStage(jobId, "vision-tracking", 80, "Vision tracking complete", options.retryStage, () => assetHasModelTrace(assetId, "vision-tracker"), async () => {
+      await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking players and ball candidates over video");
+      const tracks = isCapabilityEnabled(timelineStage.embeddingIndex, "visionTracker")
+        ? await traceAsync(
+            "stage.vision_tracking",
+            { jobId, assetId, segments: detectionStage.trackedV0Timeline.length },
+            () => detectTimelineTracks(filePath, detectionStage.trackedV0Timeline),
+            "stage.vision_tracking"
+          )
+        : { available: false, provider: "disabled", model: timelineStage.capabilityPolicy.visionDetector, tracker: timelineStage.capabilityPolicy.visionTracker, segments: [], error: "Vision tracker disabled by capability policy." };
+      const trackerTrace = tracks.available
+        ? `vision-tracker:${tracks.provider}:${tracks.tracker}:${tracks.segments.length}`
+        : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
+      assertCapabilityAvailable(timelineStage.embeddingIndex, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
+      const detectedTimeline = applyEventClassification(applyVisionTracks(detectionStage.trackedV0Timeline, tracks));
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 80,
+        tags: timelineStage.output.tags,
+        summary: timelineStage.output.summary,
+        timeline: detectedTimeline,
+        keyframes: timelineStage.keyframes,
+        modelTrace: [videoVlmTrace, detectionStage.detectorTrace, trackerTrace]
+      });
+      return { trackerTrace, detectedTimeline };
+    }, async () => {
+      const asset = await requireAsset(assetId);
+      return { trackerTrace: traceFromAsset(asset, "vision-tracker") ?? "", detectedTimeline: asset.timeline };
+    });
+
+    const domainStage = await runCheckpointedIndexingStage(jobId, "domain-index", 83, "Domain event layer complete", options.retryStage, () => assetHasDomainSnapshot(assetId, timelineStage.embeddingIndex.domainIndexing?.enabled), async () => {
+      let soccerNetTrace = "";
+      let actionTimeline = trackingStage.detectedTimeline;
+      const shouldRunSoccerNet =
+        timelineStage.embeddingIndex.domainIndexing?.groups.includes("sports.football") &&
+        isCapabilityEnabled(timelineStage.embeddingIndex, "soccerNetActionSpotting") &&
+        (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(timelineStage.embeddingIndex, "soccerNetActionSpotting"));
+      if (shouldRunSoccerNet) {
+        await updateJob(jobId, { stage: "soccernet-action", progress: 81 }, `Running SoccerNet action spotting with ${soccerNetActionModel}`);
+        const soccerNetResult = await traceAsync(
+          "model.soccernet.action_spotting",
+          { jobId, assetId, model: soccerNetActionModel, segments: trackingStage.detectedTimeline.length },
+          () => spotSoccerNetActions(filePath, trackingStage.detectedTimeline, timelineStage.refreshed.duration),
+          "model.soccernet.action_spotting"
+        );
+        soccerNetTrace = soccerNetResult.available
+          ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
+          : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`;
+        if (!soccerNetResult.available) {
+          logJson("warn", "model.soccernet.action_spotting.unavailable", "SoccerNet action spotting unavailable", { jobId, assetId, error: soccerNetResult.error });
+        }
+        assertCapabilityAvailable(timelineStage.embeddingIndex, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
+        actionTimeline = applySoccerNetActionSpots(trackingStage.detectedTimeline, soccerNetResult);
+      }
+      let timelineForDomain = timelineStage.embeddingIndex.domainIndexing?.enabled
+        ? enrichDomainTimeline({ ...timelineStage.refreshed, timeline: actionTimeline }, timelineStage.embeddingIndex, actionTimeline)
+        : actionTimeline;
+      if (timelineStage.embeddingIndex.domainIndexing?.enabled) {
+        const domainEvents = timelineForDomain.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
+        await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Sports domain event layer ready with ${domainEvents} event candidates`);
+        const shouldRunDomainVlm =
+          isCapabilityEnabled(timelineStage.embeddingIndex, "domainVlmRefinement") &&
+          (isVlmWorkerEnabled() || isCapabilityRequired(timelineStage.embeddingIndex, "domainVlmRefinement"));
+        if (shouldRunDomainVlm) {
+          assertCapabilityAvailable(timelineStage.embeddingIndex, "domainVlmRefinement", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
+          await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports event metadata with ${getVlmWorkerModelName()}`);
+          const vlmRefinement = await traceAsync(
+            "model.vlm.sports_domain",
+            { jobId, assetId, segments: timelineForDomain.length, model: getVlmWorkerModelName() },
+            () =>
+              refineSportsDomainTimelineWithVlm({ ...timelineStage.refreshed, timeline: timelineForDomain }, timelineStage.embeddingIndex, timelineForDomain, {
+                onProgress: async (event) => {
+                  await updateJob(jobId, { stage: "domain-vlm", progress: 82 + Math.round(event.progress * 0.01) }, `[domain-vlm:${event.status}] ${event.message}`);
+                }
+              }),
+            "model.vlm.sports_domain"
+          );
+          timelineForDomain = vlmRefinement.timeline;
+          await updateJob(
             jobId,
-            assetId,
-            errors: vlmRefinement.errors
-          });
+            { stage: "domain-vlm", progress: 83 },
+            `Sports event VLM refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
+          );
+          if (vlmRefinement.errors.length > 0) {
+            logJson("warn", "model.vlm.sports_domain.partial", "Sports event VLM refinement had partial failures", { jobId, assetId, errors: vlmRefinement.errors });
+          }
         }
       }
-    }
-    await updateJob(jobId, { stage: "embed", progress: 84 }, `Computing semantic text embeddings with ${getEmbeddingModelName()}`);
-    await emitForAsset("asset.indexing.progress", "Embedding started", assetId, jobId, { progress: 84, model: getEmbeddingModelName() });
-    const timeline = await traceAsync(
-      "model.embedding.text",
-      { jobId, assetId, segments: timelineForDomain.length },
-      () => embedTimelineSegments(timelineForDomain),
-      "model.embedding.text"
-    );
-    await updateJob(jobId, { stage: "embed", progress: 86 }, `Semantic text embeddings ready via ${getEmbeddingModelName()}`);
-    await updateAsset(assetId, { status: "embedding", progress: 86 });
-    await emitForAsset("asset.indexing.progress", "Embedding complete", assetId, jobId, { progress: 86, model: getEmbeddingModelName() });
-    await sleep(250);
-    await updateJob(jobId, { stage: "vector-upsert-text", progress: 88 }, "Writing text timeline vectors");
-    await updateAsset(assetId, { status: "embedding", progress: 88 });
-    await traceAsync("stage.vector_upsert.text", { jobId, assetId, segments: timeline.length }, () => upsertAssetVectors(embeddingIndex.id, refreshed.id, timeline), "stage.vector_upsert.text");
-    await updateJob(jobId, { stage: "visual-embedding", progress: 92 }, `Computing visual embeddings with ${getVisualEmbeddingModelName()}`);
-    await updateAsset(assetId, { status: "embedding", progress: 92 });
-    let visualEmbeddingTrace = `visual-embedding:${getVisualEmbeddingModelName()}`;
-    let visualVectors: Awaited<ReturnType<typeof embedKeyframes>> = [];
-    try {
-      visualVectors = await traceAsync(
-        "model.embedding.visual",
-        { jobId, assetId, keyframes: keyframes.length },
-        () => embedKeyframes(embeddingIndex.id, refreshed.id, timeline, keyframes),
-        "model.embedding.visual"
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 83,
+        tags: timelineStage.output.tags,
+        summary: timelineStage.output.summary,
+        timeline: timelineForDomain,
+        keyframes: timelineStage.keyframes,
+        modelTrace: [soccerNetTrace]
+      });
+      return { soccerNetTrace, timelineForDomain };
+    }, async () => {
+      const asset = await requireAsset(assetId);
+      return { soccerNetTrace: traceFromAsset(asset, "soccernet-action") ?? "", timelineForDomain: asset.timeline };
+    });
+
+    const timeline = await runCheckpointedIndexingStage(jobId, "embed", 86, "Semantic text embeddings complete", options.retryStage, () => assetHasEmbeddedTimeline(assetId), async () => {
+      await updateJob(jobId, { stage: "embed", progress: 84 }, `Computing semantic text embeddings with ${getEmbeddingModelName()}`);
+      await emitForAsset("asset.indexing.progress", "Embedding started", assetId, jobId, { progress: 84, model: getEmbeddingModelName() });
+      const embeddedTimeline = await traceAsync(
+        "model.embedding.text",
+        { jobId, assetId, segments: domainStage.timelineForDomain.length },
+        () => embedTimelineSegments(domainStage.timelineForDomain),
+        "model.embedding.text"
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Visual embedding unavailable";
-      visualEmbeddingTrace = `visual-embedding-unavailable:${message}`;
-      logJson("warn", "model.embedding.visual.unavailable", "Visual embedding unavailable", { jobId, assetId, error: message });
-      await updateJob(jobId, { stage: "visual-embedding-unavailable", progress: 92 }, `Visual embeddings unavailable: ${message}`, "warn");
-    }
-    await updateJob(jobId, { stage: "vector-upsert-visual", progress: 96 }, "Writing visual vectors");
-    await updateAsset(assetId, { status: "embedding", progress: 96 });
-    await traceAsync(
-      "stage.vector_upsert.visual",
-      { jobId, assetId, vectors: visualVectors.length },
-      () => upsertAssetVisualVectors(embeddingIndex.id, refreshed.id, visualVectors),
-      "stage.vector_upsert.visual"
-    );
-    await updateJob(jobId, { stage: "finalize", progress: 98 }, "Saving indexed asset record");
-    await updateAsset(assetId, { status: "embedding", progress: 98 });
-    const indexedAsset: AssetRecord = {
-      ...refreshed,
-      intelligence: {
-        ...refreshed.intelligence,
-        modelTrace: mergeModelTrace(refreshed.intelligence.modelTrace, [
-          videoVlmTrace,
-          detectorTrace,
-          trackerTrace,
-          isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
-          soccerNetTrace,
-          `embedding:${getEmbeddingModelName()}`,
-          visualEmbeddingTrace
-        ])
-      },
-      ...output,
-      timeline,
-      keyframes,
-      status: "indexed",
-      progress: 100,
-      error: null,
-      updatedAt: new Date().toISOString()
-    };
-    await saveAsset(indexedAsset);
-    await traceAsync("stage.tracking_upsert", { jobId, assetId, segments: timeline.length }, () => upsertAssetTracking(indexedAsset), "stage.tracking_upsert");
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 86,
+        tags: timelineStage.output.tags,
+        summary: timelineStage.output.summary,
+        timeline: embeddedTimeline,
+        keyframes: timelineStage.keyframes,
+        modelTrace: [`embedding:${getEmbeddingModelName()}`]
+      });
+      await updateJob(jobId, { stage: "embed", progress: 86 }, `Semantic text embeddings ready via ${getEmbeddingModelName()}`);
+      await updateAsset(assetId, { status: "embedding", progress: 86 });
+      await emitForAsset("asset.indexing.progress", "Embedding complete", assetId, jobId, { progress: 86, model: getEmbeddingModelName() });
+      await sleep(250);
+      return embeddedTimeline;
+    }, async () => (await requireAsset(assetId)).timeline);
+
+    await runCheckpointedIndexingStage(jobId, "vector-upsert-text", 88, "Text timeline vectors persisted", options.retryStage, () => assetHasCompletedCheckpoint(jobId, "vector-upsert-text"), async () => {
+      await updateJob(jobId, { stage: "vector-upsert-text", progress: 88 }, "Writing text timeline vectors");
+      await updateAsset(assetId, { status: "embedding", progress: 88 });
+      await traceAsync("stage.vector_upsert.text", { jobId, assetId, segments: timeline.length }, () => upsertAssetVectors(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, timeline), "stage.vector_upsert.text");
+    });
+
+    const visualStage = await runCheckpointedIndexingStage(jobId, "visual-embedding", 92, "Visual embedding stage complete", options.retryStage, () => assetHasCompletedCheckpoint(jobId, "visual-embedding"), async () => {
+      await updateJob(jobId, { stage: "visual-embedding", progress: 92 }, `Computing visual embeddings with ${getVisualEmbeddingModelName()}`);
+      await updateAsset(assetId, { status: "embedding", progress: 92 });
+      let visualEmbeddingTrace = `visual-embedding:${getVisualEmbeddingModelName()}`;
+      let visualVectors: Awaited<ReturnType<typeof embedKeyframes>> = [];
+      try {
+        visualVectors = await traceAsync(
+          "model.embedding.visual",
+          { jobId, assetId, keyframes: timelineStage.keyframes.length },
+          () => embedKeyframes(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, timeline, timelineStage.keyframes),
+          "model.embedding.visual"
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Visual embedding unavailable";
+        visualEmbeddingTrace = `visual-embedding-unavailable:${message}`;
+        logJson("warn", "model.embedding.visual.unavailable", "Visual embedding unavailable", { jobId, assetId, error: message });
+        await updateJob(jobId, { stage: "visual-embedding-unavailable", progress: 92 }, `Visual embeddings unavailable: ${message}`, "warn");
+      }
+      return { visualEmbeddingTrace, visualVectors };
+    }, async () => ({ visualEmbeddingTrace: traceFromAsset(await requireAsset(assetId), "visual-embedding") ?? `visual-embedding:${getVisualEmbeddingModelName()}`, visualVectors: [] }));
+
+    await runCheckpointedIndexingStage(jobId, "vector-upsert-visual", 96, "Visual vectors persisted", options.retryStage, () => assetHasCompletedCheckpoint(jobId, "vector-upsert-visual"), async () => {
+      await updateJob(jobId, { stage: "vector-upsert-visual", progress: 96 }, "Writing visual vectors");
+      await updateAsset(assetId, { status: "embedding", progress: 96 });
+      await traceAsync(
+        "stage.vector_upsert.visual",
+        { jobId, assetId, vectors: visualStage.visualVectors.length },
+        () => upsertAssetVisualVectors(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, visualStage.visualVectors),
+        "stage.vector_upsert.visual"
+      );
+    });
+
+    const indexedAsset = await runCheckpointedIndexingStage(jobId, "finalize", 100, "Indexed asset committed", options.retryStage, () => assetIsIndexed(assetId), async () => {
+      await updateJob(jobId, { stage: "finalize", progress: 98 }, "Saving indexed asset record");
+      await updateAsset(assetId, { status: "embedding", progress: 98 });
+      const latest = (await getAsset(assetId)) ?? timelineStage.refreshed;
+      const nextAsset: AssetRecord = {
+        ...latest,
+        intelligence: {
+          ...latest.intelligence,
+          modelTrace: mergeModelTrace(latest.intelligence.modelTrace, [
+            videoVlmTrace,
+            detectionStage.detectorTrace,
+            trackingStage.trackerTrace,
+            isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
+            domainStage.soccerNetTrace,
+            `embedding:${getEmbeddingModelName()}`,
+            visualStage.visualEmbeddingTrace
+          ])
+        },
+        tags: timelineStage.output.tags,
+        summary: timelineStage.output.summary,
+        timeline,
+        keyframes: timelineStage.keyframes,
+        status: "indexed",
+        progress: 100,
+        error: null,
+        updatedAt: new Date().toISOString()
+      };
+      await saveAsset(nextAsset);
+      await pruneGeneratedAssetMedia(nextAsset);
+      await traceAsync("stage.tracking_upsert", { jobId, assetId, segments: timeline.length }, () => upsertAssetTracking(nextAsset), "stage.tracking_upsert");
+      return nextAsset;
+    }, async () => requireAsset(assetId));
     await updateJob(
       jobId,
-      { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
-      `Indexed ${output.timeline.length} timeline segments`
+      { status: "succeeded", stage: "complete", progress: 100, parameters: { ...(await getJob(jobId))?.parameters, resumeFromStage: null }, completedAt: new Date().toISOString() },
+      `Indexed ${indexedAsset.timeline.length} timeline segments`
     );
     await emitForAsset("asset.indexing.succeeded", "Indexing succeeded", assetId, jobId, {
-      segments: output.timeline.length
+      segments: indexedAsset.timeline.length
     });
-    await recordBilling(assetId, jobId, Math.max(1, Math.ceil((refreshed.duration ?? 0) / 60)), "local indexing compute");
+    await recordBilling(assetId, jobId, Math.max(1, Math.ceil((indexedAsset.duration ?? 0) / 60)), "local indexing compute");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown indexing error";
     logJson("error", "job.indexing.failed", message, { jobId, assetId });
+    await failActiveJobStageCheckpoint(jobId, message);
     await updateAsset(assetId, { status: "failed", error: message });
     await updateJob(
       jobId,
@@ -505,6 +584,8 @@ export async function runAudioExtractionJob(jobId: string, assetId: string, file
       { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
       "Audio extraction retry complete"
     );
+    const completedAsset = await getAsset(assetId);
+    if (completedAsset) await pruneGeneratedAssetMedia(completedAsset);
     await emitForAsset("asset.indexing.progress", "Audio extraction retry complete", assetId, jobId, { progress: 42 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Audio extraction retry failed";
@@ -689,6 +770,125 @@ async function persistIndexingSnapshot(assetId: string, patch: IndexingSnapshotP
     },
     updatedAt: new Date().toISOString()
   });
+}
+
+async function runCheckpointedIndexingStage<T>(
+  jobId: string,
+  stage: (typeof indexingCheckpointOrder)[number],
+  progress: number,
+  message: string,
+  retryStage: string | null | undefined,
+  canReuse: () => Promise<boolean>,
+  action: () => Promise<T>,
+  reuse?: () => Promise<T>
+) {
+  const job = await getJob(jobId);
+  const mappedRetryStage = mapRetryStageToCheckpoint(retryStage);
+  const shouldRun = shouldRunJobStage(job, stage, indexingCheckpointOrder, mappedRetryStage);
+  if (!shouldRun && (await canReuse())) {
+    await updateJob(jobId, { stage, progress }, `Resuming after completed checkpoint: ${stage}`);
+    if (reuse) return reuse();
+    return undefined as T;
+  }
+  await startJobStageCheckpoint(jobId, stage, progress, message);
+  const result = await action();
+  await completeJobStageCheckpoint(jobId, stage, progress, message);
+  return result;
+}
+
+async function requireAsset(assetId: string) {
+  const asset = await getAsset(assetId);
+  if (!asset) throw new Error(`Asset not found: ${assetId}`);
+  return asset;
+}
+
+async function assetHasProbeMetadata(assetId: string) {
+  const asset = await getAsset(assetId);
+  return Boolean(asset && asset.duration !== null && asset.width !== null && asset.height !== null);
+}
+
+async function assetHasRuntimeIntelligence(assetId: string) {
+  const asset = await getAsset(assetId);
+  if (!asset) return false;
+  return (
+    asset.intelligence.modelTrace.length > 0 ||
+    asset.intelligence.asr.segments.length > 0 ||
+    asset.intelligence.ocr.frames.length > 0 ||
+    asset.intelligence.visual.labels.length > 0 ||
+    Boolean(asset.intelligence.audio.extractedPath)
+  );
+}
+
+async function assetHasTimelineSnapshot(assetId: string) {
+  const asset = await getAsset(assetId);
+  return Boolean(asset && asset.timeline.length > 0 && asset.keyframes.length > 0 && asset.summary);
+}
+
+async function assetHasModelTrace(assetId: string, prefix: string) {
+  const asset = await getAsset(assetId);
+  return Boolean(asset && traceFromAsset(asset, prefix));
+}
+
+async function assetHasDomainSnapshot(assetId: string, domainEnabled: boolean | undefined) {
+  if (!domainEnabled) return true;
+  const asset = await getAsset(assetId);
+  return Boolean(asset?.timeline.some((segment) => segment.domain));
+}
+
+async function assetHasEmbeddedTimeline(assetId: string) {
+  const asset = await getAsset(assetId);
+  return Boolean(asset?.timeline.length && asset.timeline.every((segment) => Array.isArray(segment.embedding) && segment.embedding.length > 0));
+}
+
+async function assetIsIndexed(assetId: string) {
+  const asset = await getAsset(assetId);
+  return asset?.status === "indexed" && asset.progress === 100;
+}
+
+async function assetHasCompletedCheckpoint(jobId: string, stage: string) {
+  const job = await getJob(jobId);
+  const checkpoint = job?.stageCheckpoints?.[stage];
+  return checkpoint?.status === "succeeded" || checkpoint?.status === "skipped";
+}
+
+function attachKeyframesToTimeline(timeline: AssetRecord["timeline"], keyframes: AssetRecord["keyframes"]) {
+  return timeline.map((segment) => {
+    const keyframe = keyframes.find((item) => item.segmentId === segment.id);
+    const thumbnailPath = keyframe?.path || null;
+    return {
+      ...segment,
+      thumbnailPath,
+      sceneData: segment.sceneData
+        ? {
+            ...segment.sceneData,
+            image: {
+              ...segment.sceneData.image,
+              thumbnailPath,
+              keyframeAt: keyframe?.at ?? segment.sceneData.image.keyframeAt
+            }
+          }
+        : undefined
+    };
+  });
+}
+
+function traceFromAsset(asset: AssetRecord, prefix: string) {
+  return asset.intelligence.modelTrace.find((trace) => trace.startsWith(prefix)) ?? null;
+}
+
+function mapRetryStageToCheckpoint(retryStage: string | null | undefined) {
+  if (!retryStage) return null;
+  const normalized = normalizeWorkflowStage(retryStage);
+  if (normalized === "probe" || normalized === "input") return "probe";
+  if (normalized === "audio" || normalized === "vad" || normalized === "asr" || normalized === "speakers" || normalized === "ocr" || normalized === "visual") {
+    return "local-model-runtime";
+  }
+  if (normalized === "timeline") return "timeline";
+  if (normalized === "videoVlm") return "video-vlm";
+  if (normalized === "domain") return "domain-index";
+  if (normalized === "vector") return "embed";
+  if (normalized === "ready") return "finalize";
+  return null;
 }
 
 function mergeModelTrace(existing: string[], additions: string[]) {
