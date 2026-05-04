@@ -78,7 +78,7 @@ export function cosineSimilarity(a: number[], b: number[]) {
 }
 
 export function normalizeSearchValue(value: string) {
-  return value.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim();
+  return value.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function unique<T>(items: T[]) {

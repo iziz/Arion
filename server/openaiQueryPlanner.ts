@@ -45,9 +45,10 @@ const allowedMetrics = new Set([
   "interceptions"
 ]);
 const allowedRoles = new Set(["receiver", "passer", "shooter", "any"]);
-const allowedEventTypes = new Set(["pass_receive", "shot", "dribble", "pressure", "scramble", "pocket_escape", "throw_on_run"]);
+const allowedEventTypes = new Set(["pass_receive", "shot", "dribble", "progressive_pass", "save", "pressure", "scramble", "pocket_escape", "throw_on_run"]);
 const allowedPassTypes = new Set(["through_ball", "cross", "cutback"]);
 const allowedFieldZones = new Set(["final_third", "penalty_area", "middle_third", "defensive_third"]);
+const ignoredPlayerAliases = new Set(["query", "search", "match", "video", "clip", "clips", "moment", "moments", "speed", "top", "best", "goal", "goals", "save", "saves", "play", "plays"]);
 
 export async function planDomainQueryWithOpenAi(query: string, explicitFilters: DomainSearchFilters = {}): Promise<DomainQueryPlan> {
   const base = withPlanner(planDomainQuery(query, explicitFilters), "rules", null);
@@ -157,7 +158,7 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
   const llmFilters = compactFilters({
     competition: resolveCompetition(llm.competition),
     season: stringOrUndefined(llm.season),
-    player: resolvePlayer(llm.player),
+    player: resolvePlayer(llm.player, base.originalQuery),
     eventType: allowedValue(llm.eventType, allowedEventTypes),
     passType: allowedValue(llm.passType, allowedPassTypes),
     fieldZone: allowedValue(llm.fieldZone, allowedFieldZones),
@@ -169,8 +170,13 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
   );
   const wantsLeaderboardGrounding = Boolean(metric && isStatLeaderboardQuery(base.originalQuery) && !llmFilters.player && !base.domainFilters.player);
   let route = (allowedValue(llm.route, allowedRoutes) as DomainQueryPlan["route"] | undefined) ?? routeFromLegacyQuestionType(llm.questionType, metric) ?? base.route;
+  if (route === "unsupported" && base.route !== "unsupported") route = base.route;
+  if (hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) && !isSportsRoute(route)) route = base.route;
   if (wantsLeaderboardGrounding) route = "sports_stat_qa";
   if (hasActiveSportsFilters(explicit) && !isSportsRoute(route)) route = base.route;
+  if (route === "sports_stat_qa" && base.route !== "sports_stat_qa" && !isStatLeaderboardQuery(base.originalQuery)) {
+    route = hasActiveSportsFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "sports_moment_retrieval" : base.route;
+  }
   if (route === "sports_stat_qa" && !metric) route = base.route === "sports_stat_qa" ? "sports_stat_qa" : "generic_video_qa";
   const questionType = questionTypeForRoute(route);
   const rawDomainFilters = compactFilters(
@@ -189,7 +195,7 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
         : { ...explicit }
   );
   const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, route, explicit);
-  const semanticQuery = stringOrUndefined(llm.semanticQuery) ?? base.semanticQuery;
+  const semanticQuery = hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
   const confidence = Math.max(base.confidence, Math.min(0.94, Number(llm.confidence ?? 0)));
   const llmWarnings = Array.isArray(llm.warnings)
     ? llm.warnings.filter((warning) => typeof warning === "string" && warning.trim() && !/knownPlayers|provided/i.test(warning))
@@ -260,6 +266,19 @@ function normalizeMetricForCompetition(
   return metric;
 }
 
+function selectSemanticQuery(value: unknown, base: DomainQueryPlan) {
+  const next = stringOrUndefined(value);
+  if (!next) return base.semanticQuery;
+  const normalizedNext = normalizePlannerText(next);
+  const normalizedOriginal = normalizePlannerText(base.originalQuery);
+  if (normalizedNext === normalizedOriginal && normalizePlannerText(base.semanticQuery) !== normalizedOriginal) return base.semanticQuery;
+  return next;
+}
+
+function normalizePlannerText(value: string) {
+  return value.toLowerCase().normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
 function parseOpenAiJson(text: string): OpenAiPlan {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== "object") throw new Error("OpenAI planner returned non-object JSON");
@@ -275,13 +294,33 @@ function extractResponseText(body: unknown): string {
   throw new Error("OpenAI planner returned no text");
 }
 
-function resolvePlayer(value: string | null | undefined) {
+function resolvePlayer(value: string | null | undefined, query: string) {
   if (!value) return undefined;
-  return matchKnowledgePlayer(value)?.value.canonical ?? stringOrUndefined(value);
+  const knownPlayer = matchKnowledgePlayer(value)?.value;
+  if (knownPlayer && queryMentionsKnownPlayer(knownPlayer, query)) return knownPlayer.canonical;
+  const literal = stringOrUndefined(value);
+  if (!literal) return undefined;
+  return normalizePlannerText(query).includes(normalizePlannerText(literal)) ? literal : undefined;
+}
+
+function queryMentionsKnownPlayer(player: NonNullable<ReturnType<typeof matchKnowledgePlayer>>["value"], query: string) {
+  const normalizedQuery = normalizePlannerText(query);
+  return [player.canonical, ...player.aliases].some((alias) => {
+    const normalizedAlias = normalizePlannerText(alias);
+    if (!normalizedAlias || ignoredPlayerAliases.has(normalizedAlias)) return false;
+    if (/^[a-z0-9\s-]+$/.test(normalizedAlias)) {
+      return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedAlias)}($|[^a-z0-9])`, "i").test(normalizedQuery);
+    }
+    return normalizedQuery.includes(normalizedAlias);
+  });
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function knownPlayersForPrompt(query: string) {
-  const matches = matchKnowledgePlayers(query).map((match) => match.value);
+  const matches = matchKnowledgePlayers(query).map((match) => match.value).filter((player) => queryMentionsKnownPlayer(player, query));
   const fallback = getSportsKnowledgeSnapshot().players.filter((player) => player.provider === "local").slice(0, 40);
   const byId = new Map([...matches, ...fallback].map((player) => [player.id, player]));
   return Array.from(byId.values()).slice(0, 50).map((player) => ({

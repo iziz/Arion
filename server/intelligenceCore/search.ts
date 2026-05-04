@@ -8,6 +8,12 @@ import { segmentSearchText, withSceneData } from "./sceneTimeline";
 import { cosineSimilarity, extractKeywords, normalizeSearchValue, unique, vectorize } from "./textUtils";
 import { buildSearchMatchReasons, buildVerificationChecks, clipFromSegment, formatDomainFilters, hasActiveDomainFilters, matchesAssetDomainText, matchesSegmentDomainFilters, recencyBoost, scoreDomainFilterMatch, scoreSources, scoreText, scoreVlmQuality } from "./evidence";
 
+const SEMANTIC_ONLY_THRESHOLD = 0.82;
+const VISUAL_ONLY_THRESHOLD = 0.35;
+const ASSET_LEXICAL_WEIGHT = 24;
+const ASSET_KNOWLEDGE_WEIGHT = 8;
+const SEGMENT_LEXICAL_WEIGHT = 3;
+
 export function searchAssets(
   assets: AssetRecord[],
   indexes: IndexRecord[],
@@ -38,6 +44,8 @@ export function searchAssets(
   const hasVectorHits = (options.vectorHitsBySegment?.size ?? 0) > 0 || (options.visualHitsBySegment?.size ?? 0) > 0;
   const hasDomainFilters = hasActiveDomainFilters(options.domainFilters);
   const hasKnowledgeEvidence = knowledgeTerms.length > 0;
+  const suppressBroadMatches = Boolean(options.queryPlan?.warnings.some((warning) => /nonsensical|no actionable|no recognizable/i.test(warning)));
+  const allowSemanticOnlyMatches = !suppressBroadMatches;
   if (query.trim().length === 0 && queryTerms.length === 0 && !hasVectorHits && !hasDomainFilters && !hasKnowledgeEvidence) return [];
   const queryVector = options.queryVector ?? vectorize(domainProfile.expandedText);
   const limit = options.limit ?? 10;
@@ -92,7 +100,17 @@ export function searchAssets(
               vlmQualityScore
           };
         })
-        .filter((item) => (hasDomainFilters ? item.filterScore > 0 : assetMetadataScore > 0 || item.lexicalScore > 0 || item.domainScore > 0 || item.knowledgeScore > 0 || item.semanticScore > 0.72 || item.visualScore > 0.25));
+        .filter((item) =>
+          hasDomainFilters
+            ? item.filterScore > 0
+            : suppressBroadMatches
+              ? assetMetadataScore > 0
+              : assetMetadataScore > 0 ||
+              item.lexicalScore > 0 ||
+              item.domainScore > 0 ||
+              item.knowledgeScore > 0 ||
+              (allowSemanticOnlyMatches && (item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD))
+        );
       const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
       const knowledgeSegmentMatches = segmentCandidates.filter((item) => item.knowledgeScore > 0);
@@ -108,19 +126,19 @@ export function searchAssets(
         .filter((item, index, items) => items.findIndex((candidate) => candidate.segment.id === item.segment.id) === index)
         .sort((a, b) => b.score - a.score);
 
-      const lexical = assetLexicalScore * 0.5 + matchingSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * 3;
-      const domain = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.domainScore, 0) * 5;
-      const filters = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.filterScore, 0) * 6;
-      const knowledge = assetKnowledgeScore * 0.5 + matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.knowledgeScore, 0) * 4.5;
-      const semantic = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.semanticScore, 0) * 8;
-      const visual = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.visualScore, 0) * 6;
-      const source = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.sourceScore, 0);
-      const confidence = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.confidenceScore, 0) * 1.5;
-      const vlmQuality = matchingSegments.slice(0, 5).reduce((sum, item) => sum + item.vlmQualityScore, 0);
+      const selectedSegments = matchingSegments.slice(0, 5);
+      const lexical = assetLexicalScore * ASSET_LEXICAL_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * SEGMENT_LEXICAL_WEIGHT;
+      const domain = selectedSegments.reduce((sum, item) => sum + item.domainScore, 0) * 5;
+      const filters = selectedSegments.reduce((sum, item) => sum + item.filterScore, 0) * 6;
+      const knowledge = assetKnowledgeScore * ASSET_KNOWLEDGE_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.knowledgeScore, 0) * 4.5;
+      const semantic = selectedSegments.reduce((sum, item) => sum + item.semanticScore, 0) * 8;
+      const visual = selectedSegments.reduce((sum, item) => sum + item.visualScore, 0) * 6;
+      const source = selectedSegments.reduce((sum, item) => sum + item.sourceScore, 0);
+      const confidence = selectedSegments.reduce((sum, item) => sum + item.confidenceScore, 0) * 1.5;
+      const vlmQuality = selectedSegments.reduce((sum, item) => sum + item.vlmQualityScore, 0);
       const recency = recencyBoost(asset.createdAt);
       const totalScore = Number((lexical + domain + filters + knowledge + semantic + visual + source + confidence + vlmQuality + recency).toFixed(3));
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;
-      const selectedSegments = matchingSegments.slice(0, 5);
       const selectedSegmentIds = selectedSegments.map((item) => item.segment.id);
       const selectedPlayerNames = unique(
         selectedSegments.flatMap((item) => [

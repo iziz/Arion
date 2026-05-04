@@ -174,6 +174,8 @@ function textAllowsEventFilter(haystack: string, eventType: string) {
   const aliases: Record<string, string[]> = {
     shot: ["shot", "shoot", "scoring", "scored", "score", "goal", "goals", "finish", "득점", "골", "슈팅", "슛"],
     dribble: ["dribble", "dribbling", "carry", "take on", "드리블", "돌파"],
+    save: ["save", "saves", "keeper save", "goalkeeper save", "shot stop", "선방", "세이브"],
+    progressive_pass: ["progressive pass", "line breaking pass", "breaks the line", "전진 패스", "라인 브레이킹"],
     pass_receive: ["receive", "receiving", "through ball", "pass", "받는", "스루패스", "패스"],
     pressure: ["pressure", "pressured", "under pressure", "압박"],
     scramble: ["scramble", "스크램블"],
@@ -190,6 +192,7 @@ export function scoreDomainFilterMatch(asset: AssetRecord, segment: TimelineSegm
     checks
       .reduce((score, check) => {
         if (check.status === "pass") return score + 1;
+        if (check.status === "soft_pass") return score + 0.5;
         return score;
       }, 0)
       .toFixed(3)
@@ -211,6 +214,7 @@ function scopeFilterAllows(segment: TimelineSegment, field: "competition" | "sea
 function missingScopeCanStaySoft(segment: TimelineSegment, field: "competition" | "season", filters: DomainSearchFilters, fullSegmentText: string) {
   const scopeValue = field === "competition" ? segment.domain?.scope?.competition : segment.domain?.scope?.season;
   if (scopeValue) return false;
+  if (field === "competition" && splitFilterValues(filters.competition).some((value) => normalizeSearchValue(value) === "nfl") && segment.domain?.groups.includes("sports.american_football")) return true;
   if (!filters.player || !textAllowsFilter(fullSegmentText, filters.player)) return false;
   if (hasTrustedPlayerIdentity(segment, filters.player)) return true;
   const hasEventConstraint = Boolean(filters.eventType || filters.passType || filters.fieldZone || filters.role);
@@ -270,6 +274,16 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
       checks.push({ segmentId: segment.id, constraint, expected, observed: observed ?? "", status: "pass", confidence, evidence });
     } else if (textAllowsFilter(segmentText, expected)) {
       checks.push({ segmentId: segment.id, constraint, expected, observed: "text fallback", status: "soft_pass", confidence: 0.45, evidence: ["Matched unstructured text fallback."] });
+    } else if (constraint === "competition" && expectedValues.some((value) => normalizeSearchValue(value) === "nfl") && segment.domain?.groups.includes("sports.american_football")) {
+      checks.push({
+        segmentId: segment.id,
+        constraint,
+        expected,
+        observed: "sports.american_football",
+        status: "soft_pass",
+        confidence: 0.5,
+        evidence: ["Matched NFL default through american-football domain scope."]
+      });
     } else {
       checks.push({ segmentId: segment.id, constraint, expected, observed: observed ?? "missing", status: "unknown", confidence: 0, evidence: ["No indexed evidence for this constraint."] });
     }

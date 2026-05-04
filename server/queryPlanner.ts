@@ -1,6 +1,8 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { matchCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./sportsKnowledge";
 
+const ignoredPlayerAliases = new Set(["query", "search", "match", "video", "clip", "clips", "moment", "moments", "speed", "top", "best", "goal", "goals", "save", "saves", "play", "plays"]);
+
 export function planDomainQuery(query: string, explicitFilters: DomainSearchFilters = {}): DomainQueryPlan {
   const originalQuery = query.trim();
   const normalized = normalize(originalQuery);
@@ -8,7 +10,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const inferred: DomainSearchFilters = {};
   const warnings: string[] = [];
   let confidence = playerInventory ? 0.72 : originalQuery ? 0.35 : 0.15;
-  const playerMatch = matchKnowledgePlayer(originalQuery);
+  const playerMatch = matchSearchPlayer(originalQuery);
   let competition = explicitFilters.competition ?? inferCompetition(originalQuery);
   if (!competition && playerMatch) competition = playerMatch.value.league;
   const statMetric = inferStatMetric(normalized, competition);
@@ -55,6 +57,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const receiveIntent = !statQuestion && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
   const shotIntent = !statQuestion && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
   const dribbleIntent = hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
+  const saveIntent = hasAny(normalized, ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"]);
   const pressureIntent = hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
   const scrambleIntent = hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
   const pocketEscapeIntent = hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
@@ -69,6 +72,9 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.1;
   } else if (dribbleIntent) {
     inferred.eventType = "dribble";
+    confidence += 0.1;
+  } else if (saveIntent) {
+    inferred.eventType = "save";
     confidence += 0.1;
   } else if (scrambleIntent) {
     inferred.eventType = "scramble";
@@ -180,6 +186,14 @@ function inferCompetition(query: string) {
   return matchCompetition(query)?.value;
 }
 
+function matchSearchPlayer(query: string) {
+  const match = matchKnowledgePlayer(query);
+  if (!match) return null;
+  const alias = match.evidence[0]?.match(/^Matched player alias:\s*(.+)$/)?.[1];
+  if (alias && ignoredPlayerAliases.has(normalize(alias))) return null;
+  return match;
+}
+
 function inferSeason(query: string, competition?: string) {
   const recent = query.match(/최근\s*(\d+)\s*시즌|last\s*(\d+)\s*seasons?|recent\s*(\d+)\s*seasons?/i);
   if (recent) {
@@ -248,11 +262,13 @@ function inferStatMetric(normalized: string, competition?: string): DomainQueryP
 function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
   return [
     query,
+    expandKoreanRetrievalAliases(query),
     filters.player,
     filters.competition,
     filters.eventType === "pass_receive" ? "receive receiving player" : "",
     filters.eventType === "shot" ? "goal scoring shot finish" : "",
     filters.eventType === "dribble" ? "dribble carry take on 드리블 돌파" : "",
+    filters.eventType === "save" ? "goalkeeper save keeper save shot stop 선방 세이브" : "",
     filters.eventType === "pressure" ? "pressure under pressure 압박" : "",
     filters.eventType === "scramble" ? "scramble quarterback carry pocket escape" : "",
     filters.eventType === "pocket_escape" ? "pocket escape out of the pocket quarterback" : "",
@@ -262,6 +278,20 @@ function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function expandKoreanRetrievalAliases(query: string) {
+  const readable = readableText(query);
+  const aliases = [
+    /무한|무한히/.test(readable) ? "infinite infinitely endless" : "",
+    /확대|확대경|줌인|줌\s*인|zoom/.test(readable) ? "zooming in zoom in magnification microscope" : "",
+    /자유\s*의지|자유의지/.test(readable) ? "free will voluntary action agency" : "",
+    /시뮬레이션|가상\s*현실|npc/i.test(readable) ? "simulation simulated reality NPC" : "",
+    /뇌과학|신경\s*과학/.test(readable) ? "neuroscience brain science" : "",
+    /존재|자아/.test(readable) ? "existence self identity" : "",
+    /착각|환상/.test(readable) ? "illusion misconception" : ""
+  ].filter(Boolean);
+  return aliases.join(" ");
 }
 
 function buildRewrittenQuery(filters: DomainSearchFilters, semanticQuery: string) {
