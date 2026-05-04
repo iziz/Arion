@@ -1,7 +1,7 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AssetRecord } from "../../shared/types";
-import { getPublicMediaRoot } from "../localObjectStorage";
+import { getObjectPath, getPublicMediaRoot } from "../localObjectStorage";
 import { logJson } from "../observability";
 
 type UploadFileRef = {
@@ -68,6 +68,21 @@ export async function pruneGeneratedAssetMedia(asset: AssetRecord) {
     });
   }
   return { scanned: files.length, removed, kept: files.length - removed };
+}
+
+export async function deleteAssetMedia(asset: AssetRecord) {
+  const mediaRoot = getPublicMediaRoot();
+  const sourceDir = path.dirname(getObjectPath(asset.technicalMetadata.storageProvider, asset.technicalMetadata.bucket, asset.technicalMetadata.objectKey));
+  const generatedRoot = path.join(mediaRoot, "generated", "assets", asset.id);
+  const sourceFiles = await listFiles(sourceDir);
+  const generatedFiles = await listFiles(generatedRoot);
+  await rm(sourceDir, { recursive: true, force: true });
+  await rm(generatedRoot, { recursive: true, force: true });
+  return {
+    sourceFiles: sourceFiles.length,
+    generatedFiles: generatedFiles.length,
+    removedFiles: sourceFiles.length + generatedFiles.length
+  };
 }
 
 function getReferencedGeneratedFiles(asset: AssetRecord, mediaRoot: string, generatedRoot: string) {

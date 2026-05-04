@@ -27,7 +27,7 @@ Arion is a local TwelveLabs-like service prototype for video ingest, index manag
 - Timeline segment generation with modality labels and local semantic text embeddings
 - OpenCLIP keyframe image embeddings for visual search over generated thumbnails
 - Optional sports-only domain indexing for football asset groups, with ontology captions, event labels, and structured field/player/ball event placeholders
-- Persistent vector storage in Docker-managed PostgreSQL + pgvector; local JSON remains only an explicit fallback when `DATABASE_URL` is unset
+- Persistent application and vector storage in Docker-managed PostgreSQL + pgvector
 - Hybrid search ranking over lexical matches, text semantic vectors, visual vectors, source quality, confidence, and recency
 - Analysis endpoint for selected indexed assets
 - Webhook registration and delivery logs
@@ -72,7 +72,7 @@ npm run dev
 npm run dev:full
 npm run build
 npm run db:check
-npm run db:migrate
+npm run legacy:migrate
 npm run db:seed
 npm run db:reset
 npm run embeddings:rebuild
@@ -244,13 +244,13 @@ The standard development and operational topology uses Docker-managed PostgreSQL
 cp .env.example .env
 npm run infra:up
 npm run db:check
-npm run db:migrate
+npm run legacy:migrate
 npm run db:seed
 npm run dev
 ```
 
 `npm run infra:up` runs `docker compose up -d redis postgres` and waits for Redis and PostgreSQL readiness. Host development uses project-scoped ports `16379` for Redis and `15432` for PostgreSQL by default to avoid accidentally connecting to unrelated local services. `npm run infra:down` stops the Compose stack.
-`docker-compose.yml` uses `pgvector/pgvector:pg17`, so `POSTGRES_REQUIRE_PGVECTOR=true` is the expected Docker path. If `DATABASE_URL` is deliberately unset outside the Docker path, the app can still use local JSON files for explicit offline development, but that is no longer the standard runtime.
+`docker-compose.yml` uses `pgvector/pgvector:pg17`, so `POSTGRES_REQUIRE_PGVECTOR=true` is the expected Docker path. The runtime requires `DATABASE_URL`; local JSON files are only accepted as input to the explicit legacy migration command.
 
 Operational settings:
 
@@ -273,13 +273,21 @@ The app creates these tables automatically:
 - `app_knowledge_vectors`
 - `app_tracking_records`
 - `app_ask_operations`
+- `app_queue_outbox`
 - `app_schema_migrations`
 
-If the `vector` extension is available, `app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(768)` columns and vector distance search uses pgvector. If the extension is unavailable, vectors are still stored in PostgreSQL as JSON and searched in the app process as a fallback.
-Visual vectors are stored in `app_visual_vectors.embedding vector(512)` when pgvector is available.
-Segments with missing or incompatible embeddings keep their JSON vector payload but leave the pgvector column empty. Search supplements pgvector results with JSON scoring for rows that do not have a populated vector column, so migrations can safely preserve older local data.
+`app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(EMBEDDING_DIMENSIONS)` columns and vector distance search uses pgvector. `app_visual_vectors.embedding` is created as `vector(VISUAL_EMBEDDING_DIMENSIONS)`.
+Rows with incompatible embedding dimensions fail insertion and must be rebuilt with `npm run embeddings:rebuild` or `npm run indexes:rebuild`. Search only uses compatible pgvector rows.
 `npm run db:check` reports Postgres readiness, pgvector mode, vector columns, HNSW indexes, vector row counts, migrations, and metrics.
 `npm run db:reset` truncates app tables and recreates the default local user/index. It does not delete object-storage files under `.data/object-storage`.
+
+Legacy migration from earlier local JSON development data is explicit and one-way:
+
+```bash
+npm run legacy:migrate
+```
+
+The migration imports legacy metadata/vector/tracking JSON files into Docker PostgreSQL, registers recoverable orphan source media as uploaded assets, copies media into the Docker app-data volume, and archives the old JSON stores.
 
 ## Production Extension Points
 

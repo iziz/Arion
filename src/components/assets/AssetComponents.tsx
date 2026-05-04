@@ -1,4 +1,4 @@
-import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search } from "lucide-react";
+import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
 import type { AssetRecord, IndexRecord, JobRecord } from "../../../shared/types";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
@@ -90,12 +90,18 @@ export function AssetGroupSummary({
   assets,
   busy,
   onEdit,
+  onDelete,
+  deleteDisabled,
+  deleteTitle,
   onRefineVlm
 }: {
   index: IndexRecord | null;
   assets: AssetRecord[];
   busy: boolean;
   onEdit: () => void;
+  onDelete: () => void;
+  deleteDisabled: boolean;
+  deleteTitle: string;
   onRefineVlm: (indexId: string) => void;
 }) {
   const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
@@ -116,6 +122,16 @@ export function AssetGroupSummary({
           <em className="asset-group-indexed-count">{indexedCount}/{assets.length} indexed</em>
           <button type="button" className="asset-group-edit" onClick={onEdit} disabled={!index} aria-label="에셋그룹 수정" title="에셋그룹 수정">
             <Edit3 size={17} />
+          </button>
+          <button
+            type="button"
+            className="asset-group-edit asset-group-delete"
+            onClick={onDelete}
+            disabled={!index || deleteDisabled}
+            aria-label="에셋그룹 삭제"
+            title={deleteTitle}
+          >
+            <Trash2 size={17} />
           </button>
         </span>
         {index?.description && <p>{index.description}</p>}

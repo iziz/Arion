@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   UploadCloud,
   X
 } from "lucide-react";
@@ -83,6 +84,8 @@ export type ConsoleLayoutProps = {
   setDialogMode: Dispatch<SetStateAction<DialogMode>>;
   selectIndex: (indexId: string) => void;
   selectAsset: (asset: AssetRecord) => void;
+  deleteIndex: (indexId: string) => Promise<void>;
+  deleteAsset: (assetId: string) => Promise<void>;
   busy: boolean;
   refineAssetGroupVlm: (indexId: string) => Promise<void>;
   assetDetailTab: AssetDetailTab;
@@ -205,6 +208,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setDialogMode,
     selectIndex,
     selectAsset,
+    deleteIndex,
+    deleteAsset,
     busy,
     refineAssetGroupVlm,
     assetDetailTab,
@@ -260,6 +265,17 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   const visibleJobs = jobs.slice(0, 12);
   const visibleEvents = events.slice(0, 8);
   const activeJobCount = Math.max(runningJobCount, metrics.runningJobs);
+  const activeAssetIds = new Set(
+    jobs.filter((job) => (job.status === "queued" || job.status === "running") && job.assetId).map((job) => job.assetId as string)
+  );
+  const selectedIndexDeleteDisabled = Boolean(
+    selectedIndex &&
+      jobs.some(
+        (job) =>
+          (job.status === "queued" || job.status === "running") &&
+          (job.indexId === selectedIndex.id || (job.assetId && visibleAssets.some((asset) => asset.id === job.assetId)))
+      )
+  );
 
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
@@ -334,12 +350,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 const indexAssets = assets.filter((asset) => asset.indexId === index.id);
                 const indexedCount = indexAssets.filter((asset) => asset.status === "indexed").length;
                 return (
-                  <button
-                    key={index.id}
-                    type="button"
-                    className={`asset-nav-item ${selectedIndex?.id === index.id ? "active" : ""}`}
-                    onClick={() => selectIndex(index.id)}
-                  >
+                  <button key={index.id} type="button" className={`asset-nav-item ${selectedIndex?.id === index.id ? "active" : ""}`} onClick={() => selectIndex(index.id)}>
                     <span>{index.name}</span>
                     <strong>{indexedCount}/{indexAssets.length}</strong>
                   </button>
@@ -355,17 +366,27 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </div>
             <div className="asset-nav-list video-list">
               {visibleAssets.length === 0 && <p>영상 없음</p>}
-              {visibleAssets.map((asset) => (
-                <button
-                  key={asset.id}
-                  type="button"
-                  className={`asset-nav-item video ${selectedAsset?.id === asset.id ? "active" : ""}`}
-                  onClick={() => selectAsset(asset)}
-                >
-                  <span className="asset-nav-title">{asset.title}</span>
-                  <AssetStatusIndicator asset={asset} />
-                </button>
-              ))}
+              {visibleAssets.map((asset) => {
+                const deleteDisabled = busy || activeAssetIds.has(asset.id);
+                return (
+                  <div key={asset.id} className={`asset-nav-row ${selectedAsset?.id === asset.id ? "active" : ""}`}>
+                    <button type="button" className={`asset-nav-item video ${selectedAsset?.id === asset.id ? "active" : ""}`} onClick={() => selectAsset(asset)}>
+                      <span className="asset-nav-title">{asset.title}</span>
+                      <AssetStatusIndicator asset={asset} />
+                    </button>
+                    <button
+                      type="button"
+                      className="nav-delete-button"
+                      aria-label={`${asset.title} 삭제`}
+                      title={deleteDisabled ? "인덱싱 중인 영상은 삭제할 수 없습니다." : "영상 삭제"}
+                      disabled={deleteDisabled}
+                      onClick={() => void deleteAsset(asset.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
@@ -431,6 +452,9 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           assets={visibleAssets}
           busy={busy}
           onEdit={() => setDialogMode("edit-index")}
+          onDelete={() => selectedIndex && void deleteIndex(selectedIndex.id)}
+          deleteDisabled={busy || selectedIndexDeleteDisabled}
+          deleteTitle={selectedIndexDeleteDisabled ? "인덱싱 중인 영상이 있어 에셋그룹을 삭제할 수 없습니다." : "에셋그룹 삭제"}
           onRefineVlm={(indexId) => void refineAssetGroupVlm(indexId)}
         />
       <section className="asset-workbench asset-detail-workbench">
@@ -442,7 +466,19 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   <h2>{selectedAsset.title}</h2>
                   <span className="video-progress-line">{getAssetProgressLine(selectedAsset, selectedAssetJob)}</span>
                 </div>
-                <VideoStatusSummary asset={selectedAsset} />
+                <div className="detail-actions">
+                  <VideoStatusSummary asset={selectedAsset} />
+                  <button
+                    type="button"
+                    className="small-button icon-only danger-button"
+                    aria-label="영상 삭제"
+                    title={activeAssetIds.has(selectedAsset.id) ? "인덱싱 중인 영상은 삭제할 수 없습니다." : "영상 삭제"}
+                    disabled={busy || activeAssetIds.has(selectedAsset.id)}
+                    onClick={() => void deleteAsset(selectedAsset.id)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
               <AssetDetailTabs active={assetDetailTab} onChange={setAssetDetailTab} />
               {assetDetailTab === "overview" && (

@@ -2,6 +2,8 @@ import type { Response } from "express";
 
 export type RealtimeEventType =
   | "asset.updated"
+  | "asset.deleted"
+  | "index.deleted"
   | "job.updated"
   | "ask.operation.updated"
   | "event.recorded"

@@ -11,6 +11,25 @@ import type {
 import { getPool } from "./connection";
 import { ensurePostgresStore } from "./schema";
 
+export type DeleteCascadeSummary = {
+  indexId: string | null;
+  assetIds: string[];
+  jobIds: string[];
+  askOperationIds: string[];
+  deleted: {
+    indexes: number;
+    assets: number;
+    jobs: number;
+    queueOutbox: number;
+    askOperations: number;
+    events: number;
+    billing: number;
+    textVectors: number;
+    visualVectors: number;
+    trackingRecords: number;
+  };
+};
+
 export async function listIndexes() {
   await ensurePostgresStore();
   const result = await getPool().query("select data from app_indexes order by created_at asc");
@@ -64,6 +83,134 @@ export async function saveAsset(asset: AssetRecord) {
     await saveIndex(index);
   }
   return asset;
+}
+
+export async function deleteAssetCascade(assetId: string): Promise<DeleteCascadeSummary | null> {
+  await ensurePostgresStore();
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const assetResult = await client.query("select data, index_id from app_assets where id = $1 for update", [assetId]);
+    const asset = assetResult.rows[0]?.data as AssetRecord | undefined;
+    if (!asset) {
+      await client.query("rollback");
+      return null;
+    }
+
+    const indexId = String(assetResult.rows[0].index_id);
+    const jobIds = await selectTextColumn(client, "select id from app_jobs where asset_id = $1", [assetId]);
+    const askOperationIds = await selectTextColumn(client, "select id from app_ask_operations where data #>> '{request,assetId}' = $1", [assetId]);
+    const deleted = {
+      textVectors: rowCount(await client.query("delete from app_vectors where asset_id = $1", [assetId])),
+      visualVectors: rowCount(await client.query("delete from app_visual_vectors where asset_id = $1", [assetId])),
+      trackingRecords: rowCount(await client.query("delete from app_tracking_records where asset_id = $1", [assetId])),
+      queueOutbox: rowCount(
+        await client.query(
+          `delete from app_queue_outbox
+           where (kind = 'asset-job' and aggregate_id = any($1::text[]))
+              or (kind = 'ask-operation' and aggregate_id = any($2::text[]))`,
+          [jobIds, askOperationIds]
+        )
+      ),
+      askOperations: rowCount(await client.query("delete from app_ask_operations where id = any($1::text[])", [askOperationIds])),
+      billing: rowCount(
+        await client.query("delete from app_billing where asset_id = $1 or job_id = any($2::text[])", [assetId, jobIds])
+      ),
+      events: rowCount(await client.query("delete from app_events where asset_id = $1 or job_id = any($2::text[])", [assetId, jobIds])),
+      jobs: rowCount(await client.query("delete from app_jobs where asset_id = $1", [assetId])),
+      assets: rowCount(await client.query("delete from app_assets where id = $1", [assetId])),
+      indexes: 0
+    };
+    await removeAssetsFromIndex(client, indexId, [assetId]);
+    await client.query("commit");
+    return {
+      indexId,
+      assetIds: [assetId],
+      jobIds,
+      askOperationIds,
+      deleted
+    };
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteIndexCascade(indexId: string): Promise<DeleteCascadeSummary | null> {
+  await ensurePostgresStore();
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const indexResult = await client.query("select data from app_indexes where id = $1 for update", [indexId]);
+    if (!indexResult.rows[0]) {
+      await client.query("rollback");
+      return null;
+    }
+
+    const assetIds = await selectTextColumn(client, "select id from app_assets where index_id = $1", [indexId]);
+    const jobIds = await selectTextColumn(
+      client,
+      "select id from app_jobs where index_id = $1 or asset_id = any($2::text[])",
+      [indexId, assetIds]
+    );
+    const askOperationIds = await selectTextColumn(
+      client,
+      `select id from app_ask_operations
+       where index_id = $1
+          or data #>> '{request,indexId}' = $1
+          or data #>> '{request,assetId}' = any($2::text[])`,
+      [indexId, assetIds]
+    );
+
+    const deleted = {
+      textVectors: rowCount(
+        await client.query("delete from app_vectors where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
+      ),
+      visualVectors: rowCount(
+        await client.query("delete from app_visual_vectors where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
+      ),
+      trackingRecords: rowCount(
+        await client.query("delete from app_tracking_records where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
+      ),
+      queueOutbox: rowCount(
+        await client.query(
+          `delete from app_queue_outbox
+           where (kind = 'asset-job' and aggregate_id = any($1::text[]))
+              or (kind = 'ask-operation' and aggregate_id = any($2::text[]))`,
+          [jobIds, askOperationIds]
+        )
+      ),
+      askOperations: rowCount(await client.query("delete from app_ask_operations where id = any($1::text[])", [askOperationIds])),
+      billing: rowCount(
+        await client.query("delete from app_billing where asset_id = any($1::text[]) or job_id = any($2::text[])", [assetIds, jobIds])
+      ),
+      events: rowCount(
+        await client.query("delete from app_events where index_id = $1 or asset_id = any($2::text[]) or job_id = any($3::text[])", [
+          indexId,
+          assetIds,
+          jobIds
+        ])
+      ),
+      jobs: rowCount(await client.query("delete from app_jobs where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])),
+      assets: rowCount(await client.query("delete from app_assets where index_id = $1", [indexId])),
+      indexes: rowCount(await client.query("delete from app_indexes where id = $1", [indexId]))
+    };
+    await client.query("commit");
+    return {
+      indexId,
+      assetIds,
+      jobIds,
+      askOperationIds,
+      deleted
+    };
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listJobs() {
@@ -135,6 +282,17 @@ export async function listUsers() {
   return result.rows.map((row) => row.data as UserRecord);
 }
 
+export async function saveUser(user: UserRecord) {
+  await ensurePostgresStore();
+  await getPool().query(
+    `insert into app_users(id, api_key, data, created_at)
+     values ($1, $2, $3, $4)
+     on conflict (id) do update set api_key = excluded.api_key, data = excluded.data`,
+    [user.id, user.apiKey, user, user.createdAt]
+  );
+  return user;
+}
+
 export async function getUserByApiKey(apiKey: string) {
   await ensurePostgresStore();
   const result = await getPool().query("select data from app_users where api_key = $1", [apiKey]);
@@ -186,4 +344,46 @@ export async function getMetrics(): Promise<MetricsSummary> {
     webhooks: row.webhooks,
     billingUnits: row.billing_units
   };
+}
+
+async function selectTextColumn(client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }, sql: string, values: unknown[]) {
+  const result = await client.query(sql, values);
+  return result.rows.map((row) => String(row.id));
+}
+
+async function removeAssetsFromIndex(client: { query: (sql: string, values?: unknown[]) => Promise<unknown> }, indexId: string, assetIds: string[]) {
+  const now = new Date().toISOString();
+  await client.query(
+    `update app_indexes
+     set data = jsonb_set(
+       jsonb_set(
+         jsonb_set(
+           data,
+           '{assetIds}',
+           coalesce(
+             (
+               select jsonb_agg(asset_id.value)
+               from jsonb_array_elements_text(coalesce(data->'assetIds', '[]'::jsonb)) as asset_id(value)
+               where asset_id.value <> all($2::text[])
+             ),
+             '[]'::jsonb
+           ),
+           true
+         ),
+         '{status}',
+         to_jsonb(case when exists(select 1 from app_assets where index_id = $1) then 'ready'::text else 'empty'::text end),
+         true
+       ),
+       '{updatedAt}',
+       to_jsonb($3::text),
+       true
+     ),
+     updated_at = $3::timestamptz
+     where id = $1`,
+    [indexId, assetIds, now]
+  );
+}
+
+function rowCount(result: { rowCount: number | null }) {
+  return result.rowCount ?? 0;
 }

@@ -9,7 +9,7 @@ export type DatabaseStatus = {
   pgvector?: string | null;
   pgvectorRequired?: boolean;
   pgvectorInstallError?: string | null;
-  vectorSearchMode?: "pgvector" | "json-fallback";
+  vectorSearchMode?: "pgvector";
   embeddingColumn?: string | null;
   expectedEmbeddingDimensions?: number;
   visualEmbeddingColumn?: string | null;
@@ -23,7 +23,7 @@ export type DatabaseStatus = {
     totalRows: number;
     jsonRows: number;
     pgvectorRows: number;
-    searchMode: "pgvector" | "json-fallback";
+    searchMode: "pgvector";
     ready: boolean;
     issues: string[];
   }>;

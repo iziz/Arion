@@ -1,17 +1,7 @@
-import path from "node:path";
 import type { SportsDomainGroup } from "../shared/types";
-import { extractKeywords } from "./intelligenceCore/textUtils";
-import { readJsonFile, writeJsonFile } from "./jsonFileStore";
-import { scoreKnowledgeVectorRecord } from "./knowledgeVectorScoring";
-import { buildKnowledgeVectorStatus } from "./knowledgeVectorStatus";
 import { embedPassageTexts } from "./localEmbeddingRuntime";
 import * as pgStore from "./postgresStore";
 import type { SportsKnowledgeDocument, SportsKnowledgeVectorHit, SportsKnowledgeVectorRecord } from "./sportsKnowledgeDocuments";
-
-const knowledgeVectorPath = path.resolve(".data", "knowledge-vector-store.json");
-let records: SportsKnowledgeVectorRecord[] = [];
-let loaded = false;
-let writeChain = Promise.resolve();
 
 export type RebuildKnowledgeVectorOptions = {
   batchSize?: number;
@@ -19,6 +9,7 @@ export type RebuildKnowledgeVectorOptions = {
 };
 
 export async function rebuildKnowledgeVectorStore(documents: SportsKnowledgeDocument[], options: RebuildKnowledgeVectorOptions = {}) {
+  assertPostgresRuntime();
   const batchSize = Math.max(1, Math.min(512, options.batchSize ?? 128));
   const next: SportsKnowledgeVectorRecord[] = [];
   for (let index = 0; index < documents.length; index += batchSize) {
@@ -29,49 +20,32 @@ export async function rebuildKnowledgeVectorStore(documents: SportsKnowledgeDocu
     }
     options.onProgress?.({ embedded: Math.min(index + batch.length, documents.length), total: documents.length });
   }
-  if (pgStore.isPostgresEnabled()) {
-    await pgStore.rebuildKnowledgeVectorStore(next);
-    records = next;
-    loaded = true;
-    return { count: next.length, storage: "postgres" as const };
-  }
-  records = next;
-  loaded = true;
-  await persist();
-  return { count: records.length, storage: "local" as const };
+  await pgStore.rebuildKnowledgeVectorStore(next);
+  return { count: next.length, storage: "postgres" as const };
 }
 
 export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24, queryText = ""): Promise<SportsKnowledgeVectorHit[]> {
-  if (pgStore.isPostgresEnabled()) return pgStore.searchKnowledgeVectors(domainGroup, queryVector, limit, queryText);
-  await ensureKnowledgeVectorStore();
-  const terms = extractKeywords(queryText);
-  return records
-    .filter((record) => !domainGroup || record.domainGroup === domainGroup)
-    .map((record) => ({ ...record, score: scoreKnowledgeVectorRecord(record, queryVector, terms, queryText) }))
-    .filter((record) => record.score > 0.12)
-    .sort((a, b) => b.score - a.score || a.entityName.localeCompare(b.entityName))
-    .slice(0, limit);
+  assertPostgresRuntime();
+  return pgStore.searchKnowledgeVectors(domainGroup, queryVector, limit, queryText);
 }
 
 export async function getKnowledgeVectorCount() {
-  if (pgStore.isPostgresEnabled()) return pgStore.getKnowledgeVectorCount();
-  await ensureKnowledgeVectorStore();
-  return records.length;
+  assertPostgresRuntime();
+  return pgStore.getKnowledgeVectorCount();
 }
 
 export async function getKnowledgeVectorStatus() {
-  if (pgStore.isPostgresEnabled()) return pgStore.getKnowledgeVectorStatus();
-  await ensureKnowledgeVectorStore();
-  return buildKnowledgeVectorStatus(records, "local");
+  assertPostgresRuntime();
+  return pgStore.getKnowledgeVectorStatus();
 }
 
 export async function ensureKnowledgeVectorStore() {
-  if (loaded) return;
-  records = await readJsonFile<SportsKnowledgeVectorRecord[]>(knowledgeVectorPath, () => [], "knowledge-vector-store");
-  loaded = true;
+  assertPostgresRuntime();
+  await pgStore.ensurePostgresStore();
 }
 
-async function persist() {
-  writeChain = writeChain.then(() => writeJsonFile(knowledgeVectorPath, records));
-  await writeChain;
+function assertPostgresRuntime() {
+  if (!pgStore.isPostgresEnabled()) {
+    throw new Error("PostgreSQL knowledge vector persistence is required. Set DATABASE_URL or run through Docker infra.");
+  }
 }

@@ -20,7 +20,7 @@ export function registerSystemRoutes(app: Express) {
 
   app.get("/api/db/status", async (_req, res) => {
     if (!isPostgresEnabled()) {
-      res.json({ enabled: false, storage: "file", metrics: await getMetrics() });
+      res.status(503).json({ enabled: false, storage: "postgres", error: "DATABASE_URL is required." });
       return;
     }
     res.json(await getPostgresStatus());
@@ -29,8 +29,8 @@ export function registerSystemRoutes(app: Express) {
   app.get("/api/storage/status", async (_req, res) => {
     res.json({
       applicationPersistence: {
-        storage: isPostgresEnabled() ? "postgres" : "local-json",
-        durableForProduction: isPostgresEnabled()
+        storage: "postgres",
+        durableForProduction: true
       },
       mediaStorage: {
         ...getObjectStorageStatus(),

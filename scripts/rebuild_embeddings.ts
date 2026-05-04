@@ -11,16 +11,15 @@ import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../server/visionDetectionRuntime";
 import { applyEventClassification } from "../server/eventClassifier";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../server/modelCapabilities";
-import { rebuildTrackingStore } from "../server/trackingStore";
 import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, spotSoccerNetActions } from "../server/soccernet";
 import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
+import { upsertAssetTracking } from "../server/trackingStore";
 
 const indexedAssets = (await listAssets()).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
 const indexes = await listIndexes();
 let segments = 0;
 let visualVectors = 0;
 let generatedKeyframes = 0;
-const refreshedAssets = [];
 const startedAt = Date.now();
 
 console.error(`[rebuild] starting ${indexedAssets.length} indexed assets`);
@@ -140,13 +139,11 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
     updatedAt: new Date().toISOString()
   };
   await saveAsset(nextAsset);
-  refreshedAssets.push(nextAsset);
   await upsertAssetVectors(asset.indexId, asset.id, timeline);
   await upsertAssetVisualVectors(asset.indexId, asset.id, records);
+  await upsertAssetTracking(nextAsset);
   console.error(`[rebuild] ${asset.id} saved in ${Math.round((Date.now() - assetStartedAt) / 1000)}s`);
 }
-
-await rebuildTrackingStore(refreshedAssets);
 
 console.log(
   JSON.stringify(

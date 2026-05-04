@@ -84,6 +84,14 @@
   box-shadow: none;
 }
 
+.asset-group-delete {
+  color: #a64d3f;
+}
+
+.asset-group-delete:hover:not(:disabled) {
+  color: #87392f;
+}
+
 .asset-group-edit:disabled {
   cursor: not-allowed;
   opacity: 0.4;
@@ -133,6 +141,31 @@
 .asset-group-refine:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+}
+
+.detail-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.danger-button {
+  background: #fff0ed;
+  color: #9a4639;
+  box-shadow: none;
+}
+
+.danger-button:hover:not(:disabled),
+.danger-button:focus-visible {
+  background: #ffe0da;
+  color: #7e3329;
+}
+
+.nav-delete-button:hover:not(:disabled) {
+  background: rgba(255, 181, 170, 0.14);
+  color: #ffd3cc;
 }
 
 @media (min-width: 1500px) {

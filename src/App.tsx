@@ -239,11 +239,15 @@ export default function App() {
       setMessage("Choose a video or audio file first.");
       return;
     }
-    data.set("indexId", selectedIndex?.id ?? "default-index");
+    if (!selectedIndex) {
+      setMessage("Create an asset group before uploading media.");
+      return;
+    }
+    data.set("indexId", selectedIndex.id);
     setBusy(true);
     setMessage("");
     try {
-      const response = await fetch(`/api/indexes/${selectedIndex?.id ?? "default-index"}/assets`, {
+      const response = await fetch(`/api/indexes/${selectedIndex.id}/assets`, {
         method: "POST",
         body: data
       });
@@ -274,6 +278,70 @@ export default function App() {
         .finally(() => setSelectedAssetId(payload.asset.id));
     } catch (error) {
       setMessage(`Upload failed: ${getFailureMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAsset(assetId: string) {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    if (!window.confirm(`Delete "${asset.title}" and all related indexing data, vectors, jobs, and media artifacts?`)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await api.delete<{ assetId: string; indexId: string }>(`/api/assets/${asset.id}`);
+      setAssets((current) => current.filter((item) => item.id !== asset.id));
+      setIndexes((current) =>
+        current.map((index) =>
+          index.id === asset.indexId
+            ? {
+                ...index,
+                assetIds: index.assetIds.filter((id) => id !== asset.id),
+                status: index.assetIds.length > 1 ? index.status : "empty",
+                updatedAt: new Date().toISOString()
+              }
+            : index
+        )
+      );
+      if (selectedAssetId === asset.id) {
+        setSelectedAssetId(null);
+        setSelectedSegmentId(null);
+        setSelectedMomentTime(null);
+        writeConsoleRoute({ activeTab: "data", selectedIndexId: asset.indexId, selectedAssetId: null, selectedSegmentId: null, seekAt: null }, "replace");
+      }
+      setMessage("Asset deleted.");
+      await refresh();
+    } catch (error) {
+      setMessage(`Delete failed: ${getFailureMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteIndex(indexId: string) {
+    const index = indexes.find((item) => item.id === indexId);
+    if (!index) return;
+    const indexAssets = assets.filter((asset) => asset.indexId === index.id);
+    const detail = indexAssets.length === 1 ? "1 asset" : `${indexAssets.length} assets`;
+    if (!window.confirm(`Delete asset group "${index.name}" with ${detail}, including all indexing data, vectors, jobs, and media artifacts?`)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await api.delete<{ indexId: string; assetIds: string[] }>(`/api/indexes/${index.id}`);
+      setIndexes((current) => current.filter((item) => item.id !== index.id));
+      setAssets((current) => current.filter((asset) => asset.indexId !== index.id));
+      if (selectedIndexId === index.id) {
+        setSelectedIndexId("");
+        setSelectedAssetId(null);
+        setSelectedSegmentId(null);
+        setSelectedMomentTime(null);
+        writeConsoleRoute({ activeTab: "data", selectedIndexId: null, selectedAssetId: null, selectedSegmentId: null, seekAt: null }, "replace");
+      }
+      setMessage("Asset group deleted.");
+      await refresh();
+    } catch (error) {
+      setMessage(`Delete failed: ${getFailureMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -391,6 +459,8 @@ export default function App() {
       setDialogMode={setDialogMode}
       selectIndex={selectIndex}
       selectAsset={selectAsset}
+      deleteIndex={deleteIndex}
+      deleteAsset={deleteAsset}
       busy={busy}
       refineAssetGroupVlm={refineAssetGroupVlm}
       assetDetailTab={assetDetailTab}

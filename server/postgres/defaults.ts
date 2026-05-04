@@ -4,13 +4,6 @@ import { getPool } from "./connection";
 
 export async function seedDefaults() {
   const now = new Date().toISOString();
-  const defaultIndex = createDefaultIndex(now);
-  await getPool().query(
-    `insert into app_indexes(id, data, created_at, updated_at)
-     values ($1, $2, $3, $4)
-     on conflict (id) do nothing`,
-    [defaultIndex.id, defaultIndex, defaultIndex.createdAt, defaultIndex.updatedAt]
-  );
   const user: UserRecord = {
     id: "local-user",
     name: "Local Developer",

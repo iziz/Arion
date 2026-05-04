@@ -4,7 +4,8 @@ import { normalizeCapabilityPolicy, normalizeDomainIndexing } from "../domainCon
 import { sendNotFound } from "../http/middleware";
 import { getEmbeddingModelName } from "../localEmbeddingRuntime";
 import { recordEvent } from "../services/events";
-import { createDefaultIndex, getIndex, listIndexes, saveIndex } from "../store";
+import { deleteIndexCascade, createDefaultIndex, getIndex, listAssets, listIndexes, listJobs, saveIndex } from "../store";
+import { deleteAssetMedia } from "../services/mediaLifecycle";
 import type { IndexRecord } from "../../shared/types";
 
 export function registerIndexRoutes(app: Express) {
@@ -42,6 +43,38 @@ export function registerIndexRoutes(app: Express) {
     const index = await getIndex(String(req.params.id));
     if (!index) return sendNotFound(res, "Index not found");
     res.json(index);
+  });
+
+  app.delete("/api/indexes/:id", async (req, res) => {
+    const index = await getIndex(String(req.params.id));
+    if (!index) return sendNotFound(res, "Index not found");
+    const assets = await listAssets(index.id);
+    const assetIds = new Set(assets.map((asset) => asset.id));
+    const activeJobs = (await listJobs()).filter(
+      (job) => (job.indexId === index.id || (job.assetId && assetIds.has(job.assetId))) && (job.status === "queued" || job.status === "running")
+    );
+    if (activeJobs.length > 0) {
+      res.status(409).json({
+        error: "Asset group cannot be deleted while indexing jobs are queued or running.",
+        activeJobIds: activeJobs.map((job) => job.id)
+      });
+      return;
+    }
+    const deletion = await deleteIndexCascade(index.id);
+    if (!deletion) return sendNotFound(res, "Index not found");
+    const media = await Promise.all(assets.map((asset) => deleteAssetMedia(asset)));
+    const mediaSummary = media.reduce(
+      (sum, item) => ({
+        sourceFiles: sum.sourceFiles + item.sourceFiles,
+        generatedFiles: sum.generatedFiles + item.generatedFiles,
+        removedFiles: sum.removedFiles + item.removedFiles
+      }),
+      { sourceFiles: 0, generatedFiles: 0, removedFiles: 0 }
+    );
+    await recordEvent("system.info", "Asset group deleted", {
+      payload: { indexId: index.id, name: index.name, assetIds: deletion.assetIds, deleted: deletion.deleted, media: mediaSummary }
+    });
+    res.json({ indexId: index.id, assetIds: deletion.assetIds, deleted: deletion.deleted, media: mediaSummary });
   });
 
   app.patch("/api/indexes/:id", async (req, res) => {

@@ -700,13 +700,17 @@ textarea {
 .topbar {
   grid-column: 2;
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.4fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
-  align-items: center;
+  align-items: start;
   margin: 0;
   border: 0;
   background: transparent;
   padding: 28px 28px 16px;
+}
+
+.topbar > .context-bar {
+  min-width: 0;
 }
 
 .topbar h1 {
@@ -914,6 +918,13 @@ textarea {
   gap: 6px;
 }
 
+.asset-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 5px;
+  align-items: stretch;
+}
+
 .asset-nav-list.video-list {
   max-height: 34vh;
   overflow: auto;
@@ -990,6 +1001,10 @@ textarea {
   min-height: 42px;
 }
 
+.asset-nav-row .asset-nav-item.video {
+  min-width: 0;
+}
+
 .asset-nav-item.video > .asset-nav-title {
   white-space: normal;
   display: -webkit-box;
@@ -1010,6 +1025,29 @@ textarea {
 .asset-nav-item.active .asset-status-icon,
 .asset-nav-item:hover .asset-status-icon {
   color: #c8ffe9;
+}
+
+.nav-delete-button {
+  display: inline-grid;
+  place-items: center;
+  align-self: stretch;
+  width: 28px;
+  min-width: 28px;
+  min-height: 34px;
+  border-radius: 11px;
+  background: transparent;
+  color: rgba(255, 181, 170, 0.82);
+  box-shadow: none;
+  padding: 0;
+}
+
+.nav-delete-button:hover:not(:disabled) {
+  background: rgba(255, 181, 170, 0.14);
+  color: #ffd3cc;
+}
+
+.nav-delete-button:disabled {
+  color: rgba(255, 255, 255, 0.22);
 }
 
 .asset-status-icon.failed {
@@ -1089,6 +1127,25 @@ button {
 .small-button:hover,
 button:hover {
   background: #247b64;
+}
+
+.topbar > .ghost-button.icon-only {
+  justify-self: end;
+  align-self: start;
+  margin-top: 6px;
+  background: #e9f4f0;
+  color: #287e68;
+  box-shadow: none;
+}
+
+.topbar > .ghost-button.icon-only:hover,
+.topbar > .ghost-button.icon-only:focus-visible {
+  background: #d9eee7;
+  color: #176c58;
+}
+
+.topbar > .ghost-button.icon-only svg {
+  stroke: currentColor;
 }
 
 .section-block {

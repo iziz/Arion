@@ -6,11 +6,12 @@ import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { createQueuedAssetJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
+import { deleteAssetMedia } from "../services/mediaLifecycle";
 import { publishQueueOutbox } from "../services/queueOutboxPublisher";
 import { getTrackingSummary, listTrackingRecords } from "../trackingStore";
 import { isVlmWorkerEnabled } from "../vlmWorkerClient";
 import { createAssetFromUpload, normalizeWorkflowStage } from "../workflows/indexingWorkflow";
-import { getAsset, getIndex, listAssets, listIndexes } from "../store";
+import { deleteAssetCascade, getAsset, getIndex, listAssets, listIndexes } from "../store";
 import type { JobRecord } from "../../shared/types";
 
 type UploadMiddleware = { single(fieldName: string): RequestHandler };
@@ -24,6 +25,28 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const asset = await getAsset(String(req.params.id));
     if (!asset) return sendNotFound(res, "Asset not found");
     res.json(asset);
+  });
+
+  app.delete("/api/assets/:id", async (req, res) => {
+    const asset = await getAsset(String(req.params.id));
+    if (!asset) return sendNotFound(res, "Asset not found");
+    const activeJob = await getActiveAssetJob(asset.id);
+    if (activeJob) {
+      res.status(409).json({
+        error: "Asset cannot be deleted while an indexing job is queued or running.",
+        activeJobId: activeJob.id,
+        activeJobStatus: activeJob.status
+      });
+      return;
+    }
+    const deletion = await deleteAssetCascade(asset.id);
+    if (!deletion) return sendNotFound(res, "Asset not found");
+    const media = await deleteAssetMedia(asset);
+    await recordEvent("system.info", "Asset deleted", {
+      indexId: asset.indexId,
+      payload: { assetId: asset.id, title: asset.title, deleted: deletion.deleted, media }
+    });
+    res.json({ assetId: asset.id, indexId: asset.indexId, deleted: deletion.deleted, media });
   });
 
   app.get("/api/assets/:id/clips", async (req, res) => {
@@ -70,7 +93,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
   });
 
   app.post("/api/assets", upload.single("video"), async (req, res) => {
-    const result = await createAssetFromUpload(req, res, String(req.body.indexId || "default-index"));
+    const result = await createAssetFromUpload(req, res, String(req.body.indexId || ""));
     if (result?.job) await publishQueueOutbox("asset-job", 10);
     if (result) res.status(202).json(result);
   });

@@ -10,6 +10,9 @@ export function isPostgresEnabled() {
 }
 
 export function getPool() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is required. Run through Docker infra or set PostgreSQL connection details explicitly.");
+  }
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,

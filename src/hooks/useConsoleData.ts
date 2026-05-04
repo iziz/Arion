@@ -32,7 +32,7 @@ export function useConsoleData() {
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
   const [sportsKnowledge, setSportsKnowledge] = useState<SportsKnowledgeSnapshot | null>(null);
   const [knowledgeVectorStore, setKnowledgeVectorStore] = useState<KnowledgeVectorStoreStatus | null>(null);
-  const [selectedIndexId, setSelectedIndexId] = useState("default-index");
+  const [selectedIndexId, setSelectedIndexId] = useState("");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const refreshPromise = useRef<Promise<void> | null>(null);
@@ -60,7 +60,7 @@ export function useConsoleData() {
 
       if (nextIndexes) {
         setIndexes(nextIndexes);
-        setSelectedIndexId((current) => (current && nextIndexes.some((index) => index.id === current) ? current : nextIndexes[0]?.id ?? current));
+        setSelectedIndexId((current) => (current && nextIndexes.some((index) => index.id === current) ? current : nextIndexes[0]?.id ?? ""));
       }
       if (nextAssets) {
         setAssets(nextAssets);
@@ -120,7 +120,7 @@ export function useConsoleData() {
         void refresh();
       }, 150);
     };
-    const eventTypes = ["asset.updated", "job.updated", "event.recorded", "outbox.updated", "ask.operation.updated"];
+    const eventTypes = ["asset.updated", "asset.deleted", "index.deleted", "job.updated", "event.recorded", "outbox.updated", "ask.operation.updated"];
     for (const eventType of eventTypes) source.addEventListener(eventType, scheduleRefresh);
     source.onerror = () => {
       setMessage((current) => current || "Realtime updates disconnected; refresh will resume when the server reconnects.");

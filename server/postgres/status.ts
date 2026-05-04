@@ -1,4 +1,4 @@
-import { getPool, getVectorExtensionInstallError, isPgvectorRequired, isVectorExtensionAvailable } from "./connection";
+import { getPool, getVectorExtensionInstallError, isVectorExtensionAvailable } from "./connection";
 import { seedDefaults } from "./defaults";
 import { getMetrics } from "./repository";
 import { ensurePostgresStore, getVectorColumnType } from "./schema";
@@ -43,9 +43,9 @@ export async function getPostgresStatus() {
     operationalState: issues.length === 0 ? "ready" : "degraded",
     postgres: version.rows[0]?.version as string,
     pgvector,
-    pgvectorRequired: isPgvectorRequired(),
+    pgvectorRequired: true,
     pgvectorInstallError: getVectorExtensionInstallError(),
-    vectorSearchMode: isVectorExtensionAvailable() ? "pgvector" : "json-fallback",
+    vectorSearchMode: "pgvector",
     embeddingColumn: vectorTables.find((table) => table.table === "app_vectors")?.columnType ?? null,
     expectedEmbeddingDimensions: getExpectedEmbeddingDimensions(),
     visualEmbeddingColumn: vectorTables.find((table) => table.table === "app_visual_vectors")?.columnType ?? null,
@@ -79,8 +79,6 @@ async function getVectorTableStatus(table: string, expectedColumnType: string, i
     if (columnType !== expectedColumnType) tableIssues.push(`${table}.embedding is ${columnType ?? "missing"}, expected ${expectedColumnType}.`);
     if (!hnswIndex) tableIssues.push(`${indexName} is missing; pgvector search works but may scan more rows.`);
     if (counts.jsonRows > 0 && counts.pgvectorRows === 0) tableIssues.push(`${table} has JSON embeddings but no populated pgvector rows; rebuild vectors for indexed search.`);
-  } else {
-    tableIssues.push(`${table} uses JSON fallback because pgvector is unavailable.`);
   }
   return {
     table,
@@ -91,7 +89,7 @@ async function getVectorTableStatus(table: string, expectedColumnType: string, i
     totalRows: counts.totalRows,
     jsonRows: counts.jsonRows,
     pgvectorRows: counts.pgvectorRows,
-    searchMode: isVectorExtensionAvailable() && columnType === expectedColumnType ? "pgvector" : "json-fallback",
+    searchMode: "pgvector",
     ready: tableIssues.length === 0,
     issues: tableIssues
   };

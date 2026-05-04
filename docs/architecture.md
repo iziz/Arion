@@ -49,8 +49,8 @@ flowchart TB
   Client --> MediaDelivery["Media delivery boundary\nobject storage / CDN / reverse proxy"]
 
   Api --> Services["TypeScript application services\nroutes, workflows, search, knowledge"]
-  Services --> AppState["Application persistence\nPostgreSQL app_* tables\nlocal JSON only when DATABASE_URL is unset"]
-  Services --> QueueOutbox["Transactional queue outbox\napp_queue_outbox / queue-outbox.json"]
+  Services --> AppState["Application persistence\nPostgreSQL app_* tables + pgvector"]
+  Services --> QueueOutbox["Transactional queue outbox\napp_queue_outbox"]
   QueueOutbox --> AskQueue["Redis + BullMQ\nask operation queue"]
   QueueOutbox --> AssetQueue["Redis + BullMQ\nasset job queue"]
 
@@ -155,8 +155,7 @@ flowchart TB
 
   subgraph StorageAndTelemetry["Application state and telemetry sinks"]
     direction LR
-    Persistence["Application persistence adapters\nmetadata, ask operations,\ntracking, vector stores"] --> LocalPersistence["Explicit offline filesystem fallback\n.data/db.json, events.ndjson,\nask/tracking/vector JSON"]
-    Persistence --> PostgresPersistence["Docker PostgreSQL persistence\napp_* tables + pgvector"]
+    Persistence["Application persistence adapters\nmetadata, ask operations,\ntracking, vector stores"] --> PostgresPersistence["Docker PostgreSQL persistence\napp_* tables + pgvector"]
     ObjectStorage["Object-storage media files\n.data/object-storage"]
     Persistence -.->|diagnostic logs only| Observability["Observability sink\nOpenTelemetry SDK, local spans,\nlatency buckets, NDJSON logs"]
     Observability --> LogFiles["Observability log files\n.data/logs/app.ndjson"]
@@ -186,8 +185,10 @@ flowchart TB
 | Ask operation worker | `server/askWorker.ts` | Runs BullMQ worker process, recovers interrupted ask operations, claims queued `AskOperation`s, and executes query/search workflows outside the API process. |
 | Shared contract | `shared/types.ts` | Defines assets, indexes, jobs, timeline segments, local intelligence, ask responses, knowledge, tracking, events, metrics, webhooks, and billing records. |
 | Workflow layer | `server/workflows/*` | Coordinates ingestion/indexing, ask/search, analysis, domain VLM refinement, and diarization retry jobs. |
-| Storage adapter | `server/store.ts` | Selects PostgreSQL when `DATABASE_URL` is set; otherwise uses local JSON files. |
+| Storage adapter | `server/store.ts` | Requires PostgreSQL, delegates to `server/postgresStore.ts`, and fails fast when `DATABASE_URL` is unset. |
 | Postgres adapter | `server/postgres/*` | Creates schema, repositories, vector repositories, status, defaults, and reset logic. |
+| Legacy migration | `scripts/migrate_legacy_to_docker.ts` | One-time migration from earlier local JSON stores and orphan source media into Docker PostgreSQL and the Docker app-data volume. |
+| Video data purge | `scripts/purge_video_data.ts` | Clears asset groups, assets, jobs, ask state, video vectors, tracking records, media files, and Redis queues while preserving knowledge vectors and users. |
 | Local runtime adapters | `server/localModelRuntime.ts`, `server/modelRuntime/*` | Coordinates FFmpeg, ASR, OCR, diarization, audio probing, visual sampling, and Python runtime service calls. |
 | Embedding adapters | `server/localEmbeddingRuntime.ts`, `server/localVisualEmbeddingRuntime.ts` | Calls text and visual embedding runtimes and validates dimensions. |
 | Python runtime service | `scripts/arion_model_runtime_service.py` | FastAPI boundary that exposes ASR, OCR, vision, and embedding runtime endpoints. |
@@ -203,7 +204,7 @@ flowchart TB
 - `dev:api` runs `ARION_DOCKER_INFRA=true tsx watch server/index.ts`.
 - `dev:worker` starts `dev:infra` plus `dev:worker:run`; `dev:worker:run` runs `ARION_DOCKER_INFRA=true tsx watch server/jobWorker.ts`.
 - `dev:ask-worker` starts `dev:infra` plus `dev:ask-worker:run`; `dev:ask-worker:run` runs `ARION_DOCKER_INFRA=true tsx watch server/askWorker.ts`.
-- `dev:web` runs `vite --host 0.0.0.0`.
+- `dev:web` waits for `/api/health`, then runs `vite --host 0.0.0.0` through `dev:web:run`.
 - `worker` and `ask-worker` also start `dev:infra` before running their non-watch worker entrypoints.
 - `infra:up`, `infra:check`, `infra:logs`, and `infra:down` manage the Docker Redis/PostgreSQL infrastructure.
 - `docker:up` runs the containerized web/API/worker stack with Redis and PostgreSQL.
@@ -635,10 +636,10 @@ sequenceDiagram
 
 Asset job durability is split between persisted job records and Redis execution dispatch:
 
-- `JobRecord` is persisted through `store.ts`, backed by local JSON or Postgres.
+- `JobRecord` is persisted through `store.ts` into PostgreSQL.
 - `JobRecord.parameters` stores replay-critical parameters such as the normalized retry stage.
 - `server/services/queueOutboxStore.ts` stores Redis dispatch requests before publication.
-- In Postgres mode, `createQueuedAssetJob` writes the `JobRecord` and `app_queue_outbox` entry in one transaction through `saveJobWithQueueOutbox`.
+- `createQueuedAssetJob` writes the `JobRecord` and `app_queue_outbox` entry in one PostgreSQL transaction through `saveJobWithQueueOutbox`.
 - `server/services/queueOutboxPublisher.ts` publishes pending outbox entries to Redis/BullMQ by `JobRecord.id`.
 - `server/services/redisJobQueue.ts` remains the BullMQ adapter used by the outbox publisher and worker reconciliation.
 - `server/jobWorker.ts` owns long-running job execution outside the Express API process.
@@ -733,12 +734,12 @@ Stage details:
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
 13. `vector-upsert-text`
-   - Writes text timeline vectors to local JSON or Postgres.
+   - Writes text timeline vectors to PostgreSQL/pgvector.
 14. `visual-embedding`
    - `embedKeyframes` calls the Embedding runtime service in OpenCLIP image mode.
    - Visual embedding dimension is validated against `VISUAL_EMBEDDING_DIMENSIONS` or the default `768`.
 15. `vector-upsert-visual`
-   - Writes visual vectors to local JSON or Postgres.
+   - Writes visual vectors to PostgreSQL/pgvector.
 16. `finalize`
    - Saves the asset as `indexed`.
    - Upserts tracking records.
@@ -1050,20 +1051,9 @@ Operational deployments should set `MEDIA_SERVING_MODE=disabled` and serve the o
 
 `server/store.ts` is the main persistence boundary.
 
-When `DATABASE_URL` is set:
+The runtime requires `DATABASE_URL` and delegates metadata, events, billing, users, jobs, ask operations, tracking records, queue outbox entries, and vector records to `server/postgresStore.ts` and `server/postgres/*` repositories.
 
-- the store delegates to `server/postgresStore.ts`
-- Postgres tables are created on demand through `ensurePostgresStore`
-- related operational adapters also delegate through `server/postgresStore.ts` for ask operations and tracking records
-
-When `DATABASE_URL` is unset:
-
-- records are persisted in local JSON files:
-  - `.data/db.json`
-  - `.data/events.ndjson`
-- ask operations and tracking records use their own local JSON files
-
-Local JSON reads detect corrupt JSON, copy a backup with a timestamped suffix, log an error, and throw a repair-required error.
+Earlier local JSON stores are no longer a runtime fallback. They are only read by the explicit one-time migration script, `scripts/migrate_legacy_to_docker.ts`, when legacy development data needs to be imported into Docker PostgreSQL.
 
 ### Postgres Schema
 
@@ -1083,20 +1073,20 @@ Local JSON reads detect corrupt JSON, copy a backup with a timestamped suffix, l
 - `app_tracking_records`
 - `app_schema_migrations`
 
-If the `vector` extension is available:
+`pgvector` is required:
 
 - `app_vectors.embedding` is created as `vector(EMBEDDING_DIMENSIONS)`.
 - `app_knowledge_vectors.embedding` is created as `vector(EMBEDDING_DIMENSIONS)`.
 - `app_visual_vectors.embedding` is created as `vector(VISUAL_EMBEDDING_DIMENSIONS)`.
 - HNSW cosine indexes are attempted for those vector columns.
 
-If `pgvector` is unavailable, embeddings remain queryable through JSON fallback with application-level cosine similarity. If vector dimensions change, the pgvector column is recreated while `embedding_json` is preserved. Search supplements pgvector results with JSON scoring for rows that do not have a populated vector column.
+If `pgvector` is unavailable, schema initialization fails. If vector dimensions change, incompatible embeddings fail insertion/search readiness and must be rebuilt with `npm run embeddings:rebuild` or `npm run indexes:rebuild`.
 
 `GET /api/db/status` reports:
 
 - Postgres readiness and degraded state.
 - pgvector extension version or install error.
-- active vector search mode: `pgvector` or `json-fallback`.
+- active vector search mode: `pgvector`.
 - vector column type, expected type, HNSW index presence, and row counts for each vector table.
 - schema migration records and aggregate metrics.
 
@@ -1104,36 +1094,26 @@ If `pgvector` is unavailable, embeddings remain queryable through JSON fallback 
 
 Text vectors:
 
-- Local file: `.data/vector-store.json`
 - Postgres table: `app_vectors`
 - Built from timeline segment embedding text.
 
 Visual vectors:
 
-- Local file: `.data/visual-vector-store.json`
 - Postgres table: `app_visual_vectors`
 - Built from generated keyframes.
 
 Knowledge vectors:
 
-- Local file: `.data/knowledge-vector-store.json`
 - Postgres table: `app_knowledge_vectors`
 - Built from sports knowledge documents.
 
-Vector search uses cosine similarity. Postgres uses pgvector distance when available and compatible, and uses JSON scoring for fallback rows or environments without pgvector.
+Vector search uses cosine similarity through pgvector distance over compatible vector columns.
 
 ### Tracking Store
 
 `server/trackingStore.ts` stores derived ball/player/link tracking records.
 
-When `DATABASE_URL` is set:
-
-- tracking records are persisted in `app_tracking_records`
-
-When `DATABASE_URL` is unset:
-
-- tracking records are persisted in `.data/tracking-db.json`
-
+Tracking records are persisted in `app_tracking_records`.
 Tracking records are rebuilt from asset timeline vision evidence and can be filtered by asset, segment, or track ID.
 Postgres upserts and rebuilds are wrapped in transactions so a failed rebuild does not leave a partially replaced tracking set committed.
 
@@ -1141,14 +1121,7 @@ Postgres upserts and rebuilds are wrapped in transactions so a failed rebuild do
 
 `server/workflows/ask/operationStore.ts` stores async ask operation state.
 
-When `DATABASE_URL` is set:
-
-- ask operation entries are persisted in `app_ask_operations`
-
-When `DATABASE_URL` is unset:
-
-- ask operation entries are persisted in `.data/ask-operations.json`
-
+Ask operation entries are persisted in `app_ask_operations`.
 The in-memory map remains a process-local cache over persisted operation state. Initial operation creation is persisted before the API returns `202`, later state writes are serialized, and persistence failures are recorded through observability logs. Persisted completed or failed operations can be read after an API restart. Interrupted running operations are reset to `queued` by the ask worker and rerun from the beginning.
 The persisted entry includes the original `AskRequest`, so an ask worker can execute an operation from the durable operation ID without depending on API process memory.
 
@@ -1313,14 +1286,13 @@ On worker startup, `recoverDurableWorkerJobs` scans queued or running jobs left 
 
 ### Ask Operation Durability
 
-Ask operations are stored in an in-memory `Map`, persisted by `server/workflows/ask/operationStore.ts`, and dispatched through the queue outbox before Redis/BullMQ publication.
+Ask operations are cached in an in-memory `Map`, persisted in PostgreSQL by `server/workflows/ask/operationStore.ts`, and dispatched through the queue outbox before Redis/BullMQ publication.
 
 Implications from the code:
 
-- Local mode persists entries to `.data/ask-operations.json`.
-- Postgres mode persists entries to `app_ask_operations`.
+- The persisted source of truth is `app_ask_operations`.
 - The API process persists the original request and a queue outbox entry, then publishes only the `AskOperation.id`.
-- In Postgres mode, `saveAskOperation(..., { queueDispatch: true })` writes `app_ask_operations` and `app_queue_outbox` in one transaction.
+- `saveAskOperation(..., { queueDispatch: true })` writes `app_ask_operations` and `app_queue_outbox` in one PostgreSQL transaction.
 - Redis dispatch failure does not mark a newly created ask operation as failed. The operation remains `queued`, and the outbox entry retains retry state.
 - `server/askWorker.ts` loads the persisted request, runs `runAskOperation`, and persists step/status/result updates.
 - Completed or failed operations can be retrieved after an API restart until they are pruned.
@@ -1346,13 +1318,12 @@ The frontend still performs an initial REST read for full state hydration. Conti
 | --- | --- |
 | API process | Express process for HTTP, local media serving when enabled, route handling, queue outbox writes, immediate outbox publish attempts, and SSE fanout. |
 | Asset jobs | Redis/BullMQ execution queue plus separate `server/jobWorker.ts` process. |
-| Asset queue durability | `JobRecord` plus queue outbox are the source of truth. Redis/BullMQ is the execution queue. Postgres mode writes the job and outbox in one transaction. Worker startup publishes pending outbox entries and reconciles queued records. |
+| Asset queue durability | `JobRecord` plus queue outbox are the source of truth. Redis/BullMQ is the execution queue. PostgreSQL writes the job and outbox in one transaction. Worker startup publishes pending outbox entries and reconciles queued records. |
 | Asset checkpoint durability | `JobRecord.stageCheckpoints` records checkpoint status. Interrupted indexing jobs preserve checkpoints and resume from the failed or interrupted stage when outputs are reusable. |
 | Ask operations | Queue outbox plus Redis/BullMQ execution queue and separate `server/askWorker.ts` process. Persisted `AskOperation` entries include the original request. Running execution restarts from the beginning after worker recovery. |
-| Metadata durability | PostgreSQL in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
-| Vector durability | PostgreSQL + pgvector in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
-| Tracking durability | PostgreSQL in Docker development/operations; local JSON only when `DATABASE_URL` is deliberately unset. |
-| Local JSON writes | Serialized through promise chains in each store module. |
+| Metadata durability | PostgreSQL in Docker development/operations. |
+| Vector durability | PostgreSQL + pgvector in Docker development/operations. |
+| Tracking durability | PostgreSQL in Docker development/operations. |
 | Runtime parallelism | Asset job worker concurrency is controlled by `JOB_WORKER_CONCURRENCY`; some local model stages can also run concurrently based on `LOCAL_MODEL_HEAVY_CONCURRENCY`. |
 | Frontend refresh | SSE event push through `/api/events/stream`; initial hydration remains REST. |
 
@@ -1371,12 +1342,12 @@ Selected environment variables used by the implementation:
 | `ASK_QUEUE_NAME` | BullMQ queue name for ask operation execution, default `arion-ask-operations`. BullMQ queue names cannot contain `:`, so configured values are normalized by replacing `:` with `-`. |
 | `ASK_WORKER_CONCURRENCY` | Number of ask operations an ask worker can run concurrently, default `2`. |
 | `ASK_QUEUE_RECONCILE_MS` | Ask worker interval for reconciling queued `AskOperation`s into Redis, default `15000`. |
-| `DATABASE_URL` | Enables Postgres storage; Docker-backed host development defaults to `postgres://video_intelligence:video_intelligence@127.0.0.1:15432/video_intelligence`. |
+| `DATABASE_URL` | Required Postgres storage URL; Docker-backed host development defaults to `postgres://video_intelligence:video_intelligence@127.0.0.1:15432/video_intelligence`. |
 | `POSTGRES_APPLICATION_NAME` | Sets the Postgres connection application name, default `arion`. |
 | `POSTGRES_POOL_MAX` | Sets the Node `pg` pool max size, default `10`. |
 | `POSTGRES_CONNECTION_TIMEOUT_MS` | Sets Postgres connection timeout, default `5000`. |
 | `POSTGRES_IDLE_TIMEOUT_MS` | Sets idle connection timeout, default `30000`. |
-| `POSTGRES_REQUIRE_PGVECTOR` | Fails startup when pgvector is unavailable if set to `true`. |
+| `POSTGRES_REQUIRE_PGVECTOR` | Expected to be `true`; pgvector is required for runtime schema initialization and vector search. |
 | `PGSSLMODE` / `POSTGRES_SSLMODE` | Enables Postgres TLS when set to `require`. |
 | `API_KEYS` | Enables API-key auth when non-empty. |
 | `RATE_LIMIT_PER_MINUTE` | Sets in-memory rate limit, default `600`. |
@@ -1423,7 +1394,7 @@ The repo includes TypeScript and Python maintenance scripts:
 
 - Postgres:
   - `scripts/postgres_check.ts`
-  - `scripts/migrate_to_postgres.ts`
+  - `scripts/migrate_legacy_to_docker.ts`
   - `scripts/postgres_seed.ts`
   - `scripts/postgres_reset.ts`
 - Knowledge import:
@@ -1467,7 +1438,7 @@ These are direct consequences of the code shape:
 - Ask operations are worker-backed and durable at the operation-record level, but ask execution is not checkpoint-resume based; interrupted running ask operations are reset to queued and rerun from the beginning.
 - Local `/media` serving is explicit and configurable. Production-style deployments should set `MEDIA_SERVING_MODE=disabled` and serve media outside the API process.
 - Frontend progress and ask updates are pushed through in-process SSE. Multi-instance production deployments need shared pub/sub or sticky routing for cross-process fanout.
-- Postgres enables durable metadata/vector storage. Queue recovery can also read local JSON mode, but Postgres is the stronger operational backing store.
+- PostgreSQL/pgvector is the required durable metadata/vector storage boundary.
 - API key auth is optional and disabled when `API_KEYS` is unset.
 - CORS is enabled globally.
 - Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.

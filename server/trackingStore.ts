@@ -1,53 +1,25 @@
-import path from "node:path";
 import type { AssetRecord, TimelineSegment, TrackingRecord, TrackingSummary } from "../shared/types";
 import { trustedDomainEvents } from "./evidenceTrust";
-import { readJsonFile, writeJsonFile } from "./jsonFileStore";
 import * as pgStore from "./postgresStore";
 
-type TrackingDatabase = {
-  records: TrackingRecord[];
-};
-
-const dataDir = path.resolve(".data");
-const trackingPath = path.join(dataDir, "tracking-db.json");
-
-let trackingDatabase: TrackingDatabase = { records: [] };
-let loaded = false;
-let writeChain = Promise.resolve();
-
 export async function ensureTrackingStore() {
-  if (pgStore.isPostgresEnabled()) return;
-  if (loaded) return;
-  trackingDatabase = normalizeTrackingDatabase(await readJsonFile<Partial<TrackingDatabase>>(trackingPath, () => ({ records: [] }), "tracking-store"));
-  loaded = true;
+  assertPostgresRuntime();
+  await pgStore.ensurePostgresStore();
 }
 
 export async function upsertAssetTracking(asset: AssetRecord) {
-  const records = buildTrackingRecords(asset);
-  if (pgStore.isPostgresEnabled()) return pgStore.upsertTrackingRecords(asset.id, records);
-  await ensureTrackingStore();
-  trackingDatabase.records = [...trackingDatabase.records.filter((record) => record.assetId !== asset.id), ...records];
-  await persistTrackingStore();
-  return records;
+  assertPostgresRuntime();
+  return pgStore.upsertTrackingRecords(asset.id, buildTrackingRecords(asset));
 }
 
 export async function rebuildTrackingStore(assets: AssetRecord[]) {
-  const records = assets.flatMap((asset) => buildTrackingRecords(asset));
-  if (pgStore.isPostgresEnabled()) return pgStore.rebuildTrackingRecords(records);
-  await ensureTrackingStore();
-  trackingDatabase.records = records;
-  await persistTrackingStore();
-  return trackingDatabase.records;
+  assertPostgresRuntime();
+  return pgStore.rebuildTrackingRecords(assets.flatMap((asset) => buildTrackingRecords(asset)));
 }
 
 export async function listTrackingRecords(filters: { assetId?: string; segmentId?: string; trackId?: string } = {}) {
-  if (pgStore.isPostgresEnabled()) return pgStore.listTrackingRecords(filters);
-  await ensureTrackingStore();
-  return trackingDatabase.records
-    .filter((record) => !filters.assetId || record.assetId === filters.assetId)
-    .filter((record) => !filters.segmentId || record.segmentId === filters.segmentId)
-    .filter((record) => !filters.trackId || record.trackId === filters.trackId || record.linkedTrackId === filters.trackId)
-    .sort((a, b) => a.start - b.start || a.trackId.localeCompare(b.trackId));
+  assertPostgresRuntime();
+  return pgStore.listTrackingRecords(filters);
 }
 
 export async function getTrackingSummary(assetId?: string): Promise<TrackingSummary> {
@@ -148,13 +120,8 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
   return records;
 }
 
-function normalizeTrackingDatabase(value: Partial<TrackingDatabase>): TrackingDatabase {
-  return {
-    records: Array.isArray(value.records) ? value.records : []
-  };
-}
-
-async function persistTrackingStore() {
-  writeChain = writeChain.then(() => writeJsonFile(trackingPath, trackingDatabase));
-  await writeChain;
+function assertPostgresRuntime() {
+  if (!pgStore.isPostgresEnabled()) {
+    throw new Error("PostgreSQL tracking persistence is required. Set DATABASE_URL or run through Docker infra.");
+  }
 }

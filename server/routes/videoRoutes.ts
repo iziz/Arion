@@ -18,7 +18,7 @@ export function registerVideoRoutes(app: Express, upload: UploadMiddleware) {
   });
 
   app.post("/api/videos", upload.single("video"), async (req, res) => {
-    const result = await createAssetFromUpload(req, res, String(req.body.indexId || "default-index"));
+    const result = await createAssetFromUpload(req, res, String(req.body.indexId || ""));
     if (result?.job) await publishQueueOutbox("asset-job", 10);
     if (result) res.status(202).json(result);
   });

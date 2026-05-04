@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import type { AskOperation, AskResponse } from "../../../shared/types";
-import { readJsonFile, writeJsonFile } from "../../jsonFileStore";
 import { logJson } from "../../observability";
 import * as pgStore from "../../postgresStore";
 import { createAskOperationOutboxEntry, saveAskOperationWithQueueOutbox } from "../../services/queueOutboxStore";
@@ -9,7 +7,6 @@ import { publishRealtimeEvent } from "../../services/realtimeEvents";
 import type { AskOperationEntry, AskRequest } from "./types";
 
 const askOperations = new Map<string, AskOperationEntry>();
-const askOperationPath = path.resolve(".data", "ask-operations.json");
 let loaded = false;
 let writeChain = Promise.resolve();
 
@@ -36,11 +33,11 @@ export function createAskOperation(request: AskRequest) {
 export async function saveAskOperation(entry: AskOperationEntry, options: { queueDispatch?: boolean } = {}) {
   askOperations.set(entry.operation.id, entry);
   const snapshot = cloneAskOperationEntry(entry);
-  if (options.queueDispatch && pgStore.isPostgresEnabled()) {
+  assertPostgresRuntime();
+  if (options.queueDispatch) {
     await saveAskOperationWithQueueOutbox(snapshot, createAskOperationOutboxEntry(entry.operation.id));
   } else {
     await persistAskOperation(snapshot);
-    if (options.queueDispatch) await saveAskOperationWithQueueOutbox(snapshot, createAskOperationOutboxEntry(entry.operation.id));
   }
   publishAskOperation(entry);
 }
@@ -142,12 +139,8 @@ async function refreshAskOperationStore() {
 }
 
 async function persistAskOperation(entry: AskOperationEntry) {
-  if (pgStore.isPostgresEnabled()) {
-    await pgStore.upsertAskOperationEntry(entry);
-    return;
-  }
-  if (!loaded) return;
-  await writeJsonFile(askOperationPath, Array.from(askOperations.values()));
+  assertPostgresRuntime();
+  await pgStore.upsertAskOperationEntry(entry);
 }
 
 async function queuePersistAskOperation(entry: AskOperationEntry) {
@@ -163,11 +156,8 @@ async function queuePersistAskOperation(entry: AskOperationEntry) {
 async function deletePersistedAskOperations(ids: string[]) {
   if (ids.length === 0) return;
   const deleteTask = writeChain.then(async () => {
-    if (pgStore.isPostgresEnabled()) {
-      await pgStore.deleteAskOperationEntries(ids);
-      return;
-    }
-    await writeJsonFile(askOperationPath, Array.from(askOperations.values()));
+    assertPostgresRuntime();
+    await pgStore.deleteAskOperationEntries(ids);
   });
   writeChain = deleteTask.catch((error) => {
     logJson("error", "ask.operation.prune", "Failed to prune persisted ask operations", {
@@ -183,9 +173,8 @@ function cloneAskOperationEntry(entry: AskOperationEntry): AskOperationEntry {
 }
 
 async function mergePersistedAskOperationEntries() {
-  const entries = pgStore.isPostgresEnabled()
-    ? await pgStore.listAskOperationEntries()
-    : await readJsonFile<AskOperationEntry[]>(askOperationPath, () => [], "ask-operations");
+  assertPostgresRuntime();
+  const entries = await pgStore.listAskOperationEntries();
   for (const entry of entries) {
     const normalized = normalizeAskOperationEntry(entry);
     if (!normalized) continue;
@@ -193,6 +182,12 @@ async function mergePersistedAskOperationEntries() {
     if (!current || new Date(normalized.operation.updatedAt).getTime() >= new Date(current.operation.updatedAt).getTime()) {
       askOperations.set(normalized.operation.id, normalized);
     }
+  }
+}
+
+function assertPostgresRuntime() {
+  if (!pgStore.isPostgresEnabled()) {
+    throw new Error("PostgreSQL ask operation persistence is required. Set DATABASE_URL or run through Docker infra.");
   }
 }
 

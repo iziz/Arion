@@ -8,7 +8,7 @@ import { rebuildVectorStore } from "../localVectorStore";
 import { rebuildVisualVectorStore } from "../localVisualVectorStore";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../modelCapabilities";
 import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, spotSoccerNetActions } from "../soccernet";
-import { createDefaultIndex, listAssets, listIndexes, saveAsset, saveIndex } from "../store";
+import { listAssets, listIndexes, saveAsset, saveIndex } from "../store";
 import { rebuildTrackingStore, upsertAssetTracking } from "../trackingStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
 import { enrichDomainTimeline } from "../workflows/indexingWorkflow";
@@ -30,7 +30,8 @@ export async function rebuildVectorStores() {
   const refreshed = [];
   const visualRecords = [];
   for (const asset of indexed) {
-    const index = indexes.find((item) => item.id === asset.indexId) ?? createDefaultIndex();
+    const index = indexes.find((item) => item.id === asset.indexId);
+    if (!index) continue;
     const sceneTimeline = asset.timeline.map((segment) => withSceneData(asset, segment));
     const existingKeyframes = asset.keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId);
     const keyframes =

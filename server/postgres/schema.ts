@@ -13,7 +13,9 @@ import { seedDefaults } from "./defaults";
 import { getExpectedEmbeddingDimensions, getExpectedVisualEmbeddingDimensions } from "./vectorUtils";
 
 export async function ensurePostgresStore() {
-  if (!isPostgresEnabled()) return false;
+  if (!isPostgresEnabled()) {
+    throw new Error("DATABASE_URL is required. Runtime persistence requires PostgreSQL.");
+  }
   if (isPostgresInitialized()) return true;
   const db = getPool();
   setVectorExtensionInstallError(null);
@@ -25,8 +27,9 @@ export async function ensurePostgresStore() {
   const vectorType = await db.query("select to_regtype('vector') as type");
   const vectorExtensionAvailable = Boolean(vectorType.rows[0]?.type);
   setVectorExtensionAvailable(vectorExtensionAvailable);
-  if (!vectorExtensionAvailable && isPgvectorRequired()) {
-    throw new Error("POSTGRES_REQUIRE_PGVECTOR is enabled, but the pgvector extension is not available.");
+  if (!vectorExtensionAvailable) {
+    const requirement = isPgvectorRequired() ? "POSTGRES_REQUIRE_PGVECTOR is enabled" : "pgvector is required";
+    throw new Error(`${requirement}, but the pgvector extension is not available.`);
   }
 
   await db.query(`

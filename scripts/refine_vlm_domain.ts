@@ -4,7 +4,7 @@ import { embedTimelineSegments } from "../server/localEmbeddingRuntime";
 import { refineSportsDomainTimelineWithVlm } from "../server/vlmWorkerClient";
 import { upsertAssetVectors } from "../server/localVectorStore";
 import { upsertAssetTracking } from "../server/trackingStore";
-import { createDefaultIndex, listAssets, listIndexes, saveAsset } from "../server/store";
+import { listAssets, listIndexes, saveAsset } from "../server/store";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../shared/types";
 
 async function main() {
@@ -12,7 +12,11 @@ async function main() {
   const indexedAssets = assets.filter((asset) => asset.timeline.length > 0);
   console.log(`Found ${indexedAssets.length} indexed assets with timelines.`);
   for (const asset of indexedAssets) {
-    const index = indexes.find((item) => item.id === asset.indexId) ?? createDefaultIndex();
+    const index = indexes.find((item) => item.id === asset.indexId);
+    if (!index) {
+      console.log(`skip ${asset.id} ${asset.title} - missing asset group ${asset.indexId}`);
+      continue;
+    }
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
       console.log(`skip ${asset.id} ${asset.title} - sports event VLM refinement requires Sports domain indexing`);
       continue;

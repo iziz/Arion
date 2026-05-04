@@ -20,7 +20,7 @@ import { upsertAssetTracking } from "../trackingStore";
 import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync } from "../observability";
 import { normalizeUploadedText } from "../textEncoding";
-import { createDefaultIndex, getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
+import { getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
 import { createQueuedAssetJob, updateAsset, updateJob } from "../services/jobState";
 import {
   completeJobStageCheckpoint,
@@ -44,10 +44,6 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
     return null;
   }
   let index = await getIndex(indexId);
-  if (!index && indexId === "default-index") {
-    index = createDefaultIndex();
-    await saveIndex(index);
-  }
   if (!index) {
     await discardUploadTempFile(req.file);
     res.status(404).json({ error: "Index not found" });
@@ -161,7 +157,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       await updateJob(jobId, { stage: "local-model-runtime", progress: 40 }, "Running local ASR/OCR/visual model runtime");
       const runtimeInput = await getAsset(assetId);
       if (!runtimeInput) throw new Error("Asset not found before local model runtime.");
-      const runtimeIndex = (await getIndex(runtimeInput.indexId)) ?? createDefaultIndex();
+      const runtimeIndex = await requireIndex(runtimeInput.indexId);
       const runtimePolicy = resolveCapabilityPolicy(runtimeIndex);
       const intelligence = await traceAsync(
         "stage.local_model_runtime",
@@ -193,7 +189,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
 
       const refreshed = await getAsset(assetId);
       if (!refreshed) throw new Error("Asset not found before timeline build.");
-      const index = (await getIndex(refreshed.indexId)) ?? createDefaultIndex();
+      const index = await requireIndex(refreshed.indexId);
       const embeddingIndex =
         index.models.embedding === getEmbeddingModelName()
           ? index
@@ -236,7 +232,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       return { refreshed, embeddingIndex, capabilityPolicy: resolveCapabilityPolicy(embeddingIndex), output, keyframes, thumbnailTimeline };
     }, async () => {
       const asset = await requireAsset(assetId);
-      const index = (await getIndex(asset.indexId)) ?? createDefaultIndex();
+      const index = await requireIndex(asset.indexId);
       return {
         refreshed: asset,
         embeddingIndex: index,
@@ -800,6 +796,12 @@ async function requireAsset(assetId: string) {
   const asset = await getAsset(assetId);
   if (!asset) throw new Error(`Asset not found: ${assetId}`);
   return asset;
+}
+
+async function requireIndex(indexId: string) {
+  const index = await getIndex(indexId);
+  if (!index) throw new Error(`Index not found: ${indexId}`);
+  return index;
 }
 
 async function assetHasProbeMetadata(assetId: string) {

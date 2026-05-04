@@ -30,7 +30,10 @@ export {
   saveEvent,
   saveIndex,
   saveJob,
-  saveWebhook
+  saveUser,
+  saveWebhook,
+  deleteAssetCascade,
+  deleteIndexCascade
 } from "./postgres/repository";
 export { ensurePostgresStore } from "./postgres/schema";
 export { getPostgresStatus, resetPostgresStore } from "./postgres/status";
