@@ -39,6 +39,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const hasTimeline = asset.timeline.length > 0;
   const hasDomainEvents = asset.timeline.some((segment) => (segment.domain?.events.length ?? 0) > 0);
   const domainEventCount = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
+  const videoVlmSummary = getVideoVlmSummary(asset);
   const domainVlmSummary = getDomainVlmSummary(asset);
   const domainIndexingEnabled = Boolean(index?.domainIndexing?.enabled && index.domainIndexing.groups.length > 0);
   const isFootballDomain = Boolean(index?.domainIndexing?.groups.includes("sports.football"));
@@ -48,6 +49,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const visualEmbeddingTrace = findTrace(traces, "visual-embedding:");
   const visualEmbeddingUnavailableTrace = findTrace(traces, "visual-embedding-unavailable:");
   const visualUnavailableTrace = findTrace(traces, "visual-unavailable:");
+  const videoVlmTrace = findTrace(traces, "video-vlm:");
+  const videoVlmUnavailableTrace = findTrace(traces, "video-vlm-unavailable:");
   const detectorTrace = findTrace(traces, "vision-detector:");
   const detectorUnavailableTrace = findTrace(traces, "vision-detector-unavailable:");
   const trackerTrace = findTrace(traces, "vision-tracker:");
@@ -93,7 +96,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const visualRuntimeWaitingForMerge = localRuntimeInProgress && !visualDone && (visualRuntimeStatus === "succeeded" || visualRuntimeStatus === "failed");
   const scenePassCompleted = assetIndexingInProgress && activeJobProgress >= 72;
   const timelinePassCompleted = assetIndexingInProgress && activeJobProgress >= 74;
-  const keyframesPassCompleted = assetIndexingInProgress && activeJobProgress >= 78;
+  const keyframesPassCompleted = assetIndexingInProgress && activeJobProgress >= 76;
+  const videoVlmPassCompleted = assetIndexingInProgress && activeJobProgress >= 78;
   const detectorPassCompleted = assetIndexingInProgress && activeJobProgress >= 80;
   const trackerPassCompleted = assetIndexingInProgress && activeJobProgress >= 81;
   const soccerNetPassCompleted = assetIndexingInProgress && activeJobProgress >= 82;
@@ -101,10 +105,12 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const visualEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 96;
 
   const detectorFailed = isFailed && /visionDetector|Detector/i.test(failureMessage);
+  const videoVlmFailed = isFailed && /videoVlmAnalysis|Video VLM|video-vlm/i.test(failureMessage);
   const trackerFailed = isFailed && /visionTracker|Tracker/i.test(failureMessage);
   const soccerNetFailed = isFailed && /soccerNetActionSpotting|SoccerNet/i.test(failureMessage);
-  const domainVlmFailed = isFailed && /domainVlmRefinement|VLM_WORKER_URL|VLM/i.test(failureMessage);
+  const domainVlmFailed = isFailed && /domainVlmRefinement|Sports event VLM|domain-vlm/i.test(failureMessage);
 
+  const videoVlmDisabled = index?.capabilityPolicy?.videoVlmAnalysis === "disabled";
   const detectorDisabled = index?.capabilityPolicy?.visionDetector === "disabled";
   const trackerDisabled = index?.capabilityPolicy?.visionTracker === "disabled";
   const soccerNetDisabled = index?.capabilityPolicy?.soccerNetActionSpotting === "disabled" || !isFootballDomain;
@@ -409,6 +415,41 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         : undefined
     },
     {
+      id: "videoVlm",
+      label: "Video VLM analysis",
+      detail: videoVlmSummary
+        ? videoVlmSummary
+        : activeJobStage === "video-vlm"
+          ? "Analyzing timeline keyframes"
+          : videoVlmTrace
+            ? formatVideoVlmTrace(videoVlmTrace)
+            : videoVlmUnavailableTrace
+              ? skipped(compactTraceFailure(videoVlmUnavailableTrace))
+              : videoVlmDisabled
+                ? skipped(`video VLM analysis is ${index?.capabilityPolicy?.videoVlmAnalysis ?? "disabled"} in the asset group capability policy`)
+                : videoVlmFailed
+                  ? failureMessage
+                  : videoVlmPassCompleted
+                    ? waitingForIndexedAssetSave("Video VLM analysis")
+                    : isIndexed
+                      ? skipped("indexing finished without stored video VLM scene analysis")
+                      : "Waiting for video VLM analysis",
+      state: videoVlmSummary || videoVlmTrace
+        ? "done"
+        : videoVlmFailed
+          ? "error"
+          : videoVlmUnavailableTrace || videoVlmDisabled
+            ? "skipped"
+            : activeJobStage === "video-vlm"
+              ? "active"
+              : videoVlmPassCompleted || hasActiveJob
+                ? "waiting"
+                : isIndexed
+                  ? "skipped"
+                  : "waiting",
+      trace: compactModelTrace(videoVlmTrace ?? videoVlmUnavailableTrace)
+    },
+    {
       id: "detector",
       label: "Vision detector",
       detail: detectorTrace
@@ -639,6 +680,20 @@ function getDomainVlmSummary(asset: AssetRecord) {
   return `VLM ${counts.refined}/${attempted} refined${counts.invalid ? `, ${counts.invalid} invalid` : ""}${counts.failed ? `, ${counts.failed} failed` : ""}`;
 }
 
+function getVideoVlmSummary(asset: AssetRecord) {
+  const counts = asset.timeline.reduce(
+    (sum, segment) => {
+      const status = segment.sceneData?.vlm?.status;
+      if (status) sum[status] += 1;
+      return sum;
+    },
+    { described: 0, invalid: 0, failed: 0, skipped: 0 }
+  );
+  const attempted = counts.described + counts.invalid + counts.failed;
+  if (attempted === 0) return "";
+  return `VLM ${counts.described}/${attempted} described${counts.invalid ? `, ${counts.invalid} invalid` : ""}${counts.failed ? `, ${counts.failed} failed` : ""}`;
+}
+
 function getFlowStepServerProgress(step: Omit<FlowStep, "progress" | "retryStage">, job: JobRecord | null) {
   if (step.state !== "active") return undefined;
   if (job?.status !== "queued" && job?.status !== "running") return undefined;
@@ -712,10 +767,7 @@ function getDomainFlowState({
 
 function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, asset: AssetRecord, job: JobRecord | null) {
   if (step.state === "done") return 100;
-  if (step.state === "waiting") {
-    if (step.detail.includes("waiting for local runtime merge") || step.detail.includes("waiting for indexed asset record save")) return 95;
-    return 0;
-  }
+  if (step.state === "waiting") return null;
   if (step.state === "skipped") return null;
   if (step.state === "error") return null;
 
@@ -741,7 +793,8 @@ function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, as
     visual: [38, 72],
     scene: [68, 72],
     timeline: [68, 74],
-    keyframes: [72, 78],
+    keyframes: [72, 76],
+    videoVlm: [76, 78],
     detector: [78, 80],
     tracker: [80, 81],
     soccernet: [80, 82],
@@ -839,6 +892,11 @@ function formatTrackerTrace(trace: string) {
   return [provider, tracker, countLabel(segments, "tracked segment")].filter(Boolean).join(" · ");
 }
 
+function formatVideoVlmTrace(trace: string) {
+  const [model, described] = trace.slice("video-vlm:".length).split(":");
+  return [model, described ? `${described} described` : ""].filter(Boolean).join(" · ");
+}
+
 function formatSoccerNetTrace(trace: string) {
   const [model, spots] = trace.slice("soccernet-action:".length).split(":");
   return [model, countLabel(spots, "spot")].filter(Boolean).join(" · ");
@@ -872,6 +930,7 @@ function getRetryStage(stepId: string) {
     scene: "timeline",
     timeline: "timeline",
     keyframes: "timeline",
+    videoVlm: "videoVlm",
     detector: "visual",
     tracker: "visual",
     soccernet: "domain",

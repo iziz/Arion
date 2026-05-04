@@ -57,6 +57,7 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
         </div>
         <div className="stage-options" aria-label="Model capability policy">
           <CapabilitySelect name="capabilityWhisperX" label="WhisperX diarization" value={policy?.whisperXDiarization ?? "optional"} />
+          <CapabilitySelect name="capabilityVideoVlm" label="Video VLM analysis" value={policy?.videoVlmAnalysis ?? "optional"} />
           <CapabilitySelect name="capabilityVisionDetector" label="Vision detector" value={policy?.visionDetector ?? "optional"} />
           <CapabilitySelect name="capabilityVisionTracker" label="Vision tracker" value={policy?.visionTracker ?? "optional"} />
           <CapabilitySelect name="capabilitySoccerNetAction" label="SoccerNet action spotting" value={policy?.soccerNetActionSpotting ?? "optional"} />
@@ -226,8 +227,8 @@ export function AssetFlow({
     },
     {
       label: "3. Scene and vision evidence",
-      detail: "Build scene windows, keyframes, detector evidence, and tracker evidence.",
-      steps: flow.filter((step) => step.id === "visual" || step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "detector" || step.id === "tracker")
+      detail: "Build scene windows, keyframes, VLM scene evidence, detector evidence, and tracker evidence.",
+      steps: flow.filter((step) => step.id === "visual" || step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "videoVlm" || step.id === "detector" || step.id === "tracker")
     },
     {
       label: "4. Domain evidence",
@@ -323,7 +324,8 @@ export function FlowNode({
   onRetry: (step: FlowStep) => void;
   children?: ReactNode;
 }) {
-  const progressLabel = step.progress === null ? step.state : `${step.progress}%`;
+  const progressLabel = typeof step.progress === "number" ? `${step.progress}%` : null;
+  const progressAriaLabel = progressLabel ? `${step.label} ${progressLabel}` : `${step.label} ${step.state}`;
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -351,12 +353,12 @@ export function FlowNode({
           <span className={`node-quality ${qualityToneForStep(step)}`}>Quality: {qualityLabelForStep(step)}</span>
           <span>{searchImpactForStep(step)}</span>
         </div>
-        <div className="node-progress" aria-label={`${step.label} ${progressLabel}`}>
+        <div className="node-progress" aria-label={progressAriaLabel}>
           <span style={{ width: `${step.progress ?? 0}%` }} />
         </div>
         <div className="node-actions">
           <span className="node-state">{step.state}</span>
-          <span className="node-percent">{progressLabel}</span>
+          {progressLabel && <span className="node-percent">{progressLabel}</span>}
           <span className="node-open">{expanded ? "Hide" : "View"}</span>
           <button
             type="button"
@@ -589,6 +591,7 @@ function getWorkflowStageAliases(stepId: string) {
     scene: ["timeline", "scene-detection"],
     timeline: ["timeline"],
     keyframes: ["keyframes"],
+    videoVlm: ["video-vlm"],
     detector: ["vision-detection"],
     tracker: ["vision-tracking"],
     soccernet: ["soccernet-action"],
@@ -615,6 +618,7 @@ function getWorkflowLogTokens(stepId: string) {
     scene: ["scene"],
     timeline: ["timeline"],
     keyframes: ["keyframe"],
+    videoVlm: ["video-vlm", "vlm scene"],
     detector: ["vision-detection", "detecting players", "detector"],
     tracker: ["vision-tracking", "tracking players", "tracker"],
     soccernet: ["soccernet", "action spotting"],
@@ -666,6 +670,7 @@ function searchImpactForStep(step: FlowStep) {
     const skippedImpacts: Record<string, string> = {
       visual: "Search impact: visual unavailable",
       keyframes: "Search impact: thumbnails unavailable",
+      videoVlm: "Search impact: VLM scene captions not used",
       detector: "Search impact: detector not used",
       tracker: "Search impact: tracker not used",
       domain: "Search impact: domain layer unavailable",
@@ -688,6 +693,7 @@ function searchImpactForStep(step: FlowStep) {
     scene: "Search impact: moment boundaries",
     timeline: "Search impact: moment retrieval",
     keyframes: "Search impact: thumbnails",
+    videoVlm: "Search impact: VLM scene captions",
     detector: "Search impact: object evidence",
     tracker: "Search impact: motion evidence",
     soccernet: "Search impact: football actions",
@@ -709,6 +715,7 @@ function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetReco
   if (stepId === "speakers") return <SpeakerResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "ocr") return <OcrResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "visual" || stepId === "keyframes") return <VisualResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "videoVlm") return <VideoVlmResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "detector" || stepId === "tracker" || stepId === "soccernet") return <ModelTraceResult asset={asset} step={step} />;
   if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
@@ -1116,6 +1123,68 @@ function VisualUsageCard({ title, value, detail }: { title: string; value: strin
   );
 }
 
+function VideoVlmResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  const vlmSegments = asset.timeline.filter((segment) => segment.sceneData?.vlm);
+  const describedCount = vlmSegments.filter((segment) => segment.sceneData?.vlm?.status === "described").length;
+  const invalidCount = vlmSegments.filter((segment) => segment.sceneData?.vlm?.status === "invalid").length;
+  const failedCount = vlmSegments.filter((segment) => segment.sceneData?.vlm?.status === "failed").length;
+  const skippedCount = vlmSegments.filter((segment) => segment.sceneData?.vlm?.status === "skipped").length;
+  const averageConfidence = averageNumber(vlmSegments.map((segment) => segment.sceneData?.vlm?.confidence ?? 0).filter((value) => value > 0));
+  const topLabels = topCounts(vlmSegments.flatMap((segment) => segment.sceneData?.vlm?.labels ?? [])).slice(0, 4);
+  const topObjects = topCounts(vlmSegments.flatMap((segment) => segment.sceneData?.vlm?.objects ?? [])).slice(0, 4);
+  return (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Described", value: describedCount.toString(), tone: describedCount > 0 ? "good" : "neutral" },
+        { label: "Invalid", value: invalidCount.toString(), tone: invalidCount > 0 ? "warning" : "neutral" },
+        { label: "Failed", value: failedCount.toString(), tone: failedCount > 0 ? "bad" : "neutral" },
+        { label: "Skipped", value: skippedCount.toString(), tone: skippedCount > 0 ? "warning" : "neutral" },
+        { label: "Attempted", value: vlmSegments.length.toString(), tone: "neutral" }
+      ]}
+      usedBy={["scene caption search", "semantic timeline evidence", "analysis grounding", "domain-independent video understanding"]}
+      quality={[
+        { label: "Confidence", value: averageConfidence === null ? "unknown" : `${Math.round(averageConfidence * 100)}% avg`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" },
+        { label: "Top labels", value: topLabels.length ? topLabels.map(([label, count]) => `${label} ${count}`).join(" · ") : "none", tone: topLabels.length ? "good" : "neutral" },
+        { label: "Top objects", value: topObjects.length ? topObjects.map(([label, count]) => `${label} ${count}`).join(" · ") : "none", tone: topObjects.length ? "good" : "neutral" }
+      ]}
+      inspect={
+        <div className="workflow-result-list">
+          {vlmSegments.slice(0, 12).map((segment) => {
+            const vlm = segment.sceneData?.vlm;
+            const imagePath = segment.thumbnailPath ?? segment.sceneData?.image.thumbnailPath ?? segment.sceneData?.image.framePath ?? null;
+            const src = imagePath ? mediaPath(imagePath) : null;
+            const detail = [
+              vlm?.status,
+              vlm?.model,
+              vlm ? `${Math.round(vlm.confidence * 100)}%` : "",
+              vlm?.sceneType ? `scene: ${vlm.sceneType}` : "",
+              vlm?.actions.length ? `actions: ${vlm.actions.slice(0, 3).join(", ")}` : "",
+              vlm?.objects.length ? `objects: ${vlm.objects.slice(0, 3).join(", ")}` : ""
+            ].filter(Boolean).join(" · ");
+            return (
+              <button
+                key={`${segment.id}-video-vlm`}
+                type="button"
+                aria-label={`Play VLM segment at ${formatDuration(segment.start)}`}
+                onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: vlm?.caption || "Video VLM segment", segmentId: segment.id })}
+              >
+                {src ? <img src={src} alt="" /> : <i className="timeline-thumbnail-placeholder">No image</i>}
+                <div>
+                  <strong>{vlm?.caption || vlm?.error || "No VLM caption stored"}</strong>
+                  <span>{formatDuration(segment.start)}-{formatDuration(segment.end)} · {detail}</span>
+                  {vlm?.visibleText.length ? <span>Visible text: {vlm.visibleText.slice(0, 3).join(" · ")}</span> : null}
+                </div>
+              </button>
+            );
+          })}
+          {vlmSegments.length === 0 && <EmptyState text="No video VLM scene analysis is stored." />}
+        </div>
+      }
+      rawDetails={rawStepDetails(step, vlmSegments.flatMap((segment) => segment.sceneData?.vlm?.rawResponse ? [`video-vlm:${truncateText(segment.sceneData.vlm.rawResponse, 360)}`] : []))}
+    />
+  );
+}
+
 function TimelineResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const sceneDataCount = asset.timeline.filter((segment) => segment.sceneData).length;
   const thumbnailCount = asset.timeline.filter((segment) => segment.thumbnailPath).length;
@@ -1279,12 +1348,37 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             { label: "Confidence", value: averageConfidence === null ? "unknown" : `${Math.round(averageConfidence * 100)}% avg`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" }
           ]}
       inspect={
-        <div className="domain-event-list">
-          {domainEvents.slice(0, 12).map(({ segment, event }) => (
-            <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
-          ))}
-          {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
-        </div>
+        isVlmNode ? (
+          <div className="domain-event-list">
+            {vlmSegments.slice(0, 12).map((segment) => {
+              const vlm = segment.domain?.vlm;
+              return (
+                <article key={`${segment.id}-domain-vlm`} className="domain-event-row">
+                  <div>
+                    <strong>{vlm?.message || vlm?.error || "Sports-event VLM check"}</strong>
+                    <button
+                      type="button"
+                      className="time-link"
+                      aria-label={`Play sports-event VLM check at ${formatDuration(segment.start)}`}
+                      onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: "Sports-event VLM check" })}
+                    >
+                      {formatDuration(segment.start)}-{formatDuration(segment.end)} · {vlm?.status} · {vlm?.model} · {Math.round((vlm?.confidence ?? 0) * 100)}%
+                    </button>
+                  </div>
+                  {vlm?.rawResponse && <span>Raw: {truncateText(vlm.rawResponse, 360)}</span>}
+                </article>
+              );
+            })}
+            {vlmSegments.length === 0 && <span className="empty-inline">No sports-event VLM checks are stored.</span>}
+          </div>
+        ) : (
+          <div className="domain-event-list">
+            {domainEvents.slice(0, 12).map(({ segment, event }) => (
+              <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
+            ))}
+            {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
+          </div>
+        )
       }
       rawDetails={rawStepDetails(step, vlmSegments.flatMap((segment) => segment.domain?.vlm?.rawResponse ? [`vlm:${truncateText(segment.domain.vlm.rawResponse, 360)}`] : []))}
     />

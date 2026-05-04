@@ -30,6 +30,7 @@ export type CapabilityMode = "disabled" | "optional" | "required";
 
 export type CapabilityPolicy = {
   whisperXDiarization: CapabilityMode;
+  videoVlmAnalysis: CapabilityMode;
   visionDetector: CapabilityMode;
   visionTracker: CapabilityMode;
   soccerNetActionSpotting: CapabilityMode;
@@ -137,6 +138,24 @@ export type DomainVlmQuality = {
   attemptedAt: string;
   confidence: number;
   message: string;
+  rawResponse: string | null;
+  error: string | null;
+};
+
+export type VideoVlmEvidence = {
+  provider: string;
+  model: string;
+  status: "described" | "invalid" | "failed" | "skipped";
+  attemptedAt: string;
+  confidence: number;
+  caption: string;
+  description: string;
+  sceneType: string;
+  labels: string[];
+  objects: string[];
+  actions: string[];
+  visibleText: string[];
+  evidence: string[];
   rawResponse: string | null;
   error: string | null;
 };
@@ -305,6 +324,7 @@ export type TimelineSegment = {
         suggestedText: string;
       }>;
     };
+    vlm?: VideoVlmEvidence;
     vision?: VisionEvidence;
   };
   domain?: {

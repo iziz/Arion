@@ -124,7 +124,7 @@ Local environment values are loaded from `.env` automatically when present.
 - Set `SOCCERNET_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `SOCCERNET_ACTION_SPOTS_JSON=/path/to/predictions.json` to import SoccerNet-style action spotting results as trusted sports domain evidence.
 - Set `CAPABILITY_*` values or the asset-group capability policy to `disabled|optional|required`. Required capabilities fail the indexing job when unavailable; optional capabilities only record unavailable traces.
 - Set `EMBEDDING_MODEL=intfloat/multilingual-e5-base` and `EMBEDDING_DIMENSIONS=768` to choose the local semantic embedding model.
-- Set `VISUAL_EMBEDDING_MODEL=ViT-B-32`, `VISUAL_EMBEDDING_PRETRAINED=laion2b_s34b_b79k`, and `VISUAL_EMBEDDING_DIMENSIONS=512` to choose the local visual embedding model.
+- Set `VISUAL_EMBEDDING_MODEL=ViT-L-14`, `VISUAL_EMBEDDING_PRETRAINED=datacomp_xl_s13b_b90k`, and `VISUAL_EMBEDDING_DIMENSIONS=768` to choose the local visual embedding model.
 - Set `SCENE_THRESHOLD=0.3` to tune FFmpeg scene-boundary detection sensitivity.
 - Enable `Sports domain indexing` when creating an asset group to add football ontology captions, event labels, and structured event metadata. This layer is asset-group scoped and is skipped for non-sports asset groups.
 - Uploaded filenames and multipart text fields are normalized to UTF-8 NFC. Run `npm run text:repair` if older local records contain mojibake from Korean or CJK filenames.
@@ -150,13 +150,13 @@ The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `ope
 ## Local Embeddings
 
 The default semantic embedding model is `intfloat/multilingual-e5-base`, which produces normalized 768-dimensional vectors for transcript, OCR, visual labels, tags, and timeline text. Query text is embedded with the same model before vector search.
-The default visual embedding model is OpenCLIP `ViT-B-32/laion2b_s34b_b79k`, which produces normalized 512-dimensional vectors for generated keyframes and visual text queries.
+The default visual embedding model is OpenCLIP `ViT-L-14/datacomp_xl_s13b_b90k`, which produces normalized 768-dimensional vectors for generated keyframes and visual text queries. `ViT-B-32/laion2b_s34b_b79k` remains usable by setting the environment variables back to that model and `VISUAL_EMBEDDING_DIMENSIONS=512`.
 
 ```bash
 npm run embeddings:rebuild
 ```
 
-Use this command after changing `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `VISUAL_EMBEDDING_MODEL`, or `VISUAL_EMBEDDING_PRETRAINED`. If the text model runtime is unavailable, the app falls back to deterministic keyword vectors so local indexing can continue. If the visual model runtime is unavailable, visual vectors are skipped while text search remains available.
+Use this command after changing `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `VISUAL_EMBEDDING_MODEL`, `VISUAL_EMBEDDING_PRETRAINED`, or `VISUAL_EMBEDDING_DIMENSIONS`. If the text model runtime is unavailable, the app falls back to deterministic keyword vectors so local indexing can continue. If the visual model runtime is unavailable, visual vectors are skipped while text search remains available.
 
 ## PostgreSQL + pgvector
 

@@ -146,6 +146,27 @@ export function buildEvidenceLedger(
       }
     }
 
+    const videoVlm = segment.sceneData?.vlm;
+    if (videoVlm?.status === "described") {
+      soft.push({
+        id: `video-vlm-${segment.id}`,
+        label: "Video VLM",
+        value: `${videoVlm.model} described`,
+        detail: videoVlm.caption,
+        confidence: videoVlm.confidence,
+        status: "soft"
+      });
+    } else if (videoVlm?.status === "invalid" || videoVlm?.status === "failed") {
+      failed.push({
+        id: `video-vlm-${segment.id}`,
+        label: "Video VLM",
+        value: videoVlm.status,
+        detail: videoVlm.error ?? videoVlm.caption,
+        confidence: videoVlm.confidence,
+        status: "failed"
+      });
+    }
+
     const vlm = segment.domain?.vlm;
     if (vlm?.status === "refined") {
       soft.push({

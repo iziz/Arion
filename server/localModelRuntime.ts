@@ -144,8 +144,7 @@ export async function runLocalModelRuntime(
     transcript ? "asr-source:whisper" : waveform.hasAudio ? "asr-empty:audio-present" : "asr-empty:no-audio",
     ocrTokens.length > 0 ? "ocr-source:paddleocr" : "ocr-empty",
     metadataTerms.length > 0 ? "metadata-context:available" : "metadata-context:empty",
-    "ffmpeg-visual-sampler:v1",
-    "local-vlm-router:v1"
+    "ffmpeg-visual-sampler:v1"
   ];
 
   return {

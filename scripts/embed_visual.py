@@ -14,8 +14,8 @@ def normalize(rows):
 
 def main():
     parser = argparse.ArgumentParser(description="Embed images or text with a local OpenCLIP model.")
-    parser.add_argument("--model", default="ViT-B-32")
-    parser.add_argument("--pretrained", default="laion2b_s34b_b79k")
+    parser.add_argument("--model", default="ViT-L-14")
+    parser.add_argument("--pretrained", default="datacomp_xl_s13b_b90k")
     parser.add_argument("--mode", choices=["image", "text"], default="image")
     args = parser.parse_args()
 

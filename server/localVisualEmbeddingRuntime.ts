@@ -6,8 +6,8 @@ import { getPublicMediaRoot } from "./localObjectStorage";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const visualScript = path.resolve("scripts", "embed_visual.py");
-const visualModel = process.env.VISUAL_EMBEDDING_MODEL || "ViT-B-32";
-const visualPretrained = process.env.VISUAL_EMBEDDING_PRETRAINED || "laion2b_s34b_b79k";
+const visualModel = process.env.VISUAL_EMBEDDING_MODEL || "ViT-L-14";
+const visualPretrained = process.env.VISUAL_EMBEDDING_PRETRAINED || "datacomp_xl_s13b_b90k";
 const cache = new Map<string, number[]>();
 
 export type VisualVectorRecord = {
@@ -41,7 +41,7 @@ export function getVisualEmbeddingModelName() {
 }
 
 export function getExpectedVisualEmbeddingDimensions() {
-  return Number(process.env.VISUAL_EMBEDDING_DIMENSIONS || 512);
+  return Number(process.env.VISUAL_EMBEDDING_DIMENSIONS || 768);
 }
 
 export async function embedVisualQuery(text: string) {

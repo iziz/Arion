@@ -106,7 +106,7 @@ export function getExpectedEmbeddingDimensions() {
 }
 
 export function getExpectedVisualEmbeddingDimensions() {
-  return Number(process.env.VISUAL_EMBEDDING_DIMENSIONS || 512);
+  return Number(process.env.VISUAL_EMBEDDING_DIMENSIONS || 768);
 }
 
 export function cosineSimilarity(a: number[], b: number[]) {

@@ -256,6 +256,7 @@ export function indexFormPayload(form: HTMLFormElement) {
     },
     capabilityPolicy: {
       whisperXDiarization: modeValue(data.get("capabilityWhisperX")),
+      videoVlmAnalysis: modeValue(data.get("capabilityVideoVlm")),
       visionDetector: modeValue(data.get("capabilityVisionDetector")),
       visionTracker: modeValue(data.get("capabilityVisionTracker")),
       soccerNetActionSpotting: modeValue(data.get("capabilitySoccerNetAction")),

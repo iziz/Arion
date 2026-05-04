@@ -25,6 +25,7 @@ export function normalizeCapabilityPolicy(value: unknown, domainIndexing?: Index
   const defaults = defaultCapabilityPolicy(domainIndexing);
   return {
     whisperXDiarization: normalizeMode(record.whisperXDiarization, defaults.whisperXDiarization),
+    videoVlmAnalysis: normalizeMode(record.videoVlmAnalysis, defaults.videoVlmAnalysis),
     visionDetector: normalizeMode(record.visionDetector, defaults.visionDetector),
     visionTracker: normalizeMode(record.visionTracker, defaults.visionTracker),
     soccerNetActionSpotting: normalizeMode(record.soccerNetActionSpotting, defaults.soccerNetActionSpotting),
@@ -36,6 +37,7 @@ export function defaultCapabilityPolicy(domainIndexing?: IndexRecord["domainInde
   const sportsEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
   return {
     whisperXDiarization: envMode("CAPABILITY_WHISPERX_DIARIZATION", "optional"),
+    videoVlmAnalysis: envMode("CAPABILITY_VIDEO_VLM_ANALYSIS", "optional"),
     visionDetector: envMode("CAPABILITY_VISION_DETECTOR", sportsEnabled ? "optional" : "optional"),
     visionTracker: envMode("CAPABILITY_VISION_TRACKER", sportsEnabled ? "optional" : "optional"),
     soccerNetActionSpotting: envMode("CAPABILITY_SOCCERNET_ACTION_SPOTTING", "optional"),

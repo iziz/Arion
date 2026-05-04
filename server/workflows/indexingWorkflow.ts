@@ -18,7 +18,7 @@ import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTi
 import { detectSceneBoundaries } from "../sceneDetection";
 import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "../soccernet";
 import { upsertAssetTracking } from "../trackingStore";
-import { getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
+import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync, traceJobAsync } from "../observability";
 import { normalizeUploadedText } from "../textEncoding";
 import { createDefaultIndex, getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
@@ -213,13 +213,58 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
           : undefined
       };
     });
+    let videoVlmTrace = "";
+    let videoVlmTimeline: AssetRecord["timeline"] = thumbnailTimeline;
+    const shouldRunVideoVlm =
+      isCapabilityEnabled(embeddingIndex, "videoVlmAnalysis") &&
+      (isVlmWorkerEnabled() || isCapabilityRequired(embeddingIndex, "videoVlmAnalysis"));
+    if (shouldRunVideoVlm) {
+      assertCapabilityAvailable(embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
+      await updateJob(jobId, { stage: "video-vlm", progress: 76 }, `Analyzing timeline keyframes with ${getVlmWorkerModelName()}`);
+      const videoVlm = await traceAsync(
+        "model.vlm.video_segment",
+        { jobId, assetId, segments: thumbnailTimeline.length, model: getVlmWorkerModelName() },
+        () =>
+          analyzeTimelineWithVlm({ ...refreshed, timeline: thumbnailTimeline }, thumbnailTimeline, {
+            onProgress: async (event) => {
+              await updateJob(
+                jobId,
+                { stage: "video-vlm", progress: 76 + Math.round(event.progress * 0.02) },
+                `[video-vlm:${event.status}] ${event.message}`
+              );
+            }
+          }),
+        "model.vlm.video_segment"
+      );
+      videoVlmTimeline = videoVlm.timeline;
+      videoVlmTrace = videoVlm.attemptedSegments > 0
+        ? `video-vlm:${videoVlm.model}:${videoVlm.describedSegments}/${videoVlm.attemptedSegments}:invalid=${videoVlm.invalidSegments}:failed=${videoVlm.failedSegments}`
+        : "video-vlm-unavailable:No timeline keyframes were available for video VLM analysis.";
+      await updateJob(
+        jobId,
+        { stage: "video-vlm", progress: 78 },
+        `Video VLM analysis completed for ${videoVlm.describedSegments}/${videoVlm.attemptedSegments} attempted segments (${videoVlm.invalidSegments} invalid, ${videoVlm.failedSegments} failed)`
+      );
+      if (videoVlm.errors.length > 0) {
+        logJson("warn", "model.vlm.video_segment.partial", "Video VLM analysis had partial failures", {
+          jobId,
+          assetId,
+          errors: videoVlm.errors
+        });
+      }
+    } else {
+      videoVlmTrace = isCapabilityEnabled(embeddingIndex, "videoVlmAnalysis")
+        ? "video-vlm-unavailable:VLM_WORKER_URL is not configured."
+        : "video-vlm-unavailable:Video VLM analysis disabled by capability policy.";
+      assertCapabilityAvailable(embeddingIndex, "videoVlmAnalysis", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
+    }
     await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting players and ball candidates in keyframes");
     await updateAsset(assetId, { status: "embedding", progress: 78 });
     const detections = isCapabilityEnabled(embeddingIndex, "visionDetector")
       ? await traceAsync(
           "stage.vision_detection",
-          { jobId, assetId, segments: thumbnailTimeline.length },
-          () => detectTimelineObjects(thumbnailTimeline, keyframes),
+          { jobId, assetId, segments: videoVlmTimeline.length },
+          () => detectTimelineObjects(videoVlmTimeline, keyframes),
           "stage.vision_detection"
         )
       : { available: false, provider: "disabled", model: capabilityPolicy.visionDetector, frames: [], error: "Vision detector disabled by capability policy." };
@@ -359,6 +404,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         ...refreshed.intelligence,
         modelTrace: [
           ...refreshed.intelligence.modelTrace,
+          videoVlmTrace,
           detectorTrace,
           trackerTrace,
           isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
@@ -442,6 +488,7 @@ export async function runAudioExtractionJob(jobId: string, assetId: string, file
 
 export function normalizeWorkflowStage(value: unknown) {
   const stage = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (stage === "videovlm" || stage === "video-vlm") return "videoVlm";
   const allowed = new Set(["input", "probe", "audio", "vad", "asr", "speakers", "ocr", "visual", "timeline", "domain", "vector", "ready"]);
   return allowed.has(stage) ? stage : null;
 }

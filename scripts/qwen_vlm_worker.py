@@ -39,6 +39,13 @@ class StructureRequest(BaseModel):
     segment: dict[str, Any] = {}
 
 
+class VideoSegmentRequest(BaseModel):
+    model: str | None = None
+    imagePath: str | None = None
+    asset: dict[str, Any] = {}
+    segment: dict[str, Any] = {}
+
+
 app = FastAPI(title="Arion Qwen VLM Worker", version="0.1.0")
 
 
@@ -66,6 +73,15 @@ async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
 
     parsed.setdefault("domain", request.domain)
     return _normalize_response(parsed, output_text)
+
+
+@app.post("/analyze/video-segment")
+async def analyze_video_segment(request: VideoSegmentRequest) -> dict[str, Any]:
+    output_text = _generate_video_text(request)
+    parsed = _parse_json(output_text)
+    if not parsed:
+        return _empty_video_response("Model did not return parseable JSON.", raw=output_text)
+    return _normalize_video_response(parsed, output_text)
 
 
 def _model_loaded() -> bool:
@@ -124,14 +140,21 @@ def _load_mlx_model_once():
 
 
 def _generate_text(request: StructureRequest) -> str:
+    return _generate_from_messages(_build_messages(request), _image_path(request))
+
+
+def _generate_video_text(request: VideoSegmentRequest) -> str:
+    return _generate_from_messages(_build_video_messages(request), _image_path(request))
+
+
+def _generate_from_messages(messages: list[dict[str, Any]], image_path: str | None) -> str:
     if BACKEND == "mlx":
-        return _generate_text_with_mlx(request)
-    return _generate_text_with_transformers(request)
+        return _generate_text_with_mlx(messages, image_path)
+    return _generate_text_with_transformers(messages)
 
 
-def _generate_text_with_transformers(request: StructureRequest) -> str:
+def _generate_text_with_transformers(messages: list[dict[str, Any]]) -> str:
     model, processor = _load_model()
-    messages = _build_messages(request)
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = _process_vision_info(messages)
     inputs = processor(
@@ -153,12 +176,10 @@ def _generate_text_with_transformers(request: StructureRequest) -> str:
     )[0]
 
 
-def _generate_text_with_mlx(request: StructureRequest) -> str:
+def _generate_text_with_mlx(messages: list[dict[str, Any]], image_path: str | None) -> str:
     from mlx_vlm import apply_chat_template, generate
 
     model, processor = _load_model()
-    messages = _build_messages(request)
-    image_path = _image_path(request)
     prompt = apply_chat_template(
         processor,
         model.config,
@@ -194,7 +215,7 @@ def _process_vision_info(messages):
     return process_vision_info(messages)
 
 
-def _image_path(request: StructureRequest) -> str | None:
+def _image_path(request: StructureRequest | VideoSegmentRequest) -> str | None:
     return request.imagePath if request.imagePath and os.path.exists(request.imagePath) else None
 
 
@@ -255,6 +276,53 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
     return [{"role": "user", "content": content}]
 
 
+def _build_video_messages(request: VideoSegmentRequest) -> list[dict[str, Any]]:
+    segment = request.segment
+    scene_data = segment.get("sceneData") or {}
+    text = scene_data.get("text") or {}
+    image = scene_data.get("image") or {}
+    shape = (
+        "{\"caption\":\"...\",\"description\":\"...\",\"sceneType\":\"...\","
+        "\"confidence\":0.0,\"labels\":[\"...\"],\"objects\":[\"...\"],"
+        "\"actions\":[\"...\"],\"visibleText\":[\"...\"],\"evidence\":[\"...\"]}"
+    )
+    prompt = {
+        "task": (
+            "Analyze this video timeline keyframe as a domain-neutral video understanding pass. "
+            "Return compact valid JSON only, no markdown. "
+            f"Use this exact shape: {shape}"
+        ),
+        "asset": {
+            "title": request.asset.get("title"),
+            "description": request.asset.get("description"),
+            "tags": request.asset.get("tags"),
+        },
+        "segment": {
+            "start": segment.get("start"),
+            "end": segment.get("end"),
+            "label": segment.get("label"),
+            "transcript": segment.get("transcript"),
+            "speech": text.get("speech"),
+            "subtitles": text.get("subtitles"),
+            "screenText": text.get("screenText"),
+            "overlays": text.get("overlays"),
+            "visualLabels": image.get("labels"),
+            "dominantColor": image.get("dominantColor"),
+            "brightness": image.get("brightness"),
+            "motionScore": image.get("motionScore"),
+        },
+        "instruction": (
+            "Describe only visible or directly evidenced scene content. "
+            "Do not infer identities, teams, brands, or domain-specific events unless supported by visible text or transcript."
+        ),
+    }
+    content: list[dict[str, Any]] = []
+    if _image_path(request):
+        content.append({"type": "image", "image": request.imagePath})
+    content.append({"type": "text", "text": json.dumps(prompt, ensure_ascii=False)})
+    return [{"role": "user", "content": content}]
+
+
 def _parse_json(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -271,6 +339,31 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             continue
     return None
+
+
+def _normalize_video_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
+    labels = _string_list(parsed.get("labels"), 10)
+    objects = _string_list(parsed.get("objects"), 12)
+    actions = _string_list(parsed.get("actions"), 8)
+    visible_text = _string_list(parsed.get("visibleText"), 8)
+    evidence = _string_list(parsed.get("evidence"), 8)
+    scene_type = str(parsed.get("sceneType") or "").strip()
+    description = str(parsed.get("description") or "").strip()
+    caption = str(parsed.get("caption") or "").strip() or description or scene_type
+    return {
+        "provider": f"qwen2.5-vl:{BACKEND}",
+        "model": DEFAULT_MODEL,
+        "caption": caption,
+        "description": description,
+        "sceneType": scene_type,
+        "confidence": _confidence(parsed.get("confidence")),
+        "labels": labels,
+        "objects": objects,
+        "actions": actions,
+        "visibleText": visible_text,
+        "evidence": evidence if evidence else [raw[:240]],
+        "rawResponse": raw[:2000],
+    }
 
 
 def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
@@ -352,6 +445,19 @@ def _role(value: Any) -> dict[str, Any]:
     }
 
 
+def _string_list(value: Any, limit: int) -> list[str]:
+    if isinstance(value, dict):
+        value = [key for key, enabled in value.items() if enabled]
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value[:limit]:
+        text = str(item).strip()
+        if text:
+            items.append(text[:160])
+    return items
+
+
 def _evidence(value: Any, raw: str) -> list[str]:
     if not isinstance(value, list):
         return [raw[:240]]
@@ -390,6 +496,23 @@ def _empty_response(reason: str, raw: str = "") -> dict[str, Any]:
             "ballState": "unknown",
             "attackingDirection": "unknown",
         },
+    }
+
+
+def _empty_video_response(reason: str, raw: str = "") -> dict[str, Any]:
+    return {
+        "provider": f"qwen2.5-vl:{BACKEND}",
+        "model": DEFAULT_MODEL,
+        "caption": "",
+        "description": "",
+        "sceneType": "",
+        "confidence": 0,
+        "labels": [],
+        "objects": [],
+        "actions": [],
+        "visibleText": [],
+        "evidence": [reason, raw[:240]] if raw else [reason],
+        "rawResponse": raw[:2000] if raw else "",
     }
 
 

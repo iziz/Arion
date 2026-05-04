@@ -72,8 +72,22 @@ export function segmentToEmbeddingText(segment: TimelineSegment) {
       .filter(Boolean)
       .join(" ")
     : "";
+  const videoVlm = segment.sceneData?.vlm;
+  const videoVlmEvidence = videoVlm?.status === "described"
+      ? [
+        videoVlm.caption,
+        videoVlm.description,
+        videoVlm.sceneType ? `scene type ${videoVlm.sceneType}` : "",
+        videoVlm.labels.length > 0 ? `labels ${videoVlm.labels.join(", ")}` : "",
+        videoVlm.objects.length > 0 ? `objects ${videoVlm.objects.join(", ")}` : "",
+        videoVlm.actions.length > 0 ? `actions ${videoVlm.actions.join(", ")}` : "",
+        videoVlm.visibleText.length > 0 ? `visible text ${videoVlm.visibleText.join(" ")}` : ""
+      ]
+      .filter(Boolean)
+      .join(" ")
+    : "";
   const domainEvidence = segment.domain && isTrustedDomainSegment(segment.domain) ? `${segment.domain.searchText}. Events: ${trustedDomainEvents(segment).map((event) => event.caption).join(" ")}` : "";
-  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. Image: ${imageEvidence}. Vision: ${visionEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
+  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. Image: ${imageEvidence}. Vision: ${visionEvidence}. VLM: ${videoVlmEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
 }
 
 async function embedTexts(texts: string[], kind: EmbeddingKind) {
