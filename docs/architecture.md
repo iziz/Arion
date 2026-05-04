@@ -197,16 +197,18 @@ flowchart TB
 
 `package.json` defines the local development topology:
 
-- `npm run dev` runs `dev:api`, `dev:worker`, `dev:ask-worker`, and `dev:web` concurrently.
+- `npm run dev` runs `dev:redis`, `dev:api`, `dev:worker:run`, `dev:ask-worker:run`, and `dev:web` concurrently.
+- `npm run dev:full` also starts `dev:redis`, the Python runtime service through `models:runtime:ai`, and the Python VLM worker through `models:vlm:ai`.
+- `dev:redis` runs `scripts/start_redis_dev.ts`; it uses an existing local Redis when one is reachable, starts `redis-server` when available, and falls back to `docker run --rm -p 6379:6379 redis:7`.
 - `dev:api` runs `tsx watch server/index.ts`.
-- `dev:worker` runs `tsx watch server/jobWorker.ts`.
-- `dev:ask-worker` runs `tsx watch server/askWorker.ts`.
+- `dev:worker` starts `dev:redis` plus `dev:worker:run`; `dev:worker:run` runs `tsx watch server/jobWorker.ts`.
+- `dev:ask-worker` starts `dev:redis` plus `dev:ask-worker:run`; `dev:ask-worker:run` runs `tsx watch server/askWorker.ts`.
 - `dev:web` runs `vite --host 0.0.0.0`.
-- `dev:full` also starts the Python runtime service through `models:runtime:ai` and the Python VLM worker through `models:vlm:ai`.
+- `worker` and `ask-worker` also start `dev:redis` before running their non-watch worker entrypoints.
 - The API default port is `8787`.
 - The Vite default port is `5173`.
 - The combined local Python runtime service default port is `8792`.
-- Redis is required for asset job execution and ask operation execution and must be started outside Node. `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
+- Redis is required for asset job execution and ask operation execution. Local worker scripts start Redis automatically when `REDIS_URL` points at localhost, and worker entrypoints wait for Redis readiness before creating BullMQ workers. `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
 
 `vite.config.ts` proxies frontend development requests:
 
@@ -393,15 +395,16 @@ The API process also does not execute ask operations. It persists `AskOperation`
 
 1. Loads `.env` through `server/env.ts`.
 2. Resolves `JOB_WORKER_ID` and `JOB_QUEUE_RECONCILE_MS`.
-3. Runs `recoverDurableWorkerJobs` before creating the BullMQ worker.
-4. During recovery, cleans stale runtime processes for queued/running asset jobs.
-5. Resets interrupted `running` jobs back to `queued` while preserving `stageCheckpoints` and setting `parameters.resumeFromStage`.
-6. Publishes pending `asset-job` queue outbox entries.
-7. Reconciles queued supported asset jobs into Redis through `enqueueQueuedAssetJobs` as a compatibility repair path.
-8. Creates a Redis/BullMQ worker using `REDIS_URL`, `JOB_QUEUE_NAME`, and `JOB_WORKER_CONCURRENCY`.
-9. Claims queued `JobRecord`s before execution.
-10. Runs the matching workflow through `assetJobRunner`.
-11. Periodically publishes queue outbox entries and reconciles queued jobs using `JOB_QUEUE_RECONCILE_MS`.
+3. Waits for Redis readiness before creating any BullMQ worker connection.
+4. Runs `recoverDurableWorkerJobs` before creating the BullMQ worker.
+5. During recovery, cleans stale runtime processes for queued/running asset jobs.
+6. Resets interrupted `running` jobs back to `queued` while preserving `stageCheckpoints` and setting `parameters.resumeFromStage`.
+7. Publishes pending `asset-job` queue outbox entries.
+8. Reconciles queued supported asset jobs into Redis through `enqueueQueuedAssetJobs` as a compatibility repair path.
+9. Creates a Redis/BullMQ worker using `REDIS_URL`, `JOB_QUEUE_NAME`, and `JOB_WORKER_CONCURRENCY`.
+10. Claims queued `JobRecord`s before execution.
+11. Runs the matching workflow through `assetJobRunner`.
+12. Periodically publishes queue outbox entries and reconciles queued jobs using `JOB_QUEUE_RECONCILE_MS`.
 
 ## Ask Worker Boot Sequence
 
@@ -409,13 +412,14 @@ The API process also does not execute ask operations. It persists `AskOperation`
 
 1. Loads `.env` through `server/env.ts`.
 2. Resolves `ASK_WORKER_ID`, `ASK_QUEUE_NAME`, `ASK_WORKER_CONCURRENCY`, and `ASK_QUEUE_RECONCILE_MS`.
-3. Resets interrupted `running` ask operations back to `queued`.
-4. Publishes pending `ask-operation` queue outbox entries.
-5. Reconciles queued ask operations into Redis/BullMQ as a compatibility repair path.
-6. Creates a Redis/BullMQ worker.
-7. Claims queued `AskOperation` records by operation ID.
-8. Runs `runAskOperation` from the persisted request stored with the operation.
-9. Periodically publishes queue outbox entries and reconciles queued ask operations into Redis.
+3. Waits for Redis readiness before creating any BullMQ worker connection.
+4. Resets interrupted `running` ask operations back to `queued`.
+5. Publishes pending `ask-operation` queue outbox entries.
+6. Reconciles queued ask operations into Redis/BullMQ as a compatibility repair path.
+7. Creates a Redis/BullMQ worker.
+8. Claims queued `AskOperation` records by operation ID.
+9. Runs `runAskOperation` from the persisted request stored with the operation.
+10. Periodically publishes queue outbox entries and reconciles queued ask operations into Redis.
 
 ## HTTP Middleware
 

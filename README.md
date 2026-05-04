@@ -67,9 +67,8 @@ The indexing, search, and analysis logic is adapter-friendly. Production-oriente
 
 ```bash
 npm install
-# Start Redis separately, for example:
-docker run --rm -p 6379:6379 redis:7
 npm run dev
+npm run dev:full
 npm run build
 npm run db:check
 npm run db:migrate
@@ -84,7 +83,8 @@ npm run models:runtime:ai
 ```
 
 The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
-Asset job execution and ask operation execution require Redis; `REDIS_URL` defaults to `redis://127.0.0.1:6379`.
+Asset job execution and ask operation execution require Redis; `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` start local Redis automatically when `REDIS_URL` points at localhost. The Redis starter uses `redis-server` when available and falls back to `docker run --rm -p 6379:6379 redis:7`.
+`REDIS_URL` defaults to `redis://127.0.0.1:6379`.
 Local environment values are loaded from `.env` automatically when present.
 
 ## API

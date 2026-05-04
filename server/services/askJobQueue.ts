@@ -10,7 +10,7 @@ export type RedisAskOperationData = {
 export const askOperationQueueName = normalizeBullMqQueueName(process.env.ASK_QUEUE_NAME, "arion-ask-operations");
 export const askWorkerConcurrency = parsePositiveInteger(process.env.ASK_WORKER_CONCURRENCY, 2);
 export const askQueueReconcileIntervalMs = parsePositiveInteger(process.env.ASK_QUEUE_RECONCILE_MS, 15000);
-const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+export const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
 
 const defaultJobOptions: JobsOptions = {
   attempts: 1,

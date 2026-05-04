@@ -10,12 +10,20 @@ import {
   closeAskOperationQueue,
   createAskOperationWorker,
   enqueueQueuedAskOperations,
+  redisUrl,
   resetRunningAskOperations
 } from "./services/askJobQueue";
 import { publishQueueOutbox, startQueueOutboxPublisher } from "./services/queueOutboxPublisher";
+import { waitForRedisReady } from "./services/redisHealth";
 
 const workerId = process.env.ASK_WORKER_ID ?? `${hostname()}-${process.pid}`;
 
+await waitForRedisReady({
+  component: "ask operation worker",
+  event: "ask.worker.redis_wait",
+  redisUrl,
+  workerId
+});
 const recovered = await recoverAskOperations();
 await publishQueueOutbox("ask-operation");
 

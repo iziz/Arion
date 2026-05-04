@@ -6,6 +6,7 @@ import { getJob } from "./store";
 import { runAssetJob } from "./services/assetJobRunner";
 import { recoverDurableWorkerJobs } from "./services/durableJobRecovery";
 import { updateJob } from "./services/jobState";
+import { waitForRedisReady } from "./services/redisHealth";
 import {
   assetJobQueueName,
   closeAssetJobQueue,
@@ -19,6 +20,12 @@ import { publishQueueOutbox, startQueueOutboxPublisher } from "./services/queueO
 const workerId = process.env.JOB_WORKER_ID ?? `${hostname()}-${process.pid}`;
 const reconcileIntervalMs = parsePositiveInteger(process.env.JOB_QUEUE_RECONCILE_MS, 15000);
 
+await waitForRedisReady({
+  component: "asset job worker",
+  event: "jobs.worker.redis_wait",
+  redisUrl,
+  workerId
+});
 await recoverDurableWorkerJobs();
 await publishQueueOutbox("asset-job");
 
