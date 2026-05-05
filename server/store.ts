@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { normalizeCapabilityPolicy, normalizeDomainIndexing } from "./domainConfig";
 import { createDefaultIndex as createPostgresDefaultIndex } from "./postgres/defaults";
 import * as pgStore from "./postgresStore";
 import { publishRealtimeEvent } from "./services/realtimeEvents";
-import type { AssetRecord, EventRecord, JobRecord } from "../shared/types";
+import type { AssetRecord, EventRecord, IndexRecord, JobRecord } from "../shared/types";
 
 export async function ensureStore() {
   assertPostgresRuntime();
@@ -10,15 +11,16 @@ export async function ensureStore() {
 }
 
 export async function listIndexes() {
-  return pgStore.listIndexes();
+  return (await pgStore.listIndexes()).map(normalizeIndexRecord);
 }
 
 export async function getIndex(id: string) {
-  return pgStore.getIndex(id);
+  const index = await pgStore.getIndex(id);
+  return index ? normalizeIndexRecord(index) : null;
 }
 
 export async function saveIndex(index: Parameters<typeof pgStore.saveIndex>[0]) {
-  return pgStore.saveIndex(index);
+  return pgStore.saveIndex(normalizeIndexRecord(index));
 }
 
 export async function listAssets(indexId?: string) {
@@ -116,7 +118,7 @@ export async function saveVideo(asset: AssetRecord) {
 }
 
 export function createDefaultIndex(now = new Date().toISOString()) {
-  return createPostgresDefaultIndex(now);
+  return normalizeIndexRecord(createPostgresDefaultIndex(now));
 }
 
 export function newId() {
@@ -127,4 +129,13 @@ function assertPostgresRuntime() {
   if (!pgStore.isPostgresEnabled()) {
     throw new Error("PostgreSQL is required. Set DATABASE_URL or run through Docker infra.");
   }
+}
+
+function normalizeIndexRecord(index: IndexRecord): IndexRecord {
+  const domainIndexing = normalizeDomainIndexing(index.domainIndexing);
+  return {
+    ...index,
+    domainIndexing,
+    capabilityPolicy: normalizeCapabilityPolicy(index.capabilityPolicy, domainIndexing)
+  };
 }

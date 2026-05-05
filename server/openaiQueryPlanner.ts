@@ -1,5 +1,6 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
-import { isStatLeaderboardQuery, planDomainQuery } from "./queryPlanner";
+import { isMomentSearchQuery, isStatLeaderboardQuery, planDomainQuery } from "./queryPlanner";
+import { buildRetrievalPlan, sanitizeEvidenceTerms } from "./queryRetrievalPlan";
 import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./sportsKnowledge";
 
 type OpenAiPlan = {
@@ -14,6 +15,11 @@ type OpenAiPlan = {
   fieldZone?: string | null;
   role?: DomainSearchFilters["role"] | null;
   semanticQuery?: string | null;
+  retrieval?: {
+    textQuery?: string | null;
+    visualQuery?: string | null;
+    evidenceTerms?: string[] | null;
+  } | null;
   confidence?: number;
   warnings?: string[];
 };
@@ -98,7 +104,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
           {
             role: "system",
             content:
-              "You are a query router for a video intelligence platform with optional sports knowledge. Return only JSON. Choose the route from the allowed route contract, extract structured sports constraints only when the route is sports-specific, and do not invent statistics or facts. Use null when uncertain."
+              "You are a query router for a video intelligence platform with optional related knowledge. Return only JSON. Choose the route from the allowed route contract, extract structured sports constraints only when the route is sports-specific, and do not invent statistics or facts. Use null when uncertain. Object, person, scene, text, speech, or visual-moment searches inside a video are generic_video_qa, not unsupported, even when they are broad or low-confidence. Use unsupported only for requests that cannot be answered from indexed video or related knowledge. Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown."
           },
           {
             role: "user",
@@ -130,6 +136,13 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 fieldZone: "string | null",
                 role: "receiver | passer | shooter | any | null",
                 semanticQuery: "English retrieval query",
+                retrieval: {
+                  textQuery: "normalized text retrieval query for multilingual semantic embeddings",
+                  visualQuery: "concise English visual retrieval prompt for OpenCLIP",
+                  evidenceTerms: [
+                    "only concrete evidence concepts that should appear in indexed ASR/OCR/VLM text; include original-language literals and English aliases for non-English queries; exclude command words like find/show/search/scene/video/appears/shown"
+                  ]
+                },
                 confidence: "0..1",
                 warnings: ["short caveats"]
               }
@@ -169,15 +182,16 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     llmFilters.competition ?? explicit.competition ?? base.domainFilters.competition
   );
   const wantsLeaderboardGrounding = Boolean(metric && isStatLeaderboardQuery(base.originalQuery) && !llmFilters.player && !base.domainFilters.player);
-  let route = (allowedValue(llm.route, allowedRoutes) as DomainQueryPlan["route"] | undefined) ?? routeFromLegacyQuestionType(llm.questionType, metric) ?? base.route;
-  if (route === "unsupported" && base.route !== "unsupported") route = base.route;
-  if (hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) && !isSportsRoute(route)) route = base.route;
-  if (wantsLeaderboardGrounding) route = "sports_stat_qa";
-  if (hasActiveSportsFilters(explicit) && !isSportsRoute(route)) route = base.route;
-  if (route === "sports_stat_qa" && base.route !== "sports_stat_qa" && !isStatLeaderboardQuery(base.originalQuery)) {
+  const llmRoute = allowedValue(llm.route, allowedRoutes) as DomainQueryPlan["route"] | undefined;
+  let route = llmRoute ?? routeFromLegacyQuestionType(llm.questionType, metric) ?? base.route;
+  if (route === "unsupported" && isMomentSearchQuery(base.originalQuery) && hasRetrievalPlan(llm)) route = "generic_video_qa";
+  if (!llmRoute && hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) && !isSportsRoute(route)) route = base.route;
+  if (route !== "unsupported" && wantsLeaderboardGrounding) route = "sports_stat_qa";
+  if (route !== "unsupported" && hasActiveSportsFilters(explicit) && !isSportsRoute(route)) route = base.route;
+  if (route !== "unsupported" && route === "sports_stat_qa" && base.route !== "sports_stat_qa" && !isStatLeaderboardQuery(base.originalQuery)) {
     route = hasActiveSportsFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "sports_moment_retrieval" : base.route;
   }
-  if (route === "sports_stat_qa" && !metric) route = base.route === "sports_stat_qa" ? "sports_stat_qa" : "generic_video_qa";
+  if (route !== "unsupported" && route === "sports_stat_qa" && !metric) route = base.route === "sports_stat_qa" ? "sports_stat_qa" : "generic_video_qa";
   const questionType = questionTypeForRoute(route);
   const rawDomainFilters = compactFilters(
     route === "sports_stat_qa"
@@ -195,8 +209,14 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
         : { ...explicit }
   );
   const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, route, explicit);
-  const semanticQuery = hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
-  const confidence = Math.max(base.confidence, Math.min(0.94, Number(llm.confidence ?? 0)));
+  const semanticQuery = !llmRoute && hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
+  const retrieval = buildRetrievalPlan(base.originalQuery, semanticQuery, {
+    textQuery: llm.retrieval?.textQuery ?? semanticQuery,
+    visualQuery: llm.retrieval?.visualQuery ?? semanticQuery,
+    evidenceTerms: sanitizeEvidenceTerms(llm.retrieval?.evidenceTerms ?? [])
+  });
+  const llmConfidence = normalizedConfidence(llm.confidence, base.confidence);
+  const confidence = route === base.route && !llmRoute ? Math.max(base.confidence, llmConfidence) : llmConfidence;
   const llmWarnings = Array.isArray(llm.warnings)
     ? llm.warnings.filter((warning) => typeof warning === "string" && warning.trim() && !/knownPlayers|provided/i.test(warning))
     : [];
@@ -204,6 +224,7 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     ...base,
     semanticQuery,
     rewrittenQuery: buildRewrittenQuery(domainFilters, semanticQuery),
+    retrieval,
     domainFilters,
     route,
     intent: {
@@ -258,12 +279,27 @@ function hasActiveSportsFilters(filters: DomainSearchFilters) {
   return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
 }
 
+function hasRetrievalPlan(plan: OpenAiPlan) {
+  return Boolean(
+    stringOrUndefined(plan.semanticQuery) ||
+      stringOrUndefined(plan.retrieval?.textQuery) ||
+      stringOrUndefined(plan.retrieval?.visualQuery) ||
+      sanitizeEvidenceTerms(plan.retrieval?.evidenceTerms ?? []).length > 0
+  );
+}
+
 function normalizeMetricForCompetition(
   metric: DomainQueryPlan["intent"]["metric"] | null,
   competition: string | undefined
 ): DomainQueryPlan["intent"]["metric"] | null {
   if (competition === "NFL" && metric === "goals") return "points";
   return metric;
+}
+
+function normalizedConfidence(value: unknown, fallback: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(0.94, numeric));
 }
 
 function selectSemanticQuery(value: unknown, base: DomainQueryPlan) {

@@ -1,4 +1,5 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
+import { buildRetrievalPlan } from "./queryRetrievalPlan";
 import { matchCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./sportsKnowledge";
 
 const ignoredPlayerAliases = new Set(["query", "search", "match", "video", "clip", "clips", "moment", "moments", "speed", "top", "best", "goal", "goals", "save", "saves", "play", "plays"]);
@@ -13,7 +14,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const playerMatch = matchSearchPlayer(originalQuery);
   let competition = explicitFilters.competition ?? inferCompetition(originalQuery);
   if (!competition && playerMatch) competition = playerMatch.value.league;
-  const statMetric = inferStatMetric(normalized, competition);
+  const sportsContext = hasSportsIntentContext(normalized, explicitFilters, competition, Boolean(playerMatch));
+  const statMetric = sportsContext ? inferStatMetric(normalized, competition) : null;
   const statQuestion = Boolean(
     statMetric &&
       (hasAny(normalized, ["how many", "number of", "몇", "얼마나", "득점 수", "기록"]) || isStatLeaderboardQuery(originalQuery))
@@ -54,14 +56,14 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.08;
   }
 
-  const receiveIntent = !statQuestion && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
-  const shotIntent = !statQuestion && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
-  const dribbleIntent = hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
-  const saveIntent = hasAny(normalized, ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"]);
-  const pressureIntent = hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
-  const scrambleIntent = hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
-  const pocketEscapeIntent = hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
-  const throwOnRunIntent = hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
+  const receiveIntent = !statQuestion && sportsContext && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
+  const shotIntent = !statQuestion && sportsContext && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
+  const dribbleIntent = sportsContext && hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
+  const saveIntent = sportsContext && hasAny(normalized, ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"]);
+  const pressureIntent = sportsContext && hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
+  const scrambleIntent = sportsContext && hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
+  const pocketEscapeIntent = sportsContext && hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
+  const throwOnRunIntent = sportsContext && hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
   if (receiveIntent || inferred.passType) {
     inferred.eventType = "pass_receive";
     inferred.role = "receiver";
@@ -107,11 +109,13 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const semanticQuery = playerInventory ? "mentioned player names" : buildSemanticQuery(originalQuery, domainFilters);
   const rewrittenQuery = playerInventory ? "Extract mentioned player names from indexed timeline text and domain scopes." : buildRewrittenQuery(domainFilters, semanticQuery);
   const route = inferQueryRoute(originalQuery, statQuestion, domainFilters, playerInventory);
+  const retrieval = buildRetrievalPlan(originalQuery, semanticQuery);
 
   return {
     originalQuery,
     semanticQuery,
     rewrittenQuery,
+    retrieval,
     domainFilters,
     route,
     intent: {
@@ -149,6 +153,36 @@ function inferQueryRoute(
 
 function hasSportsRouteEvidence(filters: DomainSearchFilters) {
   return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
+}
+
+function hasSportsIntentContext(normalized: string, explicitFilters: DomainSearchFilters, competition: string | undefined, hasPlayerMatch: boolean) {
+  if (competition || hasPlayerMatch || hasSportsRouteEvidence(explicitFilters)) return true;
+  return hasAny(normalized, [
+    "football",
+    "soccer",
+    "premier league",
+    "nfl",
+    "match",
+    "keeper",
+    "goalkeeper",
+    "penalty",
+    "pitch",
+    "quarterback",
+    "touchdown",
+    "축구",
+    "경기",
+    "선수",
+    "골",
+    "득점",
+    "슈팅",
+    "슛",
+    "크로스",
+    "패스",
+    "드리블",
+    "선방",
+    "터치다운",
+    "쿼터백"
+  ]);
 }
 
 export function isPlayerInventoryQuery(query: string) {

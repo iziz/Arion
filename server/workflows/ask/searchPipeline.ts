@@ -7,9 +7,10 @@ import { embedVisualQuery } from "../../localVisualEmbeddingRuntime";
 import { searchVectors } from "../../localVectorStore";
 import { searchVisualVectors } from "../../localVisualVectorStore";
 import { traceAsync } from "../../observability";
+import { resolveQueryRetrievalPlan } from "../../queryRetrievalPlan";
 import { isPlayerInventoryQuery } from "../../queryPlanner";
 import { knowledgeVectorHitToEvidence } from "../../sportsKnowledgeDocuments";
-import type { AssetRecord, IndexRecord, KnowledgeEvidence, SearchResult, SportsDomainGroup, TimelineSegment } from "../../../shared/types";
+import type { AssetRecord, IndexRecord, KnowledgeEvidence, KnowledgeSourceId, SearchResult, TimelineSegment } from "../../../shared/types";
 import { formatSearchScope } from "./answerBuilder";
 import { runOptionalAskStep } from "./stepRunner";
 import type { AskRequest, SearchPipelineRequest } from "./types";
@@ -30,26 +31,39 @@ export async function executeSearchPipeline({
   askEntry
 }: SearchPipelineRequest): Promise<SearchResult[]> {
   const scopedAssets = scopeAssetsForQuery(assets, { query, explicitFilters, indexId, assetId, domainGroup, tag, modality, limit, useKnowledgeLayer }, indexes);
+  if (queryPlan.route === "unsupported") {
+    return runOptionalAskStep(askEntry, {
+      id: "rank",
+      label: "Rank and verify moments",
+      owner: "retrieval",
+      input: "unsupported query route"
+    }, async () => ({
+      value: [],
+      output: "Skipped because the query planner marked this request as unsupported.",
+      status: "skipped" as const
+    }));
+  }
   const assetScopeIndexId = assetId ? scopedAssets[0]?.indexId : undefined;
   const vectorScopeIndexId = resolveVectorScopeIndexId(indexes, indexId ?? assetScopeIndexId, domainGroup);
-  const useSportsKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseSportsKnowledgeLayer(queryPlan, indexes, indexId ?? assetScopeIndexId, domainGroup));
+  const relatedKnowledgeSourceId = resolveRelatedKnowledgeSourceId(indexes, indexId ?? assetScopeIndexId, domainGroup);
+  const useRelatedKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseRelatedKnowledgeLayer(queryPlan, indexes, indexId ?? assetScopeIndexId, domainGroup));
   const groundedQuery = await runOptionalAskStep(askEntry, {
     id: "ground",
     label: "Knowledge grounding",
     owner: "knowledge",
     input: queryPlan.rewrittenQuery
   }, async () => {
-    if (!useSportsKnowledgeLayer) {
+    if (!useRelatedKnowledgeLayer) {
       return {
         value: {
           filters: queryPlan.domainFilters,
           semanticQuery: queryPlan.semanticQuery,
           evidence: [],
           evidenceSummary: useKnowledgeLayer
-            ? "Sports knowledge skipped because the query is not grounded to a supported sports domain."
-            : "Knowledge layer disabled by search option."
+            ? "Knowledge grounding skipped because the selected scope has no active matching related knowledge."
+            : "Knowledge layer disabled by selected search scope."
         },
-        output: useKnowledgeLayer ? "Skipped for non-sports query scope." : "Disabled by search option.",
+        output: useKnowledgeLayer ? "Skipped because no matching related knowledge is active." : "Disabled by selected search scope.",
         status: "skipped" as const
       };
     }
@@ -59,7 +73,9 @@ export async function executeSearchPipeline({
       output: grounded.evidenceSummary
     };
   });
-  const expandedQuery = expandDomainQuery([queryPlan.originalQuery, groundedQuery.semanticQuery].filter(Boolean).join(" ")).expandedText;
+  const retrievalPlan = resolveQueryRetrievalPlan(queryPlan, query);
+  const expandedQuery = expandDomainQuery([retrievalPlan.textQuery, groundedQuery.semanticQuery].filter(Boolean).join(" ")).expandedText;
+  const expandedVisualQuery = expandDomainQuery(retrievalPlan.visualQuery).expandedText;
   const options = {
     indexId: vectorScopeIndexId,
     tag,
@@ -68,7 +84,7 @@ export async function executeSearchPipeline({
     domainFilters: groundedQuery.filters,
     queryPlan,
     knowledgeEvidence: groundedQuery.evidence,
-    useKnowledgeLayer: useSportsKnowledgeLayer
+    useKnowledgeLayer: useRelatedKnowledgeLayer
   };
   if (isPlayerInventoryQuery(query)) {
     return runOptionalAskStep(askEntry, {
@@ -94,7 +110,7 @@ export async function executeSearchPipeline({
     let visualQueryVector: number[] = [];
     let visualOutput = "visual=unavailable";
     try {
-      visualQueryVector = await traceAsync("search.embed_visual_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedVisualQuery(query), "search.embed_visual_query");
+      visualQueryVector = await traceAsync("search.embed_visual_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedVisualQuery(expandedVisualQuery), "search.embed_visual_query");
       visualOutput = `visual=${visualQueryVector.length} dims`;
     } catch (error) {
       visualOutput = `visual=unavailable (${error instanceof Error ? error.message : "visual embedding failed"})`;
@@ -131,20 +147,19 @@ export async function executeSearchPipeline({
     id: "knowledge_vector_search",
     label: "Knowledge vector retrieval",
     owner: "knowledge",
-    input: `domain=${domainGroup ?? "auto"} · limit=${limit ?? 24}`
+    input: `knowledge=${relatedKnowledgeSourceId ?? "all active"} · limit=${limit ?? 24}`
   }, async () => {
-    if (!useSportsKnowledgeLayer) {
+    if (!useRelatedKnowledgeLayer) {
       return {
         value: [],
-        output: useKnowledgeLayer ? "Skipped for non-sports query scope." : "Disabled by search option.",
+        output: useKnowledgeLayer ? "Skipped because no matching related knowledge is active." : "Disabled by selected search scope.",
         status: "skipped" as const
       };
     }
-    const knowledgeDomainGroup = domainGroup ?? domainGroupFromCompetition(queryPlan.domainFilters.competition);
     const hits = await traceAsync(
       "search.knowledge_vector",
-      { domainGroup: knowledgeDomainGroup ?? "all", limit: Number(limit ?? 24) },
-      () => searchKnowledgeVectors(knowledgeDomainGroup, vectors.queryVector, Number(limit ?? 24), expandedQuery),
+      { domainGroup: relatedKnowledgeSourceId ?? "all", limit: Number(limit ?? 24) },
+      () => searchKnowledgeVectors(relatedKnowledgeSourceId, vectors.queryVector, Number(limit ?? 24), expandedQuery),
       "search.knowledge_vector"
     );
     return {
@@ -182,29 +197,35 @@ export async function executeSearchPipeline({
   });
 }
 
-function domainGroupFromCompetition(competition: string | undefined): SportsDomainGroup | undefined {
-  if (!competition) return undefined;
-  return competition === "NFL" ? "sports.american_football" : "sports.football";
-}
-
-function shouldUseSportsKnowledgeLayer(
+function shouldUseRelatedKnowledgeLayer(
   queryPlan: SearchPipelineRequest["queryPlan"],
   indexes: IndexRecord[],
   indexId: string | undefined,
   domainGroup: AskRequest["domainGroup"]
 ) {
-  if (domainGroup) return true;
-  if (!isSportsRoute(queryPlan.route)) return false;
-  const selectedIndex = indexId ? indexes.find((index) => index.id === indexId) : null;
-  if (selectedIndex?.domainIndexing?.enabled && selectedIndex.domainIndexing.groups.length > 0) return true;
-  const profile = expandDomainQuery(`${queryPlan.originalQuery} ${queryPlan.semanticQuery}`);
-  if (queryPlan.route === "sports_stat_qa" || queryPlan.intent.metric) return true;
-  if (queryPlan.intent.player || queryPlan.intent.eventType || queryPlan.intent.passType || queryPlan.intent.fieldZone || queryPlan.intent.role) return true;
-  if (queryPlan.domainFilters.competition || queryPlan.domainFilters.player || queryPlan.domainFilters.eventType || queryPlan.domainFilters.passType || queryPlan.domainFilters.fieldZone || queryPlan.domainFilters.role) return true;
-  return profile.domains.length > 0 || profile.labels.length > 0 || profile.football.playerRequired || profile.americanFootball.quarterbackRequired;
+  const activeSources = activeRelatedKnowledgeSources(indexes, indexId);
+  if (domainGroup) return activeSources.has(domainGroup);
+  if (queryPlan.intent.domain && activeSources.has(queryPlan.intent.domain)) return true;
+  return isRelatedKnowledgeRoute(queryPlan.route) && activeSources.size > 0;
 }
 
-function isSportsRoute(route: SearchPipelineRequest["queryPlan"]["route"]) {
+function resolveRelatedKnowledgeSourceId(indexes: IndexRecord[], indexId: string | undefined, domainGroup: AskRequest["domainGroup"]): KnowledgeSourceId | undefined {
+  if (domainGroup) return domainGroup;
+  const activeSources = activeRelatedKnowledgeSources(indexes, indexId);
+  return activeSources.size === 1 ? Array.from(activeSources)[0] : undefined;
+}
+
+function activeRelatedKnowledgeSources(indexes: IndexRecord[], indexId: string | undefined) {
+  const scopedIndexes = indexId ? indexes.filter((index) => index.id === indexId) : indexes;
+  const sources = new Set<KnowledgeSourceId>();
+  for (const index of scopedIndexes) {
+    if (!index.domainIndexing?.enabled) continue;
+    for (const group of index.domainIndexing.groups) sources.add(group);
+  }
+  return sources;
+}
+
+function isRelatedKnowledgeRoute(route: SearchPipelineRequest["queryPlan"]["route"]) {
   return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }
 

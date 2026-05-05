@@ -29,7 +29,9 @@ export type WebhookEventType =
   | "asset.indexing.failed"
   | "analysis.completed";
 
-export type SportsDomainGroup = "sports.football" | "sports.american_football";
+export type KnowledgeSourceId = string;
+export type SportsKnowledgeSourceId = "sports.football" | "sports.american_football";
+export type SportsDomainGroup = SportsKnowledgeSourceId;
 
 export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "inferred" | "heuristic" | "unavailable";
 export type CapabilityMode = "disabled" | "optional" | "required";
@@ -39,7 +41,7 @@ export type CapabilityPolicy = {
   videoVlmAnalysis: CapabilityMode;
   visionDetector: CapabilityMode;
   visionTracker: CapabilityMode;
-  soccerNetActionSpotting: CapabilityMode;
+  knowledgeActionSpotting: CapabilityMode;
   domainVlmRefinement: CapabilityMode;
 };
 
@@ -457,7 +459,7 @@ export type IndexRecord = {
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
   domainIndexing?: {
     enabled: boolean;
-    groups: SportsDomainGroup[];
+    groups: KnowledgeSourceId[];
     stages: Array<"domain_caption" | "event_label" | "structured_event">;
   };
   capabilityPolicy?: CapabilityPolicy;
@@ -542,7 +544,7 @@ export type KnowledgeVectorStoreStatus = {
   storage: "postgres" | "local";
   vectors: number;
   domains: Array<{
-    domainGroup: SportsDomainGroup;
+    domainGroup: KnowledgeSourceId;
     vectors: number;
     providers: Array<{ provider: KnowledgeEvidence["source"]; vectors: number }>;
     kinds: Array<{ kind: KnowledgeEvidence["kind"]; vectors: number }>;
@@ -574,6 +576,11 @@ export type DomainQueryPlan = {
   originalQuery: string;
   semanticQuery: string;
   rewrittenQuery: string;
+  retrieval?: {
+    textQuery: string;
+    visualQuery: string;
+    evidenceTerms: string[];
+  };
   domainFilters: DomainSearchFilters;
   route: QueryRoute;
   intent: {
@@ -806,7 +813,7 @@ export type ClipDetailResult = {
 
 export type SportsKnowledgeSnapshot = {
   domains?: Array<{
-    id: SportsDomainGroup;
+    id: KnowledgeSourceId;
     label: string;
     sport: "football" | "american_football";
     competitions: string[];
@@ -815,8 +822,8 @@ export type SportsKnowledgeSnapshot = {
     matchActivities: number;
     facts: number;
   }>;
-  competitions: Array<{ value: string; aliases: string[]; domainGroup?: SportsDomainGroup; sport?: "football" | "american_football" }>;
-  teams: Array<{ value: string; aliases: string[]; domainGroup?: SportsDomainGroup; league?: string }>;
+  competitions: Array<{ value: string; aliases: string[]; domainGroup?: KnowledgeSourceId; sport?: "football" | "american_football" }>;
+  teams: Array<{ value: string; aliases: string[]; domainGroup?: KnowledgeSourceId; league?: string }>;
   players: Array<{
     id: string;
     canonical: string;

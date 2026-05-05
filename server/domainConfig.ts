@@ -1,13 +1,13 @@
 import type { CapabilityMode, CapabilityPolicy, IndexRecord } from "../shared/types";
+import { isKnownKnowledgeSourceId, sourceListSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
 
 export function normalizeDomainIndexing(value: unknown): IndexRecord["domainIndexing"] {
   if (!value || typeof value !== "object") {
     return { enabled: false, groups: [], stages: [] };
   }
   const record = value as Record<string, unknown>;
-  const allowedGroups = new Set(["sports.football", "sports.american_football"]);
   const groups = Array.isArray(record.groups)
-    ? record.groups.filter((group): group is NonNullable<IndexRecord["domainIndexing"]>["groups"][number] => typeof group === "string" && allowedGroups.has(group))
+    ? record.groups.filter(isKnownKnowledgeSourceId)
     : [];
   const allowedStages = new Set(["domain_caption", "event_label", "structured_event"]);
   const stages = Array.isArray(record.stages)
@@ -23,25 +23,29 @@ export function normalizeDomainIndexing(value: unknown): IndexRecord["domainInde
 export function normalizeCapabilityPolicy(value: unknown, domainIndexing?: IndexRecord["domainIndexing"]): CapabilityPolicy {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const defaults = defaultCapabilityPolicy(domainIndexing);
+  const relatedKnowledgeEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
+  const knowledgeActionSpottingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsKnowledgeActionSpotting(domainIndexing?.groups));
+  const knowledgeActionSpottingValue = record.knowledgeActionSpotting ?? record.soccerNetActionSpotting;
   return {
     whisperXDiarization: normalizeMode(record.whisperXDiarization, defaults.whisperXDiarization),
     videoVlmAnalysis: normalizeMode(record.videoVlmAnalysis, defaults.videoVlmAnalysis),
-    visionDetector: normalizeMode(record.visionDetector, defaults.visionDetector),
-    visionTracker: normalizeMode(record.visionTracker, defaults.visionTracker),
-    soccerNetActionSpotting: normalizeMode(record.soccerNetActionSpotting, defaults.soccerNetActionSpotting),
-    domainVlmRefinement: normalizeMode(record.domainVlmRefinement, defaults.domainVlmRefinement)
+    visionDetector: relatedKnowledgeEnabled ? normalizeMode(record.visionDetector, defaults.visionDetector) : "disabled",
+    visionTracker: relatedKnowledgeEnabled ? normalizeMode(record.visionTracker, defaults.visionTracker) : "disabled",
+    knowledgeActionSpotting: knowledgeActionSpottingEnabled ? normalizeMode(knowledgeActionSpottingValue, defaults.knowledgeActionSpotting) : "disabled",
+    domainVlmRefinement: relatedKnowledgeEnabled ? normalizeMode(record.domainVlmRefinement, defaults.domainVlmRefinement) : "disabled"
   };
 }
 
 export function defaultCapabilityPolicy(domainIndexing?: IndexRecord["domainIndexing"]): CapabilityPolicy {
-  const sportsEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
+  const relatedKnowledgeEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
+  const knowledgeActionSpottingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsKnowledgeActionSpotting(domainIndexing?.groups));
   return {
     whisperXDiarization: envMode("CAPABILITY_WHISPERX_DIARIZATION", "optional"),
     videoVlmAnalysis: envMode("CAPABILITY_VIDEO_VLM_ANALYSIS", "optional"),
-    visionDetector: envMode("CAPABILITY_VISION_DETECTOR", sportsEnabled ? "optional" : "optional"),
-    visionTracker: envMode("CAPABILITY_VISION_TRACKER", sportsEnabled ? "optional" : "optional"),
-    soccerNetActionSpotting: envMode("CAPABILITY_SOCCERNET_ACTION_SPOTTING", "optional"),
-    domainVlmRefinement: envMode("CAPABILITY_DOMAIN_VLM_REFINEMENT", "optional")
+    visionDetector: relatedKnowledgeEnabled ? envMode("CAPABILITY_VISION_DETECTOR", "optional") : "disabled",
+    visionTracker: relatedKnowledgeEnabled ? envMode("CAPABILITY_VISION_TRACKER", "optional") : "disabled",
+    knowledgeActionSpotting: knowledgeActionSpottingEnabled ? envMode("CAPABILITY_KNOWLEDGE_ACTION_SPOTTING", envMode("CAPABILITY_SOCCERNET_ACTION_SPOTTING", "optional")) : "disabled",
+    domainVlmRefinement: relatedKnowledgeEnabled ? envMode("CAPABILITY_DOMAIN_VLM_REFINEMENT", "optional") : "disabled"
   };
 }
 

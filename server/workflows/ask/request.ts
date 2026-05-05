@@ -1,4 +1,5 @@
 import { parseDomainFilters } from "../../queryPlanner";
+import { isKnownKnowledgeSourceId } from "../../../shared/knowledgeSources";
 import type { AskRequest } from "./types";
 
 export function parseAskRequest(body: unknown): AskRequest {
@@ -19,5 +20,5 @@ export function parseAskRequest(body: unknown): AskRequest {
 }
 
 function domainGroupValue(value: unknown) {
-  return value === "sports.football" || value === "sports.american_football" ? value : undefined;
+  return isKnownKnowledgeSourceId(value) ? value : undefined;
 }

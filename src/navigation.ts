@@ -1,4 +1,5 @@
-import type { SportsDomainGroup } from "../shared/types";
+import type { KnowledgeSourceId } from "../shared/types";
+import { isKnownKnowledgeSourceId } from "../shared/knowledgeSources";
 import type { AssetDetailTab } from "./components/assets/AssetComponents";
 import type { ConsoleTab } from "./consoleTypes";
 
@@ -8,7 +9,7 @@ export type ConsoleRouteState = {
   selectedAssetId?: string | null;
   selectedSegmentId?: string | null;
   assetDetailTab?: AssetDetailTab;
-  selectedKnowledgeDomain?: SportsDomainGroup;
+  selectedKnowledgeDomain?: KnowledgeSourceId;
   seekAt?: number | null;
 };
 
@@ -18,7 +19,7 @@ export type ParsedConsoleRoute = {
   selectedAssetId: string | null;
   selectedSegmentId: string | null;
   assetDetailTab: AssetDetailTab;
-  selectedKnowledgeDomain: SportsDomainGroup | null;
+  selectedKnowledgeDomain: KnowledgeSourceId | null;
   seekAt: number | null;
 };
 
@@ -61,7 +62,7 @@ export function parseConsoleRoute(url: URL): ParsedConsoleRoute {
 
   if (root === "knowledge") {
     route.activeTab = "knowledge";
-    route.selectedKnowledgeDomain = isSportsDomainGroup(pathParts[1]) ? pathParts[1] : null;
+    route.selectedKnowledgeDomain = isKnownKnowledgeSourceId(pathParts[1]) ? pathParts[1] : null;
     return route;
   }
 
@@ -131,10 +132,6 @@ function buildConsolePath(route: ConsoleRouteState) {
 
 function isAssetDetailTab(value: string | null | undefined): value is AssetDetailTab {
   return value === "overview" || value === "workflow" || value === "timeline";
-}
-
-function isSportsDomainGroup(value: string | null | undefined): value is SportsDomainGroup {
-  return value === "sports.football" || value === "sports.american_football";
 }
 
 function tabFromLegacyQuery(value: string | null): ConsoleTab | null {

@@ -1,12 +1,16 @@
+import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AskOperation, AssetRecord, DomainQueryPlan, OrchestrationPlan, SearchResult, SportsKnowledgeAnswer } from "../../shared/types";
-import type { SearchScopeMode } from "../consoleTypes";
+import type { AskOperation, AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, SportsKnowledgeAnswer } from "../../shared/types";
+import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
+import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import {
   buildEvidenceLedger,
+  filterSearchResultsByTrust,
   labelForTrustPreset,
   trustPresetFor,
   type SearchTrustFilters
 } from "../searchTrust";
+import { ClipStrip, KnowledgeEvidenceRow, SearchSceneEvidence, TrustBadge } from "./evidence/EvidenceComponents";
 
 export type SearchConversationTurn = {
   id: string;
@@ -16,6 +20,8 @@ export type SearchConversationTurn = {
   sportsAnswer: SportsKnowledgeAnswer | null;
   results: SearchResult[];
   plan: DomainQueryPlan | null;
+  operation: AskOperation | null;
+  orchestrationPlan: OrchestrationPlan | null;
 };
 
 type MomentOpenOptions = {
@@ -36,7 +42,7 @@ export function SearchScopeSelector({
 }: {
   mode: SearchScopeMode;
   onModeChange: (mode: SearchScopeMode) => void;
-  indexes: Array<{ id: string; name: string }>;
+  indexes: IndexRecord[];
   assets: AssetRecord[];
   indexId: string;
   onIndexChange: (indexId: string) => void;
@@ -45,65 +51,84 @@ export function SearchScopeSelector({
 }) {
   const selectedIndex = indexes.find((index) => index.id === indexId) ?? null;
   const selectedAsset = assets.find((asset) => asset.id === assetId) ?? null;
+  const selectedAssetIndex = selectedAsset ? indexes.find((index) => index.id === selectedAsset.indexId) ?? null : null;
   const groupAssetCount = selectedIndex ? assets.filter((asset) => asset.indexId === selectedIndex.id).length : 0;
+  const groupDomain = describeIndexDomain(selectedIndex);
+  const allVideoDomain = describeAllVideoDomains(indexes, assets);
+  const selectedVideoDomain = describeIndexDomain(selectedAssetIndex);
+  const videoDomain = mode === "asset" ? selectedVideoDomain : allVideoDomain;
   const assetGroups = indexes
     .map((index) => ({ index, assets: assets.filter((asset) => asset.indexId === index.id) }))
     .filter((group) => group.assets.length > 0);
   const ungroupedAssets = assets.filter((asset) => !indexes.some((index) => index.id === asset.indexId));
-  const options: Array<{ mode: SearchScopeMode; label: string; detail: string; disabled?: boolean }> = [
-    { mode: "all", label: "All videos", detail: `${assets.length} videos` },
-    { mode: "group", label: "Asset group", detail: selectedIndex ? `${selectedIndex.name} · ${groupAssetCount} videos` : "Select asset group", disabled: indexes.length === 0 },
-    { mode: "asset", label: "Video", detail: selectedAsset ? selectedAsset.title : "Select video", disabled: assets.length === 0 }
-  ];
   return (
     <div className="search-scope-control" aria-label="Search scope">
-      <div className="search-scope-selector">
-        {options.map((option) => (
+      <div className="search-scope-intents">
+        <section className={`search-scope-intent ${mode === "group" ? "active" : ""}`}>
           <button
-            key={option.mode}
             type="button"
-            className={mode === option.mode ? "active" : ""}
-            disabled={option.disabled}
-            onClick={() => onModeChange(option.mode)}
+            className="scope-intent-button"
+            disabled={indexes.length === 0}
+            onClick={() => onModeChange("group")}
           >
-            <strong>{option.label}</strong>
-            <span>{option.detail}</span>
+            <strong>Asset group search</strong>
+            <span>{selectedIndex ? `${selectedIndex.name} · ${groupAssetCount} videos` : "Select asset group"}</span>
+            <em className={groupDomain.tone}>{groupDomain.label}</em>
           </button>
-        ))}
+          {mode === "group" && (
+            <label className="search-scope-picker">
+              <span>Asset group</span>
+              <select value={indexId} onChange={(event) => onIndexChange(event.target.value)} disabled={indexes.length === 0}>
+                <option value="">Select an asset group</option>
+                {indexes.map((index) => (
+                  <option key={index.id} value={index.id}>{index.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </section>
+        <section className={`search-scope-intent video ${mode !== "group" ? "active" : ""}`}>
+          <div className="scope-intent-heading">
+            <div>
+              <strong>Video search</strong>
+              <span>{mode === "asset" && selectedAsset ? selectedAsset.title : `${assets.length} videos`}</span>
+            </div>
+            <em className={videoDomain.tone}>{videoDomain.label}</em>
+          </div>
+          <div className="scope-video-switch">
+            <button type="button" className={mode === "all" ? "active" : ""} onClick={() => onModeChange("all")}>
+              <strong>All videos</strong>
+              <span>{assets.length} videos</span>
+            </button>
+            <button type="button" className={mode === "asset" ? "active" : ""} onClick={() => onModeChange("asset")} disabled={assets.length === 0}>
+              <strong>Specific video</strong>
+              <span>{selectedAsset ? selectedAsset.title : "Select video"}</span>
+            </button>
+          </div>
+          {mode === "asset" && (
+            <label className="search-scope-picker">
+              <span>Video</span>
+              <select value={assetId} onChange={(event) => onAssetChange(event.target.value)} disabled={assets.length === 0}>
+                <option value="">Select a video</option>
+                {assetGroups.map((group) => (
+                  <optgroup key={group.index.id} label={group.index.name}>
+                    {group.assets.map((asset) => (
+                      <option key={asset.id} value={asset.id}>{asset.title}</option>
+                    ))}
+                  </optgroup>
+                ))}
+                {ungroupedAssets.length > 0 && (
+                  <optgroup label="Ungrouped">
+                    {ungroupedAssets.map((asset) => (
+                      <option key={asset.id} value={asset.id}>{asset.title}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+          )}
+        </section>
       </div>
-      {mode === "group" && (
-        <label className="search-scope-picker">
-          <span>Asset group</span>
-          <select value={indexId} onChange={(event) => onIndexChange(event.target.value)} disabled={indexes.length === 0}>
-            <option value="">Select an asset group</option>
-            {indexes.map((index) => (
-              <option key={index.id} value={index.id}>{index.name}</option>
-            ))}
-          </select>
-        </label>
-      )}
-      {mode === "asset" && (
-        <label className="search-scope-picker">
-          <span>Video</span>
-          <select value={assetId} onChange={(event) => onAssetChange(event.target.value)} disabled={assets.length === 0}>
-            <option value="">Select a video</option>
-            {assetGroups.map((group) => (
-              <optgroup key={group.index.id} label={group.index.name}>
-                {group.assets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>{asset.title}</option>
-                ))}
-              </optgroup>
-            ))}
-            {ungroupedAssets.length > 0 && (
-              <optgroup label="Ungrouped">
-                {ungroupedAssets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>{asset.title}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-        </label>
-      )}
     </div>
   );
 }
@@ -111,23 +136,65 @@ export function SearchScopeSelector({
 export function SearchScopeSummary({
   scopeLabel,
   trustFilters,
-  useKnowledgeLayer
+  useKnowledgeLayer,
+  knowledgeContext,
+  onTargetClick,
+  targetExpanded = false
 }: {
   scopeLabel: string;
   trustFilters: SearchTrustFilters;
   useKnowledgeLayer: boolean;
+  knowledgeContext: SearchKnowledgeContext;
+  onTargetClick?: () => void;
+  targetExpanded?: boolean;
 }) {
+  const targetContent = (
+    <>
+      <b>Target</b>
+      {compactLabel(scopeLabel)}
+    </>
+  );
   return (
     <div className="search-scope-summary" aria-label="Current search scope">
-      <span><b>Scope</b>{compactLabel(scopeLabel)}</span>
+      {onTargetClick ? (
+        <button type="button" className="search-scope-chip target" aria-expanded={targetExpanded} onClick={onTargetClick}>
+          {targetContent}
+        </button>
+      ) : (
+        <span>{targetContent}</span>
+      )}
       <span><b>Evidence</b>{labelForTrustPreset(trustPresetFor(trustFilters))}</span>
-      <span><b>Knowledge</b>{useKnowledgeLayer ? "On" : "Off"}</span>
+      <span className={knowledgeContext.tone}><b>Knowledge</b>{compactLabel(useKnowledgeLayer ? knowledgeContext.detail : knowledgeContext.label)}</span>
     </div>
   );
 }
 
 function compactLabel(value: string) {
   return value.length > 56 ? `${value.slice(0, 53)}...` : value;
+}
+
+function describeIndexDomain(index: IndexRecord | null): { label: string; tone: SearchKnowledgeContext["tone"] } {
+  if (!index) return { label: "No target", tone: "off" };
+  if (!index.domainIndexing?.enabled) return { label: "Video-only", tone: "off" };
+  return { label: formatDomainGroups(index.domainIndexing.groups), tone: "domain" };
+}
+
+function describeAllVideoDomains(indexes: IndexRecord[], assets: AssetRecord[]): { label: string; tone: SearchKnowledgeContext["tone"] } {
+  const assetIndexIds = new Set(assets.map((asset) => asset.indexId).filter(Boolean));
+  const scopedIndexes = indexes.filter((index) => assetIndexIds.has(index.id));
+  const domainIndexes = scopedIndexes.filter((index) => index.domainIndexing?.enabled);
+  if (domainIndexes.length === 0) return { label: "Video-only", tone: "off" };
+  if (domainIndexes.length === scopedIndexes.length) return { label: formatDomainGroups(uniqueDomainGroups(domainIndexes)), tone: "domain" };
+  return { label: "Mixed knowledge", tone: "mixed" };
+}
+
+function uniqueDomainGroups(indexes: IndexRecord[]) {
+  return Array.from(new Set(indexes.flatMap((index) => index.domainIndexing?.groups ?? [])));
+}
+
+function formatDomainGroups(groups: KnowledgeSourceId[]) {
+  if (groups.length === 0) return "Knowledge-bound";
+  return groups.map(formatKnowledgeSourceLabel).join(", ");
 }
 
 export function ResultTrustSummary({ total, visible, trustFilters }: { total: number; visible: number; trustFilters: SearchTrustFilters }) {
@@ -297,75 +364,243 @@ export function SearchWorkflowTrace({
 
 export function SearchConversation({
   turns,
+  trustFilters,
   getMomentHref,
+  activeMoment,
   onOpenMoment
 }: {
   turns: SearchConversationTurn[];
+  trustFilters: SearchTrustFilters;
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
+  activeMoment?: { assetId: string; segmentId: string | null } | null;
   onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
 }) {
+  const [expandedResultTurns, setExpandedResultTurns] = useState<Record<string, boolean>>({});
   if (turns.length === 0) return null;
+  const latestResultTurnId = [...turns].reverse().find((turn) => turn.results.length > 0 && !isSearchTurnRunning(turn))?.id ?? null;
   return (
     <section className="assistant-thread" aria-label="Search conversation">
-      {turns.map((turn) => (
-        <article key={turn.id} className="assistant-turn">
-          <div className="user-bubble">
-            <span>You</span>
-            <p>{turn.query}</p>
-          </div>
-          <div className={`assistant-bubble ${turn.route}`}>
-            <span>{turn.route === "stat_qa" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
-            <p>{turn.answer}</p>
-            {turn.plan && (
-              <em>
-                {turn.plan.rewrittenQuery} · confidence {Math.round(turn.plan.confidence * 100)}%
-              </em>
-            )}
-            {turn.sportsAnswer?.fallback && <em>{turn.sportsAnswer.fallback}</em>}
-            {turn.results.length > 0 && (
-              <div className="assistant-result-strip">
-                {turn.results.slice(0, 3).map((result) => {
-                  const clip = result.clips[0];
-                  const segment = clip
-                    ? result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId) ?? result.segments[0]
-                    : result.segments[0];
-                  const href = clip
-                    ? getMomentHref(clip.assetId, clip.segmentId, clip.start)
-                    : getMomentHref(result.asset.id, segment?.id ?? null, segment?.start ?? null);
-                  const content = (
-                    <>
-                      <b>{result.asset.title}</b>
-                      <span>
-                        {result.segments.length} moments · trust {buildEvidenceLedger(result.verification, result.matchReasons, result.segments).score}%
-                      </span>
-                    </>
-                  );
-                  return onOpenMoment && segment ? (
-                    <button
-                      key={result.asset.id}
-                      type="button"
-                      onClick={() =>
-                        onOpenMoment(
-                          result.asset,
-                          segment,
-                          clip ? { start: clip.start, end: clip.end, label: clip.title } : undefined
-                        )
-                      }
-                    >
-                      {content}
-                    </button>
-                  ) : (
-                    <a key={result.asset.id} href={href} target="_blank" rel="noreferrer">
-                      {content}
-                    </a>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </article>
-      ))}
+      {turns.map((turn) => {
+        const running = isSearchTurnRunning(turn);
+        const visibleResults = filterSearchResultsByTrust(turn.results, trustFilters);
+        const resultSectionExpanded = expandedResultTurns[turn.id] ?? turn.id === latestResultTurnId;
+        return (
+          <article key={turn.id} className="assistant-turn">
+            <div className="user-bubble">
+              <span>You</span>
+              <p>{turn.query}</p>
+            </div>
+            <div className={`assistant-bubble ${turn.route} ${turn.results.length > 0 ? "has-results" : ""}`}>
+              <span>{turn.route === "stat_qa" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
+              {turn.answer && !running && <p>{turn.answer}</p>}
+              {running && (
+                <div className="assistant-search-status" aria-live="polite">
+                  <div>
+                    <strong>Searching indexed moments</strong>
+                    <span>Planning query filters, matching vectors, and ranking evidence.</span>
+                  </div>
+                  <span className="search-loading-bar" />
+                </div>
+              )}
+              {turn.plan && (
+                <em>
+                  {turn.plan.rewrittenQuery} · confidence {Math.round(turn.plan.confidence * 100)}%
+                </em>
+              )}
+              {turn.sportsAnswer?.fallback && <em>{turn.sportsAnswer.fallback}</em>}
+              {turn.sportsAnswer && <SportsAnswerCard answer={turn.sportsAnswer} />}
+              <SearchWorkflowTrace
+                operation={turn.operation}
+                queryPlan={turn.plan}
+                orchestrationPlan={turn.orchestrationPlan}
+                totalResults={turn.results.length}
+                visibleResults={visibleResults.length}
+              />
+              {turn.results.length > 0 && (
+                <AssistantResultDisclosure
+                  turn={turn}
+                  results={visibleResults}
+                  totalResults={turn.results.length}
+                  trustFilters={trustFilters}
+                  expanded={resultSectionExpanded}
+                  onToggle={() => setExpandedResultTurns((current) => ({ ...current, [turn.id]: !resultSectionExpanded }))}
+                  getMomentHref={getMomentHref}
+                  activeMoment={activeMoment}
+                  onOpenMoment={onOpenMoment}
+                />
+              )}
+            </div>
+          </article>
+        );
+      })}
     </section>
+  );
+}
+
+function isSearchTurnRunning(turn: SearchConversationTurn) {
+  return turn.operation?.status === "queued" || turn.operation?.status === "running" || (!turn.operation && turn.answer === "Searching indexed moments.");
+}
+
+function AssistantResultDisclosure({
+  turn,
+  results,
+  totalResults,
+  trustFilters,
+  expanded,
+  onToggle,
+  getMomentHref,
+  activeMoment,
+  onOpenMoment
+}: {
+  turn: SearchConversationTurn;
+  results: SearchResult[];
+  totalResults: number;
+  trustFilters: SearchTrustFilters;
+  expanded: boolean;
+  onToggle: () => void;
+  getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
+  activeMoment?: { assetId: string; segmentId: string | null } | null;
+  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+}) {
+  const visibleMomentCount = results.reduce((sum, result) => sum + Math.min(result.segments.length, 3), 0);
+  const totalMomentCount = turn.results.reduce((sum, result) => sum + Math.min(result.segments.length, 3), 0);
+  const summary = `${results.length}/${totalResults} assets · ${visibleMomentCount}/${totalMomentCount} key moments`;
+  return (
+    <section className={`assistant-results ${expanded ? "expanded" : "collapsed"}`} aria-label="Search result evidence">
+      <div className="assistant-results-header">
+        <div>
+          <span>Visual search results</span>
+          <strong>{summary}</strong>
+        </div>
+        <button type="button" className="assistant-results-toggle" aria-expanded={expanded} onClick={onToggle}>
+          <ChevronDown size={14} aria-hidden="true" />
+          {expanded ? "Hide" : "Show"}
+        </button>
+      </div>
+      {expanded && (
+        <>
+          <ResultTrustSummary total={totalResults} visible={results.length} trustFilters={trustFilters} />
+          {results.length > 0 ? (
+            <div className="assistant-result-list">
+              {results.map((result) => (
+                <AssistantResultCard
+                  key={result.asset.id}
+                  result={result}
+                  query={turn.plan?.semanticQuery ?? turn.query}
+                  getMomentHref={getMomentHref}
+                  activeMoment={activeMoment}
+                  onOpenMoment={onOpenMoment}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="assistant-results-empty">No results passed the evidence threshold. Try a more specific query.</p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function AssistantResultCard({
+  result,
+  query,
+  getMomentHref,
+  activeMoment,
+  onOpenMoment
+}: {
+  result: SearchResult;
+  query: string;
+  getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
+  activeMoment?: { assetId: string; segmentId: string | null } | null;
+  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+}) {
+  const ledger = buildEvidenceLedger(result.verification, result.matchReasons, result.segments);
+  return (
+    <article className="result-card assistant-result-card">
+      <div className="result-card-header">
+        <div>
+          <strong>{result.asset.title}</strong>
+          <span>
+            Relevance {Math.round(result.score)} · {Math.min(result.segments.length, 3)} key moments · {result.index?.name ?? "Unknown index"}
+          </span>
+        </div>
+        <TrustBadge ledger={ledger} />
+      </div>
+      {result.explain.some((item) => item.includes("mentioned players:")) && (
+        <span className="result-summary-row">
+          {result.explain
+            .filter((item) => item.includes("mentioned players:"))
+            .map((item) => (
+              <em key={item}>{item}</em>
+            ))}
+        </span>
+      )}
+      {result.knowledgeEvidence.length > 0 && <KnowledgeEvidenceRow evidence={result.knowledgeEvidence} />}
+      {result.segments.slice(0, 3).map((segment) => (
+        <SearchResultSegment
+          key={segment.id}
+          result={result}
+          segment={segment}
+          query={query}
+          getMomentHref={getMomentHref}
+          active={activeMoment?.assetId === result.asset.id && activeMoment.segmentId === segment.id}
+          onOpenMoment={onOpenMoment}
+        />
+      ))}
+      {result.clips.length > 0 && (
+        <ClipStrip
+          clips={result.clips}
+          onOpen={
+            onOpenMoment
+              ? async (clip) => {
+                  const segment = result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId);
+                  if (segment) onOpenMoment(result.asset, segment, { start: clip.start, end: clip.end, label: clip.title });
+                }
+              : undefined
+          }
+          getHref={onOpenMoment ? undefined : (clip) => getMomentHref(clip.assetId, clip.segmentId, clip.start)}
+        />
+      )}
+    </article>
+  );
+}
+
+function SearchResultSegment({
+  result,
+  segment,
+  query,
+  getMomentHref,
+  active,
+  onOpenMoment
+}: {
+  result: SearchResult;
+  segment: AssetRecord["timeline"][number];
+  query: string;
+  getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
+  active: boolean;
+  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+}) {
+  const content = (
+    <SearchSceneEvidence
+      segment={segment}
+      query={query}
+      reasons={result.matchReasons.filter((reason) => reason.segmentId === segment.id)}
+      verification={result.verification.filter((check) => check.segmentId === segment.id)}
+    />
+  );
+  const className = `result-segment ${active ? "active" : ""}`;
+  if (onOpenMoment) {
+    return (
+      <button type="button" className={className} onClick={() => onOpenMoment(result.asset, segment)}>
+        {content}
+      </button>
+    );
+  }
+  return (
+    <a className={className} href={getMomentHref(result.asset.id, segment.id, segment.start)} target="_blank" rel="noreferrer">
+      {content}
+    </a>
   );
 }
 

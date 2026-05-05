@@ -1,7 +1,7 @@
-import type { KnowledgeEvidence, KnowledgeVectorStoreStatus, SportsDomainGroup } from "../shared/types";
+import type { KnowledgeEvidence, KnowledgeSourceId, KnowledgeVectorStoreStatus } from "../shared/types";
 
 export type KnowledgeVectorStatusRecord = {
-  domainGroup: SportsDomainGroup;
+  domainGroup: KnowledgeSourceId;
   provider: KnowledgeEvidence["source"];
   kind: KnowledgeEvidence["kind"];
   vectors?: number;
@@ -11,11 +11,11 @@ export function buildKnowledgeVectorStatus(
   records: KnowledgeVectorStatusRecord[],
   storage: KnowledgeVectorStoreStatus["storage"]
 ): KnowledgeVectorStoreStatus {
-  const domainCounts = new Map<SportsDomainGroup, number>();
+  const domainCounts = new Map<KnowledgeSourceId, number>();
   const providerCounts = new Map<KnowledgeEvidence["source"], number>();
   const kindCounts = new Map<KnowledgeEvidence["kind"], number>();
-  const domainProviderCounts = new Map<SportsDomainGroup, Map<KnowledgeEvidence["source"], number>>();
-  const domainKindCounts = new Map<SportsDomainGroup, Map<KnowledgeEvidence["kind"], number>>();
+  const domainProviderCounts = new Map<KnowledgeSourceId, Map<KnowledgeEvidence["source"], number>>();
+  const domainKindCounts = new Map<KnowledgeSourceId, Map<KnowledgeEvidence["kind"], number>>();
   let vectors = 0;
 
   for (const record of records) {

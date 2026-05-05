@@ -1,4 +1,5 @@
 import type { DomainQueryPlan, OrchestrationPlan, SearchResult, TimelineSegment } from "../../../shared/types";
+import { buildEmptySearchAnswer } from "../../../shared/searchAnswerCopy";
 import { trustedDomainEvents } from "../../evidenceTrust";
 import { isPlayerInventoryQuery } from "../../queryPlanner";
 import type { AskRequest } from "./types";
@@ -15,9 +16,7 @@ export function formatSearchScope({ indexId, assetId, domainGroup, tag, modality
 export function buildAskVideoAnswer(results: SearchResult[], queryPlan: DomainQueryPlan) {
   const korean = isKoreanQuery(queryPlan.originalQuery);
   if (results.length === 0) {
-    return korean
-      ? "이 질문과 일치하는 indexed video moment를 찾지 못했습니다. 이벤트, 선수, 시즌을 더 구체화하거나 evidence filter를 낮춰보세요."
-      : "No indexed video moment matched this query. Try adding an event, player, season, or lowering the trust filters.";
+    return buildEmptySearchAnswer(queryPlan);
   }
   const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
   if (isPlayerInventoryQuery(queryPlan.originalQuery)) {

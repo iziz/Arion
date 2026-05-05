@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { SportsDomainGroup } from "../../shared/types";
+import type { KnowledgeSourceId } from "../../shared/types";
 import type { SportsKnowledgeVectorRecord } from "../sportsKnowledgeDocuments";
 import { extractKeywords } from "../intelligenceCore/textUtils";
 import { scoreKnowledgeVectorRecord } from "../knowledgeVectorScoring";
@@ -10,7 +10,7 @@ import { isPgVectorCompatible, vectorLiteral } from "./vectorUtils";
 
 type KnowledgeVectorRow = {
   id: string;
-  domain_group: SportsDomainGroup;
+  domain_group: KnowledgeSourceId;
   provider: SportsKnowledgeVectorRecord["provider"];
   kind: SportsKnowledgeVectorRecord["kind"];
   entity_type: SportsKnowledgeVectorRecord["entityType"];
@@ -44,7 +44,7 @@ export async function rebuildKnowledgeVectorStore(records: SportsKnowledgeVector
   }
 }
 
-export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24, queryText = "") {
+export async function searchKnowledgeVectors(domainGroup: KnowledgeSourceId | undefined, queryVector: number[], limit = 24, queryText = "") {
   await ensurePostgresStore();
   if (!isPgVectorCompatible(queryVector)) {
     throw new Error(`Knowledge query embedding is incompatible with configured pgvector dimensions: ${queryVector.length}.`);
@@ -147,7 +147,7 @@ function rowToResult(row: KnowledgeVectorRow) {
   };
 }
 
-function lexicalWhereClause(terms: string[], domainGroup: SportsDomainGroup | undefined) {
+function lexicalWhereClause(terms: string[], domainGroup: KnowledgeSourceId | undefined) {
   const values: string[] = [];
   const clauses: string[] = [];
   if (domainGroup) {

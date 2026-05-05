@@ -76,7 +76,7 @@ function groundCompetition(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
       entityName: competition,
       source: "sports_knowledge",
       confidence: 0.9,
-      evidenceText: `Competition scope resolved from sports knowledge: ${competition}.`,
+      evidenceText: `Competition scope resolved from related knowledge: ${competition}.`,
       competition
     }
   ];
@@ -110,7 +110,7 @@ function groundPlayers(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
         entityName: player.canonical,
         source: knowledgeSource(player.provider),
         confidence: requestedPlayer ? 0.94 : 0.78,
-        evidenceText: `${player.canonical} is indexed in sports knowledge for ${player.league}${teamText ? ` with ${teamText}` : ""}.`,
+        evidenceText: `${player.canonical} is indexed in related knowledge for ${player.league}${teamText ? ` with ${teamText}` : ""}.`,
         competition: player.league,
         season: requestedSeason,
         team: teamText || undefined

@@ -1,4 +1,5 @@
 import type { AssetRecord, DomainQueryPlan, SearchResult, VerificationCheck } from "../shared/types";
+import { buildEmptySearchAnswer } from "../shared/searchAnswerCopy";
 
 export type EvidenceLedgerItem = {
   id: string;
@@ -241,7 +242,7 @@ function hasHardConstraint(ledger: EvidenceLedger, label: string) {
 
 export function buildSearchAssistantAnswer(results: SearchResult[], plan: DomainQueryPlan) {
   if (results.length === 0) {
-    return "No indexed video moment matched this query. Try adding an event, player, season, or lowering the trust filters.";
+    return buildEmptySearchAnswer(plan);
   }
   const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
   const top = results[0];

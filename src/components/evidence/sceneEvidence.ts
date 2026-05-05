@@ -30,6 +30,7 @@ export function getSearchSceneData(segment: AssetRecord["timeline"][number], que
       watermarks: [],
       comparisons: []
     },
+    vlm: undefined,
     vision: undefined
   };
 }

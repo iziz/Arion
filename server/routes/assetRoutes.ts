@@ -152,7 +152,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const index = await getIndex(asset.indexId);
     if (!index) return sendNotFound(res, "Index not found");
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      res.status(409).json({ error: "Sports event VLM refinement requires Sports domain indexing for this asset group." });
+      res.status(409).json({ error: "Related knowledge VLM refinement requires related knowledge indexing for this asset group." });
       return;
     }
     if (!isVlmWorkerEnabled()) {
@@ -161,7 +161,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     }
     const activeJob = await getActiveAssetJob(asset.id);
     if (activeJob) {
-      logJson("info", "job.domain_vlm.duplicate", "Sports event VLM refinement ignored because an active asset job already exists", {
+      logJson("info", "job.domain_vlm.duplicate", "Related knowledge VLM refinement ignored because an active asset job already exists", {
         assetId: asset.id,
         activeJobId: activeJob.id,
         activeStage: activeJob.stage,
@@ -180,7 +180,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const index = await getIndex(String(req.params.id));
     if (!index) return sendNotFound(res, "Index not found");
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      res.status(409).json({ error: "Sports event VLM refinement requires Sports domain indexing for this asset group." });
+      res.status(409).json({ error: "Related knowledge VLM refinement requires related knowledge indexing for this asset group." });
       return;
     }
     if (!isVlmWorkerEnabled()) {

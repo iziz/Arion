@@ -1,4 +1,5 @@
 import type { AssetRecord, JobRecord, KnowledgeVectorStoreStatus, MetricsSummary, SportsKnowledgeSnapshot } from "../shared/types";
+import { isKnownKnowledgeSourceId, sourceSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
 
 export type DatabaseStatus = {
   enabled: boolean;
@@ -265,21 +266,22 @@ export function indexFormPayload(form: HTMLFormElement) {
   const domainEnabled = data.get("domainIndexingEnabled") === "on";
   const domainGroup = String(data.get("domainGroup") || "");
   const domainStages = data.getAll("domainStage").map(String);
+  const knowledgeActionEnabled = domainEnabled && sourceSupportsKnowledgeActionSpotting(domainGroup);
   return {
     name: data.get("name"),
     description: data.get("description"),
     domainIndexing: {
       enabled: domainEnabled,
-      groups: domainEnabled && (domainGroup === "sports.football" || domainGroup === "sports.american_football") ? [domainGroup] : [],
+      groups: domainEnabled && isKnownKnowledgeSourceId(domainGroup) ? [domainGroup] : [],
       stages: domainEnabled ? domainStages : []
     },
     capabilityPolicy: {
       whisperXDiarization: modeValue(data.get("capabilityWhisperX")),
       videoVlmAnalysis: modeValue(data.get("capabilityVideoVlm")),
-      visionDetector: modeValue(data.get("capabilityVisionDetector")),
-      visionTracker: modeValue(data.get("capabilityVisionTracker")),
-      soccerNetActionSpotting: modeValue(data.get("capabilitySoccerNetAction")),
-      domainVlmRefinement: modeValue(data.get("capabilityDomainVlm"))
+      visionDetector: domainEnabled ? modeValue(data.get("capabilityVisionDetector")) : "disabled",
+      visionTracker: domainEnabled ? modeValue(data.get("capabilityVisionTracker")) : "disabled",
+      knowledgeActionSpotting: knowledgeActionEnabled ? modeValue(data.get("capabilityKnowledgeAction")) : "disabled",
+      domainVlmRefinement: domainEnabled ? modeValue(data.get("capabilityDomainVlm")) : "disabled"
     }
   };
 }

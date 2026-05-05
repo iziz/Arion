@@ -1,9 +1,9 @@
-import type { KnowledgeEvidence, SportsDomainGroup, SportsKnowledgeSnapshot } from "../shared/types";
+import type { KnowledgeEvidence, KnowledgeSourceId, SportsKnowledgeSnapshot } from "../shared/types";
 import { getSportsKnowledgeSnapshot } from "./sportsKnowledge";
 
 export type SportsKnowledgeDocument = {
   id: string;
-  domainGroup: SportsDomainGroup;
+  domainGroup: KnowledgeSourceId;
   provider: KnowledgeEvidence["source"];
   kind: KnowledgeEvidence["kind"];
   entityType: KnowledgeEvidence["entityType"];
@@ -174,11 +174,11 @@ function knowledgeSource(provider: string | undefined): KnowledgeEvidence["sourc
   return "sports_knowledge";
 }
 
-function domainGroupForSport(sport: "football" | "american_football"): SportsDomainGroup {
+function domainGroupForSport(sport: "football" | "american_football"): KnowledgeSourceId {
   return sport === "american_football" ? "sports.american_football" : "sports.football";
 }
 
-function domainGroupForLeague(league: string): SportsDomainGroup {
+function domainGroupForLeague(league: string): KnowledgeSourceId {
   return league === "NFL" ? "sports.american_football" : "sports.football";
 }
 

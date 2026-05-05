@@ -3,9 +3,10 @@ import { createAnalysisGenerator } from "../analysisGenerator";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { trustedDomainEvents } from "../evidenceTrust";
 import { planDomainQuery } from "../queryPlanner";
+import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
 import { listTrackingRecords } from "../trackingStore";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
-import { extractKeywords, formatTime, unique } from "./textUtils";
+import { formatTime, unique } from "./textUtils";
 import { buildSearchMatchReasons, buildVerificationChecks, clipFromSegment, matchesSegmentDomainFilters, scoreDomainFilterMatch, scoreSources, scoreText } from "./evidence";
 import { searchAssets, selectKnowledgeEvidence } from "./search";
 
@@ -27,8 +28,9 @@ type ScoredAnalysisMoment = AnalysisMoment & {
 
 export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<AnalysisResult> {
   const queryPlan = planDomainQuery(question);
-  const domainProfile = expandDomainQuery(queryPlan.semanticQuery || question);
-  const queryTerms = extractKeywords(domainProfile.expandedText);
+  const retrievalPlan = resolveQueryRetrievalPlan(queryPlan, question);
+  const domainProfile = expandDomainQuery(retrievalPlan.textQuery);
+  const queryTerms = retrievalPlan.evidenceTerms;
   const candidateMoments = asset.timeline
     .filter((segment) => matchesSegmentDomainFilters(asset, segment, queryPlan.domainFilters))
     .map((segment) => {
@@ -46,7 +48,8 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
           domainScore
         },
         queryPlan.domainFilters,
-        queryPlan
+        queryPlan,
+        queryTerms
       );
       return {
         asset,

@@ -16,7 +16,7 @@ type WorkflowEvidence =
   | "video-vlm"
   | "vision-detector"
   | "vision-tracker"
-  | "soccernet"
+  | "knowledge-action"
   | "domain"
   | "domain-vlm"
   | "text-embedding"
@@ -188,7 +188,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
     dependsOn: ["keyframes"],
     stageAliases: ["vision-detection"],
     runtimeStages: [],
-    logTokens: ["vision-detection", "detecting players", "detector"],
+    logTokens: ["vision-detection", "detecting configured domain object candidates", "detector"],
     searchImpact: "Search impact: object evidence",
     skippedSearchImpact: "Search impact: detector not used"
   },
@@ -200,44 +200,45 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
     dependsOn: ["source", "timeline", "vision-detector"],
     stageAliases: ["vision-tracking"],
     runtimeStages: [],
-    logTokens: ["vision-tracking", "tracking players", "tracker"],
+    logTokens: ["vision-tracking", "tracking configured domain object candidates", "tracker"],
     searchImpact: "Search impact: motion evidence",
     skippedSearchImpact: "Search impact: tracker not used"
   },
-  soccernet: {
-    id: "soccernet",
-    description: "Spots football actions from video features to seed sport-specific event search.",
+  knowledgeAction: {
+    id: "knowledgeAction",
+    description: "Runs action spotting for the selected related knowledge source when that adapter supports it.",
     retryStage: "domain",
-    produces: ["soccernet"],
+    produces: ["knowledge-action"],
     dependsOn: ["source", "timeline", "vision-tracker"],
-    stageAliases: ["soccernet-action"],
+    stageAliases: ["knowledge-action", "soccernet-action"],
     runtimeStages: [],
-    logTokens: ["soccernet", "action spotting"],
-    searchImpact: "Search impact: football actions"
+    logTokens: ["knowledge action", "action spotting", "soccernet"],
+    searchImpact: "Search impact: adapter action evidence",
+    skippedSearchImpact: "Search impact: action spotting not used"
   },
   domain: {
     id: "domain",
     description: "Combines text, vision, and action signals into trusted domain event candidates.",
     retryStage: "domain",
     produces: ["domain"],
-    dependsOn: ["timeline", "vision-detector", "vision-tracker", "soccernet"],
+    dependsOn: ["timeline", "vision-detector", "vision-tracker", "knowledge-action"],
     stageAliases: ["domain-index"],
     runtimeStages: [],
-    logTokens: ["domain-index", "sports domain", "event layer"],
-    searchImpact: "Search impact: domain-aware",
-    skippedSearchImpact: "Search impact: domain layer unavailable"
+    logTokens: ["domain-index", "related knowledge", "event layer"],
+    searchImpact: "Search impact: knowledge-aware",
+    skippedSearchImpact: "Search impact: related knowledge layer unavailable"
   },
   domainVlm: {
     id: "domainVlm",
-    description: "Refines sports event candidates with VLM checks before they affect search context.",
+    description: "Refines related knowledge event candidates with VLM checks before they affect search context.",
     retryStage: "domain",
     produces: ["domain-vlm"],
     dependsOn: ["domain"],
     stageAliases: ["domain-vlm"],
     runtimeStages: [],
     logTokens: ["domain-vlm", "vlm"],
-    searchImpact: "Search impact: sports-event refinement",
-    skippedSearchImpact: "Search impact: sports-event refinement not applied"
+    searchImpact: "Search impact: knowledge-event refinement",
+    skippedSearchImpact: "Search impact: knowledge-event refinement not applied"
   },
   textEmbedding: {
     id: "textEmbedding",
@@ -379,11 +380,17 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
     produces: ["vision-tracker"],
     waitingLabel: "vision tracking to finish"
   },
+  "knowledge-action": {
+    stage: "knowledge-action",
+    activeNodeIds: ["knowledgeAction"],
+    produces: ["knowledge-action"],
+    waitingLabel: "knowledge action spotting to finish"
+  },
   "soccernet-action": {
     stage: "soccernet-action",
-    activeNodeIds: ["soccernet"],
-    produces: ["soccernet"],
-    waitingLabel: "sports action spotting to finish"
+    activeNodeIds: ["knowledgeAction"],
+    produces: ["knowledge-action"],
+    waitingLabel: "knowledge action spotting to finish"
   },
   "domain-index": {
     stage: "domain-index",
@@ -395,7 +402,7 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
     stage: "domain-vlm",
     activeNodeIds: ["domainVlm"],
     produces: ["domain-vlm"],
-    waitingLabel: "sports event VLM refinement to finish"
+    waitingLabel: "related knowledge VLM refinement to finish"
   },
   embed: {
     stage: "embed",

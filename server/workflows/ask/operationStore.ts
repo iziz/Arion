@@ -55,18 +55,13 @@ export async function listAskOperations() {
 }
 
 export function updateAskOperation(entry: AskOperationEntry, patch: Partial<Pick<AskOperation, "status" | "route" | "error" | "completedAt">>) {
-  entry.operation = {
-    ...entry.operation,
-    ...patch,
-    updatedAt: new Date().toISOString()
-  };
-  askOperations.set(entry.operation.id, entry);
+  patchAskOperation(entry, patch);
   void queuePersistAskOperation(entry);
   publishAskOperation(entry);
 }
 
 export function completeAskOperation(entry: AskOperationEntry, response: Omit<AskResponse, "operation"> & { operation: AskOperation }) {
-  updateAskOperation(entry, {
+  patchAskOperation(entry, {
     status: "succeeded",
     route: response.route,
     completedAt: new Date().toISOString(),
@@ -81,7 +76,7 @@ export function completeAskOperation(entry: AskOperationEntry, response: Omit<As
 }
 
 export function failAskOperation(entry: AskOperationEntry, message: string) {
-  updateAskOperation(entry, {
+  patchAskOperation(entry, {
     status: "failed",
     route: "error",
     completedAt: new Date().toISOString(),
@@ -99,6 +94,15 @@ export function failAskOperation(entry: AskOperationEntry, message: string) {
   };
   void queuePersistAskOperation(entry);
   publishAskOperation(entry);
+}
+
+function patchAskOperation(entry: AskOperationEntry, patch: Partial<Pick<AskOperation, "status" | "route" | "error" | "completedAt">>) {
+  entry.operation = {
+    ...entry.operation,
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+  askOperations.set(entry.operation.id, entry);
 }
 
 export function toAskResponse(entry: AskOperationEntry): AskResponse {

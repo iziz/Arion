@@ -13,9 +13,10 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -26,6 +27,13 @@ SCRIPT_DIR = ROOT_DIR / "scripts"
 PROGRESS_PREFIX = "ARION_PROGRESS "
 
 app = FastAPI(title="Arion Python Runtime Service", version="0.1.0")
+MODEL_CACHE_LOCK = asyncio.Lock()
+TEXT_EMBEDDING_MODELS: dict[str, Any] = {}
+TEXT_EMBEDDING_LOAD_LOCKS: dict[str, asyncio.Lock] = {}
+TEXT_EMBEDDING_ENCODE_LOCKS: dict[str, threading.RLock] = {}
+VISUAL_EMBEDDING_MODELS: dict[str, dict[str, Any]] = {}
+VISUAL_EMBEDDING_LOAD_LOCKS: dict[str, asyncio.Lock] = {}
+VISUAL_EMBEDDING_ENCODE_LOCKS: dict[str, threading.RLock] = {}
 
 
 @app.get("/health")
@@ -103,15 +111,11 @@ async def embed_text(request: Request) -> JSONResponse:
     kind = str(body.get("kind") or "passage")
     if kind not in {"query", "passage"}:
         raise HTTPException(status_code=400, detail="kind must be query or passage")
-    args = [
-        "embed_text.py",
-        "--model",
-        str(body.get("model") or os.environ.get("EMBEDDING_MODEL") or "intfloat/multilingual-e5-base"),
-        "--kind",
-        kind,
-    ]
-    stdin_payload = {"texts": body.get("texts") or []}
-    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
+    model_name = str(body.get("model") or os.environ.get("EMBEDDING_MODEL") or "intfloat/multilingual-e5-base")
+    texts = body.get("texts") or []
+    if not isinstance(texts, list):
+        raise HTTPException(status_code=400, detail="texts must be a list")
+    return await run_cached_response(request, lambda: embed_text_cached(model_name, kind, texts))
 
 
 @app.post("/v1/embed-visual")
@@ -120,17 +124,12 @@ async def embed_visual(request: Request) -> JSONResponse:
     mode = str(body.get("mode") or "image")
     if mode not in {"image", "text"}:
         raise HTTPException(status_code=400, detail="mode must be image or text")
-    args = [
-        "embed_visual.py",
-        "--model",
-        str(body.get("model") or os.environ.get("VISUAL_EMBEDDING_MODEL") or "ViT-L-14"),
-        "--pretrained",
-        str(body.get("pretrained") or os.environ.get("VISUAL_EMBEDDING_PRETRAINED") or "datacomp_xl_s13b_b90k"),
-        "--mode",
-        mode,
-    ]
-    stdin_payload = {"images": body.get("items") or []} if mode == "image" else {"texts": body.get("items") or []}
-    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
+    model_name = str(body.get("model") or os.environ.get("VISUAL_EMBEDDING_MODEL") or "ViT-L-14")
+    pretrained = str(body.get("pretrained") or os.environ.get("VISUAL_EMBEDDING_PRETRAINED") or "datacomp_xl_s13b_b90k")
+    items = body.get("items") or []
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+    return await run_cached_response(request, lambda: embed_visual_cached(model_name, pretrained, mode, items))
 
 
 @app.post("/v1/detect-scenes")
@@ -209,6 +208,167 @@ async def soccernet_action_spotting(request: Request) -> JSONResponse:
     ]
     stdin_payload = {"duration": body.get("duration"), "segments": body.get("segments") or []}
     return await run_script_response(request, args, body, stdin_payload=stdin_payload)
+
+
+async def run_cached_response(request: Request, task: Callable[[], Any]) -> JSONResponse:
+    request_id = request.headers.get("x-request-id") or ""
+    started = time.perf_counter()
+    result = await task()
+    return JSONResponse(
+        {
+            "ok": True,
+            "result": result,
+            "progressEvents": [],
+            "stderr": None,
+            "durationMs": round((time.perf_counter() - started) * 1000, 2),
+            "requestId": request_id or None,
+        }
+    )
+
+
+async def embed_text_cached(model_name: str, kind: str, texts: list[Any]) -> dict[str, Any]:
+    try:
+        model, lock = await get_text_embedding_model(model_name)
+        return await asyncio.to_thread(encode_text_embeddings, model, lock, model_name, kind, texts)
+    except Exception as error:
+        return {
+            "available": False,
+            "provider": "sentence-transformers",
+            "model": model_name,
+            "kind": kind,
+            "dimension": 0,
+            "embeddings": [],
+            "error": str(error),
+        }
+
+
+async def get_text_embedding_model(model_name: str) -> tuple[Any, threading.RLock]:
+    async with MODEL_CACHE_LOCK:
+        load_lock = TEXT_EMBEDDING_LOAD_LOCKS.setdefault(model_name, asyncio.Lock())
+        encode_lock = TEXT_EMBEDDING_ENCODE_LOCKS.setdefault(model_name, threading.RLock())
+    async with load_lock:
+        model = TEXT_EMBEDDING_MODELS.get(model_name)
+        if model is None:
+            model = await asyncio.to_thread(load_text_embedding_model, model_name)
+            TEXT_EMBEDDING_MODELS[model_name] = model
+        return model, encode_lock
+
+
+def load_text_embedding_model(model_name: str) -> Any:
+    from sentence_transformers import SentenceTransformer
+
+    with contextlib.redirect_stdout(sys.stderr):
+        return SentenceTransformer(model_name)
+
+
+def encode_text_embeddings(model: Any, lock: threading.RLock, model_name: str, kind: str, texts: list[Any]) -> dict[str, Any]:
+    prefix = "query: " if kind == "query" else "passage: "
+    prepared = [prefix + str(text).replace("\n", " ").strip() for text in texts]
+    with sync_lock(lock):
+        embeddings = model.encode(prepared, normalize_embeddings=True, show_progress_bar=False)
+    vectors = normalize_vectors(embeddings)
+    return {
+        "available": True,
+        "provider": "sentence-transformers",
+        "model": model_name,
+        "kind": kind,
+        "dimension": len(vectors[0]) if vectors else 0,
+        "embeddings": vectors,
+    }
+
+
+async def embed_visual_cached(model_name: str, pretrained: str, mode: str, items: list[Any]) -> dict[str, Any]:
+    try:
+        cached_model, lock = await get_visual_embedding_model(model_name, pretrained)
+        return await asyncio.to_thread(encode_visual_embeddings, cached_model, lock, model_name, pretrained, mode, items)
+    except Exception as error:
+        return {
+            "available": False,
+            "provider": "open_clip",
+            "model": model_name,
+            "pretrained": pretrained,
+            "mode": mode,
+            "dimension": 0,
+            "embeddings": [],
+            "error": str(error),
+        }
+
+
+async def get_visual_embedding_model(model_name: str, pretrained: str) -> tuple[dict[str, Any], threading.RLock]:
+    cache_key = f"{model_name}\0{pretrained}"
+    async with MODEL_CACHE_LOCK:
+        load_lock = VISUAL_EMBEDDING_LOAD_LOCKS.setdefault(cache_key, asyncio.Lock())
+        encode_lock = VISUAL_EMBEDDING_ENCODE_LOCKS.setdefault(cache_key, threading.RLock())
+    async with load_lock:
+        cached_model = VISUAL_EMBEDDING_MODELS.get(cache_key)
+        if cached_model is None:
+            cached_model = await asyncio.to_thread(load_visual_embedding_model, model_name, pretrained)
+            VISUAL_EMBEDDING_MODELS[cache_key] = cached_model
+        return cached_model, encode_lock
+
+
+def load_visual_embedding_model(model_name: str, pretrained: str) -> dict[str, Any]:
+    import open_clip
+
+    device = "cpu"
+    with contextlib.redirect_stdout(sys.stderr), contextlib.redirect_stderr(sys.stderr):
+        model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, device=device)
+        tokenizer = open_clip.get_tokenizer(model_name)
+    model.eval()
+    return {
+        "device": device,
+        "model": model,
+        "preprocess": preprocess,
+        "tokenizer": tokenizer,
+    }
+
+
+def encode_visual_embeddings(cached_model: dict[str, Any], lock: threading.RLock, model_name: str, pretrained: str, mode: str, items: list[Any]) -> dict[str, Any]:
+    import torch
+    from PIL import Image
+
+    device = cached_model["device"]
+    model = cached_model["model"]
+    preprocess = cached_model["preprocess"]
+    tokenizer = cached_model["tokenizer"]
+    with sync_lock(lock), torch.no_grad():
+        if mode == "image":
+            tensors = []
+            for image_path in items:
+                with Image.open(str(image_path)) as image:
+                    tensors.append(preprocess(image.convert("RGB")))
+            features = model.encode_image(torch.stack(tensors).to(device)) if tensors else torch.empty((0, 512))
+        else:
+            texts = [str(text).replace("\n", " ").strip() for text in items]
+            tokens = tokenizer(texts).to(device) if texts else torch.empty((0, 77), dtype=torch.long)
+            features = model.encode_text(tokens) if texts else torch.empty((0, 512))
+
+        if features.shape[0] > 0:
+            features = features / features.norm(dim=-1, keepdim=True)
+        vectors = normalize_vectors(features.cpu().tolist())
+
+    return {
+        "available": True,
+        "provider": "open_clip",
+        "model": model_name,
+        "pretrained": pretrained,
+        "mode": mode,
+        "dimension": len(vectors[0]) if vectors else 0,
+        "embeddings": vectors,
+    }
+
+
+def normalize_vectors(rows: Any) -> list[list[float]]:
+    vectors = []
+    for row in rows:
+        vectors.append([round(float(value), 6) for value in row])
+    return vectors
+
+
+@contextlib.contextmanager
+def sync_lock(lock: threading.RLock):
+    with lock:
+        yield
 
 
 async def run_script_response(

@@ -2,6 +2,7 @@ import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, Sea
 import { isTrustedDomainSegment, isTrustedDomainEvent, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "../evidenceTrust";
 import { playerTeamForSeason } from "../sportsKnowledge";
 import { isObjectEvidenceReady, segmentSearchText } from "./sceneTimeline";
+import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { formatTime, normalizeSearchValue, unique } from "./textUtils";
 
 export function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, verification: VerificationCheck[], reasons: SearchMatchReason[]): ClipResult {
@@ -46,8 +47,29 @@ function summarizeVerification(verification: VerificationCheck[]): ClipResult["v
 }
 
 export function scoreText(input: string, queryTerms: string[]) {
-  const haystack = input.toLowerCase();
-  return queryTerms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+  const normalized = normalizeForLexicalMatch(input);
+  const tokens = new Set(normalized.split(/\s+/).filter(Boolean));
+  return queryTerms.reduce((score, term) => score + (matchesLexicalTerm(normalized, tokens, term) ? 1 : 0), 0);
+}
+
+function matchesLexicalTerm(normalizedHaystack: string, tokens: Set<string>, term: string) {
+  const normalizedTerm = normalizeForLexicalMatch(term);
+  if (!normalizedTerm) return false;
+  const termTokens = normalizedTerm.split(/\s+/).filter(Boolean);
+  if (termTokens.length > 1) return normalizedHaystack.includes(termTokens.join(" "));
+  const [singleTerm] = termTokens;
+  if (!singleTerm) return false;
+  if (/[가-힣]/.test(singleTerm)) return normalizedHaystack.includes(singleTerm);
+  return tokens.has(singleTerm);
+}
+
+function normalizeForLexicalMatch(value: string) {
+  return normalizeSearchValue(value)
+    .replace(/[^a-z0-9가-힣\s-]/g, " ")
+    .split(/\s+/)
+    .map((term) => term.trim().replace(/^-+|-+$/g, ""))
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function scoreSources(sources: TimelineSegment["sources"]) {
@@ -408,7 +430,8 @@ export function buildSearchMatchReasons(
     knowledgeScore?: number;
   },
   filters?: DomainSearchFilters,
-  queryPlan?: DomainQueryPlan
+  queryPlan?: DomainQueryPlan,
+  queryTerms: string[] = []
 ): SearchMatchReason[] {
   const reasons: SearchMatchReason[] = [];
   const events = trustedDomainEvents(segment);
@@ -481,26 +504,32 @@ export function buildSearchMatchReasons(
   }
 
   if (scores.lexicalScore > 0) {
-    reasons.push({ segmentId: segment.id, kind: "lexical", label: "Text", value: `${scores.lexicalScore} query terms matched` });
+    reasons.push({
+      segmentId: segment.id,
+      kind: "lexical",
+      label: "Text",
+      value: buildLexicalReasonValue(asset, segment, queryTerms, scores.lexicalScore)
+    });
   }
   if (scores.domainScore > 0) {
-    reasons.push({ segmentId: segment.id, kind: "semantic", label: "Domain rank", value: `${scores.domainScore} sports score` });
+    reasons.push({ segmentId: segment.id, kind: "semantic", label: "Related rank", value: `${scores.domainScore} related evidence score` });
   }
   if ((scores.knowledgeScore ?? 0) > 0) {
     reasons.push({ segmentId: segment.id, kind: "evidence", label: "Knowledge", value: `${scores.knowledgeScore} grounded terms matched` });
   }
-  if (scores.semanticScore > 0.72) {
+  if (scores.semanticScore >= SEMANTIC_ONLY_THRESHOLD) {
     reasons.push({ segmentId: segment.id, kind: "semantic", label: "Vector", value: `${Math.round(scores.semanticScore * 100)}% text similarity` });
   }
-  if (scores.visualScore > 0.25) {
+  if (scores.visualScore >= VISUAL_ONLY_THRESHOLD) {
     reasons.push({ segmentId: segment.id, kind: "visual", label: "Visual", value: `${Math.round(scores.visualScore * 100)}% visual similarity` });
   }
+  const includeSportsVisionReasons = shouldIncludeSportsVisionReasons(filters, queryPlan);
   const vision = segment.sceneData?.vision;
   const trustedVision = isTrustedVisionEvidence(vision);
-  if (trustedVision && vision?.pitch.present) {
+  if (includeSportsVisionReasons && trustedVision && vision?.pitch.present) {
     reasons.push({ segmentId: segment.id, kind: "visual", label: "Pitch", value: `estimated ${Math.round(vision.pitch.confidence * 100)}%`, confidence: vision.pitch.confidence });
   }
-  if (trustedVision && vision && isObjectEvidenceReady(vision.objects.players.status)) {
+  if (includeSportsVisionReasons && trustedVision && vision && isObjectEvidenceReady(vision.objects.players.status)) {
     reasons.push({
       segmentId: segment.id,
       kind: "visual",
@@ -509,10 +538,10 @@ export function buildSearchMatchReasons(
       confidence: vision.objects.players.confidence
     });
   }
-  if (trustedVision && vision && isObjectEvidenceReady(vision.objects.ball.status)) {
+  if (includeSportsVisionReasons && trustedVision && vision && isObjectEvidenceReady(vision.objects.ball.status)) {
     reasons.push({ segmentId: segment.id, kind: "visual", label: "Ball", value: vision.objects.ball.status, confidence: vision.objects.ball.confidence });
   }
-  if (vision && isTrustedVisionFieldZone(vision)) {
+  if (includeSportsVisionReasons && vision && isTrustedVisionFieldZone(vision)) {
     reasons.push({
       segmentId: segment.id,
       kind: "visual",
@@ -523,7 +552,7 @@ export function buildSearchMatchReasons(
       confidence: vision.fieldZone.confidence
     });
   }
-  if (trustedVision && vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown") {
+  if (includeSportsVisionReasons && trustedVision && vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown") {
     reasons.push({
       segmentId: segment.id,
       kind: "visual",
@@ -532,7 +561,7 @@ export function buildSearchMatchReasons(
       confidence: vision.fieldCalibration.attackingDirectionConfidence
     });
   }
-  if (trustedVision && vision?.tracking?.status === "tracked") {
+  if (includeSportsVisionReasons && trustedVision && vision?.tracking?.status === "tracked") {
     reasons.push({
       segmentId: segment.id,
       kind: "visual",
@@ -548,7 +577,7 @@ export function buildSearchMatchReasons(
       confidence: vision.tracking.continuity
     });
   }
-  if (trustedVision && vision?.eventClassification && vision.eventClassification.label !== "unknown") {
+  if (includeSportsVisionReasons && trustedVision && vision?.eventClassification && vision.eventClassification.label !== "unknown") {
     reasons.push({
       segmentId: segment.id,
       kind: "evidence",
@@ -558,7 +587,7 @@ export function buildSearchMatchReasons(
     });
   }
 
-  if (firstEvent) {
+  if (includeSportsVisionReasons && firstEvent) {
     const receiverIdentity = firstEvent.football?.receivingPlayer.identity;
     const passerIdentity = firstEvent.football?.passingPlayer.identity;
     const quarterbackIdentity = firstEvent.americanFootball?.quarterback.identity;
@@ -578,6 +607,64 @@ export function buildSearchMatchReasons(
   }
 
   return reasons.slice(0, 10);
+}
+
+function buildLexicalReasonValue(asset: AssetRecord, segment: TimelineSegment, queryTerms: string[], lexicalScore: number) {
+  const matches = findLexicalTermMatches(asset, segment, queryTerms);
+  if (matches.length === 0) {
+    return `${lexicalScore} query ${lexicalScore === 1 ? "term" : "terms"} matched`;
+  }
+  const detail = matches
+    .slice(0, 4)
+    .map((match) => `${match.term} (${match.sources.slice(0, 2).join(", ")})`)
+    .join(" · ");
+  const suffix = matches.length > 4 ? ` · +${matches.length - 4} more` : "";
+  return `${matches.length} query ${matches.length === 1 ? "term" : "terms"} matched: ${detail}${suffix}`;
+}
+
+function findLexicalTermMatches(asset: AssetRecord, segment: TimelineSegment, queryTerms: string[]) {
+  const matches = new Map<string, Set<string>>();
+  for (const term of unique(queryTerms.map((value) => value.trim()).filter(Boolean))) {
+    for (const source of buildLexicalMatchSources(asset, segment)) {
+      const normalized = normalizeForLexicalMatch(source.text);
+      const tokens = new Set(normalized.split(/\s+/).filter(Boolean));
+      if (!matchesLexicalTerm(normalized, tokens, term)) continue;
+      if (!matches.has(term)) matches.set(term, new Set());
+      matches.get(term)?.add(source.label);
+    }
+  }
+  return Array.from(matches.entries()).map(([term, sources]) => ({
+    term,
+    sources: Array.from(sources)
+  }));
+}
+
+function buildLexicalMatchSources(asset: AssetRecord, segment: TimelineSegment) {
+  const scene = segment.sceneData;
+  return [
+    { label: "title", text: asset.title },
+    { label: "description", text: asset.description },
+    { label: "moment label", text: segment.label },
+    { label: "speech", text: segment.transcript },
+    { label: "tags", text: segment.tags.join(" ") },
+    { label: "VLM caption", text: scene?.vlm?.caption ?? "" },
+    { label: "visible text", text: scene?.vlm?.visibleText.join(" ") ?? "" },
+    { label: "screen text", text: scene?.text.screenText.join(" ") ?? "" },
+    { label: "subtitle", text: scene?.text.subtitles.join(" ") ?? "" },
+    { label: "overlay", text: scene?.text.overlays.join(" ") ?? "" },
+    { label: "VLM evidence", text: scene?.vlm?.evidence.join(" ") ?? "" },
+    { label: "VLM visual", text: [...(scene?.vlm?.actions ?? []), ...(scene?.vlm?.objects ?? [])].join(" ") },
+    { label: "VLM description", text: scene?.vlm?.description ?? "" },
+    { label: "domain text", text: isTrustedDomainSegment(segment.domain) ? segment.domain?.searchText ?? "" : "" },
+    { label: "search text", text: segmentSearchText(segment) }
+  ].filter((source) => source.text.trim().length > 0);
+}
+
+function shouldIncludeSportsVisionReasons(filters?: DomainSearchFilters, queryPlan?: DomainQueryPlan) {
+  if (queryPlan?.route === "sports_moment_retrieval" || queryPlan?.route === "sports_analysis" || queryPlan?.route === "sports_stat_qa") {
+    return true;
+  }
+  return Boolean(filters && (filters.competition || filters.season || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role));
 }
 
 export function formatDomainFilters(filters?: DomainSearchFilters) {

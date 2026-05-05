@@ -281,7 +281,7 @@ function baseIndex(): IndexRecord {
       videoVlmAnalysis: "optional",
       visionDetector: "optional",
       visionTracker: "optional",
-      soccerNetActionSpotting: "optional",
+      knowledgeActionSpotting: "optional",
       domainVlmRefinement: "optional"
     },
     assetIds: ["asset-1"],

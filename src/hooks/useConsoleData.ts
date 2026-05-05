@@ -83,7 +83,7 @@ export function useConsoleData() {
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
-      const nextSportsKnowledge = getGuardedResult(sportsKnowledgeResult, "sports knowledge", isSportsKnowledgeSnapshot, failures);
+      const nextSportsKnowledge = getGuardedResult(sportsKnowledgeResult, "related knowledge", isSportsKnowledgeSnapshot, failures);
       const nextKnowledgeVectorStore = getGuardedResult(knowledgeVectorStoreResult, "knowledge vector store", isKnowledgeVectorStoreStatus, failures);
 
       if (nextMetrics) setMetrics(nextMetrics);

@@ -239,8 +239,10 @@ def infer_frame_time(image_path, subtitle_interval, full_interval):
 
 def infer_role_hint(image_path):
     name = os.path.basename(image_path).lower()
-    if name.startswith("subtitle-"):
+    if name.startswith("subtitle-bottom-"):
         return "subtitle"
+    if name.startswith("subtitle-top-"):
+        return "overlay"
     return None
 
 

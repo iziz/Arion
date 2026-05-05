@@ -1,4 +1,5 @@
 import type { AssetRecord, IndexRecord, JobRecord } from "../shared/types";
+import { formatKnowledgeSourceLabel, sourceListSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
 import { formatDuration } from "./displayUtils";
 import {
   getActiveWorkflowNodeIds,
@@ -52,7 +53,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmJobFailed = Boolean(videoVlmJobProgress?.failed && videoVlmJobProgress.failed > 0 && videoVlmJobProgress.described === 0);
   const domainVlmSummary = getDomainVlmSummary(asset);
   const domainIndexingEnabled = Boolean(index?.domainIndexing?.enabled && index.domainIndexing.groups.length > 0);
-  const isFootballDomain = Boolean(index?.domainIndexing?.groups.includes("sports.football"));
+  const knowledgeActionSupported = sourceListSupportsKnowledgeActionSpotting(index?.domainIndexing?.groups);
   const isFailed = asset.status === "failed" || (asset.status !== "indexed" && job?.status === "failed");
 
   const textEmbeddingTrace = findTrace(traces, "embedding:");
@@ -65,8 +66,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const detectorUnavailableTrace = findTrace(traces, "vision-detector-unavailable:");
   const trackerTrace = findTrace(traces, "vision-tracker:");
   const trackerUnavailableTrace = findTrace(traces, "vision-tracker-unavailable:");
-  const soccerNetTrace = findTrace(traces, "soccernet-action:");
-  const soccerNetUnavailableTrace = findTrace(traces, "soccernet-action-unavailable:");
+  const knowledgeActionTrace = findTrace(traces, "knowledge-action:") ?? findTrace(traces, "soccernet-action:");
+  const knowledgeActionUnavailableTrace = findTrace(traces, "knowledge-action-unavailable:") ?? findTrace(traces, "soccernet-action-unavailable:");
   const asrModel = findTraceValue(traces, "faster-whisper:");
   const hasTextEmbedding = Boolean(textEmbeddingTrace) || asset.timeline.some((segment) => segment.embedding.length > 0);
 
@@ -110,15 +111,15 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmPassCompleted = assetIndexingInProgress && activeJobProgress >= 78;
   const detectorPassCompleted = assetIndexingInProgress && activeJobProgress >= 80;
   const trackerPassCompleted = assetIndexingInProgress && activeJobProgress >= 81;
-  const soccerNetPassCompleted = assetIndexingInProgress && activeJobProgress >= 82;
+  const knowledgeActionPassCompleted = assetIndexingInProgress && activeJobProgress >= 82;
   const textEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 88;
   const visualEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 96;
 
   const detectorFailed = isFailed && /visionDetector|Detector/i.test(failureMessage);
   const videoVlmFailed = isFailed && /videoVlmAnalysis|Video VLM|video-vlm/i.test(failureMessage);
   const trackerFailed = isFailed && /visionTracker|Tracker/i.test(failureMessage);
-  const soccerNetFailed = isFailed && /soccerNetActionSpotting|SoccerNet/i.test(failureMessage);
-  const domainVlmFailed = isFailed && /domainVlmRefinement|Sports event VLM|domain-vlm/i.test(failureMessage);
+  const knowledgeActionFailed = isFailed && /knowledgeActionSpotting|soccerNetActionSpotting|Knowledge action|SoccerNet/i.test(failureMessage);
+  const domainVlmFailed = isFailed && /domainVlmRefinement|(?:Sports event|Related knowledge) VLM|domain-vlm/i.test(failureMessage);
   const stalePreservedIndexedJob = Boolean(job?.status === "failed" && job.stage === "stale" && /(?:previous|partial) indexed data was preserved/i.test(failureMessage));
   const jobLogText = (job?.logs ?? []).map((entry) => entry.message).join("\n");
   const videoVlmInterruptedBeforeSave = stalePreservedIndexedJob && /Video VLM analysis completed|\[video-vlm:/i.test(jobLogText);
@@ -128,7 +129,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmDisabled = index?.capabilityPolicy?.videoVlmAnalysis === "disabled";
   const detectorDisabled = index?.capabilityPolicy?.visionDetector === "disabled";
   const trackerDisabled = index?.capabilityPolicy?.visionTracker === "disabled";
-  const soccerNetDisabled = index?.capabilityPolicy?.soccerNetActionSpotting === "disabled" || !isFootballDomain;
+  const knowledgeActionDisabled = index?.capabilityPolicy?.knowledgeActionSpotting === "disabled" || !knowledgeActionSupported;
   const domainVlmDisabled = index?.capabilityPolicy?.domainVlmRefinement === "disabled" || !domainIndexingEnabled;
 
   const domainFlow = getDomainFlowState({
@@ -543,62 +544,62 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       trace: compactModelTrace(trackerTrace ?? trackerUnavailableTrace)
     },
     {
-      id: "soccernet",
-      label: "SoccerNet action spotting",
-      detail: soccerNetTrace
-        ? formatSoccerNetTrace(soccerNetTrace)
-        : soccerNetUnavailableTrace
-          ? skipped(compactTraceFailure(soccerNetUnavailableTrace))
-          : soccerNetDisabled
-            ? isFootballDomain
-              ? skipped(`SoccerNet action spotting is ${index?.capabilityPolicy?.soccerNetActionSpotting ?? "disabled"} in the asset group capability policy`)
-              : skipped(`SoccerNet action spotting applies only to sports.football, not ${formatDomainGroups(index)}`)
-            : soccerNetFailed
+      id: "knowledgeAction",
+      label: "Knowledge action spotting",
+      detail: knowledgeActionTrace
+        ? formatKnowledgeActionTrace(knowledgeActionTrace)
+        : knowledgeActionUnavailableTrace
+          ? skipped(compactTraceFailure(knowledgeActionUnavailableTrace))
+          : knowledgeActionDisabled
+            ? index?.capabilityPolicy?.knowledgeActionSpotting === "disabled"
+              ? skipped(`knowledge action spotting is ${index.capabilityPolicy.knowledgeActionSpotting} in the asset group capability policy`)
+              : skipped(`selected related knowledge source does not expose action spotting: ${formatDomainGroups(index)}`)
+            : knowledgeActionFailed
               ? failureMessage
-              : activeJobStage === "soccernet-action"
+              : activeJobStage === "knowledge-action" || activeJobStage === "soccernet-action"
                 ? "Running configured action spotter"
-                : soccerNetPassCompleted
-                  ? waitingForIndexedAssetSave("SoccerNet action spotting")
+                : knowledgeActionPassCompleted
+                  ? waitingForIndexedAssetSave("Knowledge action spotting")
                 : isIndexed
-                  ? skipped("optional SoccerNet action spotting did not run for this indexed asset")
-                  : "Waiting for football action spotting",
-      state: soccerNetTrace
+                  ? skipped("optional knowledge action spotting did not run for this indexed asset")
+                  : "Waiting for knowledge action spotting",
+      state: knowledgeActionTrace
         ? "done"
-        : soccerNetFailed
+        : knowledgeActionFailed
           ? "error"
-          : soccerNetUnavailableTrace || soccerNetDisabled || isIndexed
+          : knowledgeActionUnavailableTrace || knowledgeActionDisabled || isIndexed
             ? "skipped"
-            : activeJobStage === "soccernet-action"
+            : activeJobStage === "knowledge-action" || activeJobStage === "soccernet-action"
               ? "active"
-              : soccerNetPassCompleted || hasActiveJob
+              : knowledgeActionPassCompleted || hasActiveJob
                 ? "waiting"
                 : "waiting",
-      trace: compactModelTrace(soccerNetTrace ?? soccerNetUnavailableTrace)
+      trace: compactModelTrace(knowledgeActionTrace ?? knowledgeActionUnavailableTrace)
     },
     {
       id: "domain",
-      label: "Sports domain events",
+      label: "Related knowledge events",
       detail: hasDomainEvents ? `${domainEventCount} event candidates${domainVlmSummary ? ` · ${domainVlmSummary}` : ""}` : domainFlow.detail,
       state: hasDomainEvents ? "done" : domainFlow.state
     },
     {
       id: "domainVlm",
-      label: "Sports event VLM refinement",
+      label: "Related knowledge VLM refinement",
       detail: domainVlmRunning
-        ? `Sports event VLM refinement running · ${job?.progress ?? 0}%`
+        ? `Related knowledge VLM refinement running · ${job?.progress ?? 0}%`
         : domainVlmSummary
           ? domainVlmSummary
           : domainVlmFailed
             ? failureMessage
             : domainVlmDisabled
               ? !domainIndexingEnabled
-                ? skipped("sports event VLM refinement requires Sports domain indexing for this asset group")
-                : skipped(`sports event VLM refinement is ${index?.capabilityPolicy?.domainVlmRefinement ?? "disabled"} in the asset group capability policy`)
+                ? skipped("related knowledge VLM refinement requires related knowledge indexing for this asset group")
+                : skipped(`related knowledge VLM refinement is ${index?.capabilityPolicy?.domainVlmRefinement ?? "disabled"} in the asset group capability policy`)
               : isIndexed
                 ? hasDomainEvents
-                  ? skipped("indexing finished without any stored sports event VLM refinement result")
-                  : skipped("no sports domain events were available for sports event VLM refinement")
-                : "Waiting for domain event layer",
+                  ? skipped("indexing finished without any stored related knowledge VLM refinement result")
+                  : skipped("no related knowledge events were available for VLM refinement")
+                : "Waiting for related knowledge event layer",
       state: domainVlmRunning
         ? "active"
         : domainVlmFailed
@@ -608,7 +609,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             : domainVlmDisabled || isIndexed
               ? "skipped"
               : "waiting",
-      helpText: "Retry runs only the sports event VLM refinement pass and then rebuilds text vectors.",
+      helpText: "Retry runs only the related knowledge VLM refinement pass and then rebuilds text vectors.",
       trace: compactModelTrace(findTrace(traces, "domain-vlm:") ?? findTrace(traces, "domain-vlm-refine:"))
     },
     {
@@ -735,9 +736,9 @@ function getCurrentWorkflowActiveDetail(stepId: string, job: JobRecord, fallback
     keyframes: "Generating segment thumbnails",
     detector: "Running configured object detector",
     tracker: "Running configured tracker",
-    soccernet: "Running configured action spotter",
-    domain: "Building sports domain event layer",
-    domainVlm: `Sports event VLM refinement running · ${job.progress}%`,
+    knowledgeAction: "Running configured action spotter",
+    domain: "Building related knowledge event layer",
+    domainVlm: `Related knowledge VLM refinement running · ${job.progress}%`,
     textEmbedding: "Computing semantic text embeddings",
     visualEmbedding: "Computing visual keyframe embeddings",
     vector: job.stage === "finalize" ? "Saving indexed asset record" : `Writing vectors (${job.stage})`,
@@ -863,26 +864,26 @@ function getDomainFlowState({
   isIndexed: boolean;
   job: JobRecord | null;
 }): { detail: string; state: FlowStepState } {
-  if (hasDomainEvents) return { detail: "Sports domain events are ready", state: "done" };
-  if (!domainIndexingEnabled) return { detail: skipped("sports domain indexing is disabled; sports event metadata is not generated for this asset group"), state: "skipped" };
+  if (hasDomainEvents) return { detail: "Related knowledge events are ready", state: "done" };
+  if (!domainIndexingEnabled) return { detail: skipped("related knowledge indexing is disabled; knowledge event metadata is not generated for this asset group"), state: "skipped" };
 
   const stage = job?.stage ?? "queued";
   const progress = job?.progress ?? 0;
   if (hasActiveJob) {
     if (stage === "domain-index") {
-      return { detail: "Building sports domain event layer", state: "active" };
+      return { detail: "Building related knowledge event layer", state: "active" };
     }
     if (assetIndexingInProgress && progress >= 82) {
       return { detail: waitingForIndexedAssetSave("Domain event"), state: "waiting" };
     }
     if (progress >= 78) {
-      return { detail: `Preparing sports domain events (${stage})`, state: "active" };
+      return { detail: `Preparing related knowledge events (${stage})`, state: "active" };
     }
     return { detail: `Waiting for detector, tracker, and text signals (${stage})`, state: "waiting" };
   }
 
-  if (isIndexed) return { detail: skipped("no trusted sports events were produced from the indexed timeline signals"), state: "skipped" };
-  return { detail: "Waiting for sports domain indexing", state: "waiting" };
+  if (isIndexed) return { detail: skipped("no trusted related knowledge events were produced from the indexed timeline signals"), state: "skipped" };
+  return { detail: "Waiting for related knowledge indexing", state: "waiting" };
 }
 
 function getFlowStepProgress(step: Omit<FlowStep, "description" | "progress" | "retryStage">, asset: AssetRecord, job: JobRecord | null) {
@@ -921,7 +922,7 @@ function getFlowStepProgress(step: Omit<FlowStep, "description" | "progress" | "
     videoVlm: [76, 78],
     detector: [78, 80],
     tracker: [80, 81],
-    soccernet: [80, 82],
+    knowledgeAction: [80, 82],
     domain: [81, 84],
     domainVlm: [82, 84],
     textEmbedding: [84, 88],
@@ -978,7 +979,7 @@ function interruptedBeforeSave(label: string) {
 
 function formatDomainGroups(index: IndexRecord | null) {
   const groups = index?.domainIndexing?.groups ?? [];
-  return groups.length > 0 ? groups.join(", ") : "no domain group";
+  return groups.length > 0 ? groups.map(formatKnowledgeSourceLabel).join(", ") : "no related knowledge source";
 }
 
 function compactTraceFailure(trace: string) {
@@ -1023,7 +1024,11 @@ function formatVideoVlmTrace(trace: string) {
   return [model, described ? `${described} described` : ""].filter(Boolean).join(" · ");
 }
 
-function formatSoccerNetTrace(trace: string) {
+function formatKnowledgeActionTrace(trace: string) {
+  if (trace.startsWith("knowledge-action:")) {
+    const [sourceId, provider, model, spots] = trace.slice("knowledge-action:".length).split(":");
+    return [formatKnowledgeSourceLabel(sourceId), provider, model, countLabel(spots, "spot")].filter(Boolean).join(" · ");
+  }
   const [model, spots] = trace.slice("soccernet-action:".length).split(":");
   return [model, countLabel(spots, "spot")].filter(Boolean).join(" · ");
 }

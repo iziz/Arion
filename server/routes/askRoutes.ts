@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { isKnownKnowledgeSourceId } from "../../shared/knowledgeSources";
 import { sendNotFound } from "../http/middleware";
 import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
@@ -7,7 +8,6 @@ import { checkVlmWorkerHealth } from "../vlmWorkerClient";
 import { executeSearchPipeline, getAskOperationResponse, parseAskRequest, scopeAssetsForQuery, startAskOperation } from "../workflows/askWorkflow";
 import {
   applyScopeDomainDefaults,
-  buildScopedMetadataMomentPlan,
   buildStatSeededMomentPlan,
   shouldContinueWithMomentRetrieval
 } from "../workflows/ask/statMomentSeed";
@@ -50,7 +50,7 @@ export function registerAskRoutes(app: Express) {
       }, indexes);
       const retrievalPlan = shouldContinueWithMomentRetrieval(queryPlan, sportsAnswer)
         ? buildStatSeededMomentPlan(queryPlan, sportsAnswer)
-        : buildScopedMetadataMomentPlan(queryPlan, sportsAnswer, scopedAssets, domainGroup);
+        : null;
       if (retrievalPlan) {
         res.json(
           await executeSearchPipeline({
@@ -123,5 +123,5 @@ export function registerAskRoutes(app: Express) {
 }
 
 function domainGroupValue(value: unknown) {
-  return value === "sports.football" || value === "sports.american_football" ? value : undefined;
+  return isKnownKnowledgeSourceId(value) ? value : undefined;
 }

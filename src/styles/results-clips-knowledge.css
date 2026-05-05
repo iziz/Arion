@@ -263,6 +263,28 @@
   color: #2b8b70;
 }
 
+.clip-reason-list {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 2;
+  gap: 4px;
+  min-width: 0;
+}
+
+.clip-reason-list span {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef7f3;
+  color: #526660;
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .clip-detail-drawer {
   position: fixed;
   z-index: 40;

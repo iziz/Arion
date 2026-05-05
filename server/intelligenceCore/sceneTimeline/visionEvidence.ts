@@ -1,6 +1,7 @@
 import type { AssetRecord, TimelineSegment, VisionEvidence } from "../../../shared/types";
 import { domainSearchText } from "../../domainIndex";
-import { isDetectedObjectStatus, isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone } from "../../evidenceTrust";
+import { isDetectedObjectStatus, isTrustedDomainSegment } from "../../evidenceTrust";
+import { videoVlmSearchText } from "../../videoVlmText";
 
 export function buildVisionEvidence(asset: AssetRecord, start: number, end: number): VisionEvidence {
   const visual = asset.intelligence.visual;
@@ -111,22 +112,9 @@ export function isObjectEvidenceReady(status?: "not_configured" | "estimated" | 
 export function segmentSearchText(segment: TimelineSegment) {
   const text = segment.sceneData?.text;
   const domainText = isTrustedDomainSegment(segment.domain) ? domainSearchText(segment) : "";
-  const vision = segment.sceneData?.vision;
-  const visionText = vision && isTrustedVisionEvidence(vision)
-    ? [
-        vision.pitch.present ? "football pitch field" : "",
-        isObjectEvidenceReady(vision.objects.players.status) ? `players ${vision.objects.players.status}` : "",
-        isObjectEvidenceReady(vision.objects.ball.status) ? `ball ${vision.objects.ball.status}` : "",
-        isTrustedVisionFieldZone(vision) ? vision.fieldZone.zone : "",
-        vision.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
-        vision.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
-        vision.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
-      ]
-      .filter(Boolean)
-      .join(" ")
-    : "";
-  if (!text) return [segment.transcript, domainText, visionText].filter(Boolean).join(" ");
-  return [text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, visionText].filter(Boolean).join(" ");
+  const vlmText = videoVlmSearchText(segment);
+  if (!text) return [segment.transcript, domainText, vlmText].filter(Boolean).join(" ");
+  return [text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, vlmText].filter(Boolean).join(" ");
 }
 
 function hexToRgb(value: string) {

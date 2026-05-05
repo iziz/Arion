@@ -6,6 +6,7 @@ import { getJob } from "./store";
 import { runAssetJob } from "./services/assetJobRunner";
 import { recoverDurableWorkerJobs } from "./services/durableJobRecovery";
 import { updateJob } from "./services/jobState";
+import { closeRealtimeEvents } from "./services/realtimeEvents";
 import { waitForRedisReady } from "./services/redisHealth";
 import {
   assetJobQueueName,
@@ -13,6 +14,8 @@ import {
   createAssetJobWorker,
   enqueueQueuedAssetJobs,
   jobWorkerConcurrency,
+  jobWorkerLockDurationMs,
+  jobWorkerStalledIntervalMs,
   redisUrl
 } from "./services/redisJobQueue";
 import { publishQueueOutbox, startQueueOutboxPublisher } from "./services/queueOutboxPublisher";
@@ -75,7 +78,9 @@ logJson("info", "jobs.worker.started", "Redis asset job worker started", {
   queue: assetJobQueueName,
   redisUrl,
   concurrency: jobWorkerConcurrency,
-  reconcileIntervalMs
+  reconcileIntervalMs,
+  lockDurationMs: jobWorkerLockDurationMs,
+  stalledIntervalMs: jobWorkerStalledIntervalMs
 });
 
 await waitForShutdown();
@@ -130,6 +135,7 @@ function waitForShutdown() {
       void worker
         .close()
         .then(() => closeAssetJobQueue())
+        .then(() => closeRealtimeEvents())
         .then(() => closePostgresStore())
         .then(resolve);
     };

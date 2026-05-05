@@ -2,14 +2,14 @@ import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilter
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
+import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
 import { isPlayerInventoryQuery } from "../queryPlanner";
 import { matchKnowledgePlayer, matchKnowledgePlayers } from "../sportsKnowledge";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
+import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { cosineSimilarity, extractKeywords, normalizeSearchValue, unique, vectorize } from "./textUtils";
 import { buildSearchMatchReasons, buildVerificationChecks, clipFromSegment, formatDomainFilters, hasActiveDomainFilters, matchesAssetDomainText, matchesSegmentDomainFilters, recencyBoost, scoreDomainFilterMatch, scoreSources, scoreText, scoreVlmQuality } from "./evidence";
 
-const SEMANTIC_ONLY_THRESHOLD = 0.82;
-const VISUAL_ONLY_THRESHOLD = 0.35;
 const ASSET_LEXICAL_WEIGHT = 24;
 const ASSET_KNOWLEDGE_WEIGHT = 8;
 const SEGMENT_LEXICAL_WEIGHT = 3;
@@ -32,13 +32,16 @@ export function searchAssets(
     useKnowledgeLayer?: boolean;
   } = {}
 ): SearchResult[] {
+  if (options.queryPlan?.route === "unsupported") return [];
+
   if (isPlayerInventoryQuery(query)) {
     return searchPlayerInventoryResults(assets, indexes, options);
   }
 
-  const queryText = options.queryPlan ? [options.queryPlan.originalQuery, options.queryPlan.semanticQuery].filter(Boolean).join(" ") : query;
-  const domainProfile = expandDomainQuery(queryText);
-  const queryTerms = extractKeywords(domainProfile.expandedText);
+  const retrievalPlan = resolveQueryRetrievalPlan(options.queryPlan, query);
+  const domainProfile = expandDomainQuery(retrievalPlan.textQuery);
+  const queryTerms = retrievalPlan.evidenceTerms;
+  const lexicalMatchThreshold = options.queryPlan?.retrieval?.evidenceTerms.length ? 1 : queryTerms.length >= 3 ? 2 : 1;
   const knowledgeProfile = buildKnowledgeSearchProfile(options.knowledgeEvidence ?? []);
   const knowledgeTerms = extractKeywords(knowledgeProfile.searchText);
   const hasVectorHits = (options.vectorHitsBySegment?.size ?? 0) > 0 || (options.visualHitsBySegment?.size ?? 0) > 0;
@@ -104,24 +107,20 @@ export function searchAssets(
           hasDomainFilters
             ? item.filterScore > 0
             : suppressBroadMatches
-              ? assetMetadataScore > 0
-              : assetMetadataScore > 0 ||
-              item.lexicalScore > 0 ||
-              item.domainScore > 0 ||
-              item.knowledgeScore > 0 ||
-              (allowSemanticOnlyMatches && (item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD))
+              ? false
+              : item.lexicalScore >= lexicalMatchThreshold ||
+                item.domainScore > 0 ||
+                item.knowledgeScore > 0 ||
+                (allowSemanticOnlyMatches && (item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD))
         );
-      const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore > 0);
+      const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore >= lexicalMatchThreshold);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
       const knowledgeSegmentMatches = segmentCandidates.filter((item) => item.knowledgeScore > 0);
-      const assetMetadataSegmentMatches = assetMetadataScore > 0 ? segmentCandidates : [];
-      const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore > 0.72 || item.visualScore > 0.25);
+      const semanticSegmentMatches = segmentCandidates.filter((item) => item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD);
       const matchingSegments = (hasDomainFilters
         ? segmentCandidates
         : lexicalSegmentMatches.length > 0 || domainSegmentMatches.length > 0 || knowledgeSegmentMatches.length > 0
           ? [...lexicalSegmentMatches, ...domainSegmentMatches, ...knowledgeSegmentMatches]
-          : assetMetadataSegmentMatches.length > 0
-            ? assetMetadataSegmentMatches
           : semanticSegmentMatches)
         .filter((item, index, items) => items.findIndex((candidate) => candidate.segment.id === item.segment.id) === index)
         .sort((a, b) => b.score - a.score);
@@ -150,7 +149,7 @@ export function searchAssets(
       );
       const selectedDetails = selectedSegments.map((item) => {
         const segment = withSceneData(asset, item.segment);
-        const matchReasons = buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan);
+        const matchReasons = buildSearchMatchReasons(asset, item.segment, item, options.domainFilters, options.queryPlan, queryTerms);
         const verification = buildVerificationChecks(asset, item.segment, options.domainFilters);
         return {
           segment,
@@ -176,7 +175,7 @@ export function searchAssets(
         },
         explain: [
           `${assetLexicalScore} lexical asset matches`,
-          `${Number(domain.toFixed(3))} sports domain rank score`,
+          `${Number(domain.toFixed(3))} related knowledge rank score`,
           `${Number(filters.toFixed(3))} structured filter score`,
           `${Number(knowledge.toFixed(3))} knowledge grounding score`,
           `${Number(semantic.toFixed(3))} semantic rank score`,

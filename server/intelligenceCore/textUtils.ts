@@ -46,13 +46,19 @@ export function checksum(input: string) {
 
 export function extractKeywords(input: string) {
   return unique(
-    input
-      .toLowerCase()
+    normalizeSearchValue(input)
       .replace(/[^a-z0-9가-힣\s-]/g, " ")
       .split(/\s+/)
       .map((term) => term.trim().replace(/^-+|-+$/g, ""))
-      .filter((term) => !stopWords.has(term) && (/[가-힣]/.test(term) ? term.length >= 2 : term.length > 2))
+      .filter((term) => isSearchKeyword(term))
   ).slice(0, 24);
+}
+
+function isSearchKeyword(term: string) {
+  if (!term) return false;
+  if (stopWords.has(term)) return false;
+  if (/[가-힣]/.test(term)) return term.length >= 2;
+  return term.length > 2;
 }
 
 export function vectorize(input: string) {
@@ -78,7 +84,12 @@ export function cosineSimilarity(a: number[], b: number[]) {
 }
 
 export function normalizeSearchValue(value: string) {
-  return value.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+  return value
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[a-z\u00c0-\u024f]+/gi, (latin) => latin.normalize("NFD").replace(/[\u0300-\u036f]/g, ""))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function unique<T>(items: T[]) {

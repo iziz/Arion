@@ -15,9 +15,9 @@ import { upsertAssetVectors } from "../localVectorStore";
 import { upsertAssetVisualVectors } from "../localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
 import { detectSceneBoundaries } from "../sceneDetection";
-import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "../soccernet";
+import { getKnowledgeActionSpottingModelLabel, isKnowledgeActionSpottingConfigured, runKnowledgeActionSpotting } from "../knowledgeAdapters";
 import { upsertAssetTracking } from "../trackingStore";
-import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
+import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineRelatedKnowledgeTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync } from "../observability";
 import { normalizeUploadedText } from "../textEncoding";
 import { getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
@@ -308,7 +308,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     }
 
     const detectionStage = await runCheckpointedIndexingStage(jobId, "vision-detection", 79, "Vision detection complete", options.retryStage, () => assetHasModelTrace(assetId, "vision-detector"), async () => {
-      await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting players and ball candidates in keyframes");
+      await updateJob(jobId, { stage: "vision-detection", progress: 78 }, "Detecting configured domain object candidates in keyframes");
       await updateAsset(assetId, { status: "embedding", progress: 78 });
       const detections = isCapabilityEnabled(timelineStage.embeddingIndex, "visionDetector")
         ? await traceAsync(
@@ -339,7 +339,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     });
 
     const trackingStage = await runCheckpointedIndexingStage(jobId, "vision-tracking", 80, "Vision tracking complete", options.retryStage, () => assetHasModelTrace(assetId, "vision-tracker"), async () => {
-      await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking players and ball candidates over video");
+      await updateJob(jobId, { stage: "vision-tracking", progress: 80 }, "Tracking configured domain object candidates over video");
       const tracks = isCapabilityEnabled(timelineStage.embeddingIndex, "visionTracker")
         ? await traceAsync(
             "stage.vision_tracking",
@@ -369,60 +369,58 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     });
 
     const domainStage = await runCheckpointedIndexingStage(jobId, "domain-index", 83, "Domain event layer complete", options.retryStage, () => assetHasDomainSnapshot(assetId, timelineStage.embeddingIndex.domainIndexing?.enabled), async () => {
-      let soccerNetTrace = "";
+      let knowledgeActionTrace = "";
+      let domainVlmTrace = "";
       let actionTimeline = trackingStage.detectedTimeline;
-      const shouldRunSoccerNet =
-        timelineStage.embeddingIndex.domainIndexing?.groups.includes("sports.football") &&
-        isCapabilityEnabled(timelineStage.embeddingIndex, "soccerNetActionSpotting") &&
-        (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(timelineStage.embeddingIndex, "soccerNetActionSpotting"));
-      if (shouldRunSoccerNet) {
-        await updateJob(jobId, { stage: "soccernet-action", progress: 81 }, `Running SoccerNet action spotting with ${soccerNetActionModel}`);
-        const soccerNetResult = await traceAsync(
-          "model.soccernet.action_spotting",
-          { jobId, assetId, model: soccerNetActionModel, segments: trackingStage.detectedTimeline.length },
-          () => spotSoccerNetActions(filePath, trackingStage.detectedTimeline, timelineStage.refreshed.duration),
-          "model.soccernet.action_spotting"
-        );
-        soccerNetTrace = soccerNetResult.available
-          ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
-          : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`;
-        if (!soccerNetResult.available) {
-          logJson("warn", "model.soccernet.action_spotting.unavailable", "SoccerNet action spotting unavailable", { jobId, assetId, error: soccerNetResult.error });
-        }
-        assertCapabilityAvailable(timelineStage.embeddingIndex, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
-        actionTimeline = applySoccerNetActionSpots(trackingStage.detectedTimeline, soccerNetResult);
+      const shouldRunKnowledgeActionSpotting =
+        isCapabilityEnabled(timelineStage.embeddingIndex, "knowledgeActionSpotting") &&
+        (isKnowledgeActionSpottingConfigured(timelineStage.embeddingIndex) || isCapabilityRequired(timelineStage.embeddingIndex, "knowledgeActionSpotting"));
+      if (shouldRunKnowledgeActionSpotting) {
+        await updateJob(jobId, { stage: "knowledge-action", progress: 81 }, `Running knowledge action spotting with ${getKnowledgeActionSpottingModelLabel(timelineStage.embeddingIndex)}`);
+        const knowledgeActionResult = await runKnowledgeActionSpotting({
+          filePath,
+          timeline: trackingStage.detectedTimeline,
+          duration: timelineStage.refreshed.duration,
+          index: timelineStage.embeddingIndex,
+          jobId,
+          assetId
+        });
+        knowledgeActionTrace = knowledgeActionResult.trace;
+        assertCapabilityAvailable(timelineStage.embeddingIndex, "knowledgeActionSpotting", knowledgeActionResult.available, knowledgeActionResult.error ?? "Knowledge action spotting unavailable.");
+        actionTimeline = knowledgeActionResult.timeline;
       }
       let timelineForDomain = timelineStage.embeddingIndex.domainIndexing?.enabled
         ? enrichDomainTimeline({ ...timelineStage.refreshed, timeline: actionTimeline }, timelineStage.embeddingIndex, actionTimeline)
         : actionTimeline;
       if (timelineStage.embeddingIndex.domainIndexing?.enabled) {
         const domainEvents = timelineForDomain.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
-        await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Sports domain event layer ready with ${domainEvents} event candidates`);
+        await updateJob(jobId, { stage: "domain-index", progress: 82 }, `Related knowledge event layer ready with ${domainEvents} event candidates`);
         const shouldRunDomainVlm =
           isCapabilityEnabled(timelineStage.embeddingIndex, "domainVlmRefinement") &&
           (isVlmWorkerEnabled() || isCapabilityRequired(timelineStage.embeddingIndex, "domainVlmRefinement"));
         if (shouldRunDomainVlm) {
           assertCapabilityAvailable(timelineStage.embeddingIndex, "domainVlmRefinement", isVlmWorkerEnabled(), "VLM_WORKER_URL is not configured.");
-          await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining sports event metadata with ${getVlmWorkerModelName()}`);
+          await updateJob(jobId, { stage: "domain-vlm", progress: 83 }, `Refining related knowledge event metadata with ${getVlmWorkerModelName()}`);
           const vlmRefinement = await traceAsync(
-            "model.vlm.sports_domain",
+            "model.vlm.related_knowledge_domain",
             { jobId, assetId, segments: timelineForDomain.length, model: getVlmWorkerModelName() },
             () =>
-              refineSportsDomainTimelineWithVlm({ ...timelineStage.refreshed, timeline: timelineForDomain }, timelineStage.embeddingIndex, timelineForDomain, {
+              refineRelatedKnowledgeTimelineWithVlm({ ...timelineStage.refreshed, timeline: timelineForDomain }, timelineStage.embeddingIndex, timelineForDomain, {
                 onProgress: async (event) => {
                   await updateJob(jobId, { stage: "domain-vlm", progress: 82 + Math.round(event.progress * 0.01) }, `[domain-vlm:${event.status}] ${event.message}`);
                 }
               }),
-            "model.vlm.sports_domain"
+            "model.vlm.related_knowledge_domain"
           );
           timelineForDomain = vlmRefinement.timeline;
+          domainVlmTrace = `domain-vlm:${vlmRefinement.model}:${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments}:invalid=${vlmRefinement.invalidSegments}:failed=${vlmRefinement.failedSegments}`;
           await updateJob(
             jobId,
             { stage: "domain-vlm", progress: 83 },
-            `Sports event VLM refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
+            `Related knowledge VLM refinement completed for ${vlmRefinement.refinedSegments}/${vlmRefinement.attemptedSegments} attempted segments (${vlmRefinement.invalidSegments} invalid, ${vlmRefinement.failedSegments} failed)`
           );
           if (vlmRefinement.errors.length > 0) {
-            logJson("warn", "model.vlm.sports_domain.partial", "Sports event VLM refinement had partial failures", { jobId, assetId, errors: vlmRefinement.errors });
+            logJson("warn", "model.vlm.related_knowledge_domain.partial", "Related knowledge VLM refinement had partial failures", { jobId, assetId, errors: vlmRefinement.errors });
           }
         }
       }
@@ -433,12 +431,12 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         summary: timelineStage.output.summary,
         timeline: timelineForDomain,
         keyframes: timelineStage.keyframes,
-        modelTrace: [soccerNetTrace]
+        modelTrace: [knowledgeActionTrace, domainVlmTrace]
       });
-      return { soccerNetTrace, timelineForDomain };
+      return { knowledgeActionTrace, domainVlmTrace, timelineForDomain };
     }, async () => {
       const asset = await requireAsset(assetId);
-      return { soccerNetTrace: traceFromAsset(asset, "soccernet-action") ?? "", timelineForDomain: asset.timeline };
+      return { knowledgeActionTrace: traceFromAsset(asset, "knowledge-action") ?? traceFromAsset(asset, "soccernet-action") ?? "", domainVlmTrace: traceFromAsset(asset, "domain-vlm") ?? "", timelineForDomain: asset.timeline };
     });
 
     const timeline = await runCheckpointedIndexingStage(jobId, "embed", 86, "Semantic text embeddings complete", options.retryStage, () => assetHasEmbeddedTimeline(assetId), async () => {
@@ -516,8 +514,8 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             videoVlmTrace,
             detectionStage.detectorTrace,
             trackingStage.trackerTrace,
-            isVlmWorkerEnabled() ? `domain-vlm:${getVlmWorkerModelName()}` : "",
-            domainStage.soccerNetTrace,
+            domainStage.domainVlmTrace,
+            domainStage.knowledgeActionTrace,
             `embedding:${getEmbeddingModelName()}`,
             visualStage.visualEmbeddingTrace
           ])
@@ -937,7 +935,8 @@ function modelTraceGroup(trace: string) {
   if (trace.startsWith("video-vlm")) return "video-vlm";
   if (trace.startsWith("vision-detector")) return "vision-detector";
   if (trace.startsWith("vision-tracker")) return "vision-tracker";
-  if (trace.startsWith("soccernet-action")) return "soccernet-action";
+  if (trace.startsWith("knowledge-action")) return "knowledge-action";
+  if (trace.startsWith("soccernet-action")) return "knowledge-action";
   if (trace.startsWith("domain-vlm")) return "domain-vlm";
   if (trace.startsWith("embedding:")) return "embedding";
   if (trace.startsWith("visual-embedding")) return "visual-embedding";

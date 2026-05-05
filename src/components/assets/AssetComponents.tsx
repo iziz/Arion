@@ -1,6 +1,7 @@
 import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
 import type { AssetRecord, IndexRecord, JobRecord } from "../../../shared/types";
+import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
 import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
 import { EmptyState } from "../common/ConsolePrimitives";
@@ -31,21 +32,22 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
         <label className="toggle-row">
           <input name="domainIndexingEnabled" type="checkbox" defaultChecked={domainEnabled} />
           <span>
-            <strong>Sports domain indexing</strong>
-            <em>Enable only for sports asset groups that need domain events.</em>
+            <strong>Related knowledge indexing</strong>
+            <em>Enable when this asset group should use a selected knowledge source.</em>
           </span>
         </label>
         <label className="field-label">
-          <span>Domain group</span>
-          <select name="domainGroup" defaultValue={domain?.groups[0] ?? "sports.football"}>
-            <option value="sports.football">sports.football</option>
-            <option value="sports.american_football">sports.american_football</option>
+          <span>Knowledge source</span>
+          <select name="domainGroup" defaultValue={domain?.groups[0] ?? KNOWLEDGE_SOURCES[0]?.id ?? ""}>
+            {KNOWLEDGE_SOURCES.map((source) => (
+              <option key={source.id} value={source.id}>{source.label}</option>
+            ))}
           </select>
         </label>
         <div className="stage-options" aria-label="Domain indexing stages">
           <label>
             <input name="domainStage" type="checkbox" value="domain_caption" defaultChecked={stages.has("domain_caption")} />
-            <span>Domain captions</span>
+            <span>Knowledge captions</span>
           </label>
           <label>
             <input name="domainStage" type="checkbox" value="event_label" defaultChecked={stages.has("event_label")} />
@@ -53,7 +55,7 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
           </label>
           <label>
             <input name="domainStage" type="checkbox" value="structured_event" defaultChecked={stages.has("structured_event")} />
-            <span>Field/player/ball event schema</span>
+            <span>Structured event schema</span>
           </label>
         </div>
         <div className="stage-options" aria-label="Model capability policy">
@@ -61,8 +63,8 @@ export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null;
           <CapabilitySelect name="capabilityVideoVlm" label="Video VLM analysis" value={policy?.videoVlmAnalysis ?? "optional"} />
           <CapabilitySelect name="capabilityVisionDetector" label="Vision detector" value={policy?.visionDetector ?? "optional"} />
           <CapabilitySelect name="capabilityVisionTracker" label="Vision tracker" value={policy?.visionTracker ?? "optional"} />
-          <CapabilitySelect name="capabilitySoccerNetAction" label="SoccerNet action spotting" value={policy?.soccerNetActionSpotting ?? "optional"} />
-          <CapabilitySelect name="capabilityDomainVlm" label="Sports event VLM refinement" value={policy?.domainVlmRefinement ?? "optional"} />
+          <CapabilitySelect name="capabilityKnowledgeAction" label="Knowledge action spotting" value={policy?.knowledgeActionSpotting ?? "optional"} />
+          <CapabilitySelect name="capabilityDomainVlm" label="Related knowledge VLM refinement" value={policy?.domainVlmRefinement ?? "optional"} />
         </div>
       </div>
       <button type="submit">
@@ -111,7 +113,7 @@ export function AssetGroupSummary({
   const vlmSummary = summarizeAssetGroupVlm(assets);
   const domainText =
     domain?.enabled && domain.groups.length > 0
-      ? `${domain.groups.join(", ")} · ${domain.stages.map((stage) => stage.replace(/_/g, " ")).join(", ")}`
+      ? `${domain.groups.map(formatKnowledgeSourceLabel).join(", ")} · ${domain.stages.map((stage) => stage.replace(/_/g, " ")).join(", ")}`
       : "Off";
   const capabilityText = index?.capabilityPolicy ? summarizeCapabilityPolicy(index.capabilityPolicy) : "capabilities optional";
   return (
@@ -138,7 +140,7 @@ export function AssetGroupSummary({
         {index?.description && <p>{index.description}</p>}
         <div className="asset-group-meta">
           <span>
-            <b>Domain</b>
+            <b>Related knowledge</b>
             {domainText}
           </span>
           <span>
@@ -146,7 +148,7 @@ export function AssetGroupSummary({
             {capabilityText}
           </span>
           <span>
-            <b>Sports event VLM</b>
+            <b>Knowledge VLM</b>
             {vlmSummary}
           </span>
         </div>
@@ -157,10 +159,10 @@ export function AssetGroupSummary({
           className="asset-group-refine"
           disabled={!canRefineVlm || busy}
           onClick={() => index && onRefineVlm(index.id)}
-          title="Run Qwen VLM refinement for sports event metadata in this asset group"
+          title="Run Qwen VLM refinement for related knowledge metadata in this asset group"
         >
           <BrainCircuit size={17} />
-          <span>Event VLM refine</span>
+          <span>Knowledge VLM refine</span>
         </button>
         <span className="asset-group-status-pill">{index?.status ?? "empty"}</span>
       </div>
@@ -249,8 +251,8 @@ export function AssetFlow({
     },
     {
       label: "4. Domain evidence",
-      detail: "Apply trusted sports action spotting, sports event construction, and optional event-level VLM refinement.",
-      steps: flow.filter((step) => step.id === "soccernet" || step.id === "domain" || step.id === "domainVlm")
+      detail: "Apply trusted action spotting, related knowledge event construction, and optional event-level VLM refinement.",
+      steps: flow.filter((step) => step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
     },
     {
       label: "5. Vector index",
@@ -629,7 +631,7 @@ function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetReco
   if (stepId === "visual" || stepId === "keyframes") return <VisualResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "videoVlm") return <VideoVlmResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
-  if (stepId === "detector" || stepId === "tracker" || stepId === "soccernet") return <ModelTraceResult asset={asset} step={step} />;
+  if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} step={step} />;
   if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
@@ -1004,7 +1006,7 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             <VisualUsageCard
               title="Domain confidence support"
               value={`${visionSegments} vision segments · ${domainEvents} events`}
-              detail="Detector, tracker, VLM, and low-weight coarse profile cues support sports event confidence."
+              detail="Detector, tracker, VLM, and low-weight coarse profile cues support related knowledge event confidence."
             />
           </div>
           <details className="workflow-raw-details">
@@ -1205,7 +1207,7 @@ function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep 
       ? ["vision-detector:"]
       : stepId === "tracker"
         ? ["vision-tracker:"]
-        : ["soccernet-action:"];
+        : ["knowledge-action:", "soccernet-action:"];
   const unavailablePrefixes = prefixes.map((prefix) => prefix.replace(":", "-unavailable:"));
   const traces = asset.intelligence.modelTrace.filter((trace) => [...prefixes, ...unavailablePrefixes].some((prefix) => trace.startsWith(prefix)));
   const visionSegments = asset.timeline.filter((segment) => segment.sceneData?.vision);
@@ -1233,7 +1235,7 @@ function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep 
         { label: "Tracking", value: averageTrackCoverage === null ? formatCoverage(trackingSegments, visionSegments.length) : `${Math.round(averageTrackCoverage * 100)}% avg`, tone: trackingSegments > 0 ? "good" : "warning" },
         { label: "Field calibration", value: calibratedFields > 0 ? `${calibratedFields} calibrated` : "estimated/not configured", tone: calibratedFields > 0 ? "good" : "neutral" }
       ]}
-      usedBy={stepId === "soccernet" ? ["football action labels", "domain events", "search filters"] : ["domain events", "receiver/passer inference", "pressure/pocket judgment", "visual verification"]}
+      usedBy={stepId === "knowledgeAction" ? ["adapter action labels", "domain events", "search filters"] : ["domain events", "receiver/passer inference", "pressure/pocket judgment", "visual verification"]}
       quality={[
         { label: "Trace", value: traces.length > 0 ? "stored" : "missing", tone: traces.length > 0 ? "good" : "warning" },
         { label: "Player evidence", value: playerDetected > 0 ? "available" : "not detected", tone: playerDetected > 0 ? "good" : "warning" },
@@ -1298,9 +1300,9 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             { label: "Top event types", value: topTypes.length ? topTypes.map(([type, count]) => `${type} ${count}`).join(" · ") : "None", tone: topTypes.length ? "good" : "warning" },
             { label: "Identity resolved", value: `${identityCount}/${domainEvents.length}`, tone: identityCount > 0 ? "good" : "neutral" },
             { label: "Avg confidence", value: averageConfidence === null ? "Unknown" : `${Math.round(averageConfidence * 100)}%`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" },
-            { label: "Sports-event VLM checks", value: vlmSegments.length.toString(), tone: vlmSegments.length > 0 ? "good" : "neutral" }
+            { label: "Knowledge VLM checks", value: vlmSegments.length.toString(), tone: vlmSegments.length > 0 ? "good" : "neutral" }
           ]}
-      usedBy={isVlmNode ? ["sports event refinement", "evidence review", "confidence calibration"] : ["domain-aware search", "stat-seeded retrieval", "play-style analysis", "structured filters"]}
+      usedBy={isVlmNode ? ["knowledge event refinement", "evidence review", "confidence calibration"] : ["knowledge-aware search", "stat-seeded retrieval", "play-style analysis", "structured filters"]}
       quality={isVlmNode
         ? [
             { label: "Optional stage", value: "not required for base search", tone: "neutral" },
@@ -1308,7 +1310,7 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             { label: "Failures", value: failedCount > 0 ? `${failedCount} failed` : "none stored", tone: failedCount > 0 ? "bad" : "good" }
           ]
         : [
-            { label: "Sports structure", value: domainEvents.length > 0 ? "searchable" : "missing", tone: domainEvents.length > 0 ? "good" : "warning" },
+            { label: "Knowledge structure", value: domainEvents.length > 0 ? "searchable" : "missing", tone: domainEvents.length > 0 ? "good" : "warning" },
             { label: "Player identity", value: identityCount > 0 ? "resolved candidates" : "not resolved", tone: identityCount > 0 ? "good" : "neutral" },
             { label: "Confidence", value: averageConfidence === null ? "unknown" : `${Math.round(averageConfidence * 100)}% avg`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" }
           ]}
@@ -1320,12 +1322,12 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
               return (
                 <article key={`${segment.id}-domain-vlm`} className="domain-event-row">
                   <div>
-                    <strong>{vlm?.message || vlm?.error || "Sports-event VLM check"}</strong>
+                    <strong>{vlm?.message || vlm?.error || "Related knowledge VLM check"}</strong>
                     <button
                       type="button"
                       className="time-link"
-                      aria-label={`Play sports-event VLM check at ${formatDuration(segment.start)}`}
-                      onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: "Sports-event VLM check" })}
+                      aria-label={`Play related knowledge VLM check at ${formatDuration(segment.start)}`}
+                      onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: "Related knowledge VLM check" })}
                     >
                       {formatDuration(segment.start)}-{formatDuration(segment.end)} · {vlm?.status} · {vlm?.model} · {Math.round((vlm?.confidence ?? 0) * 100)}%
                     </button>
@@ -1334,7 +1336,7 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
                 </article>
               );
             })}
-            {vlmSegments.length === 0 && <span className="empty-inline">No sports-event VLM checks are stored.</span>}
+            {vlmSegments.length === 0 && <span className="empty-inline">No related knowledge VLM checks are stored.</span>}
           </div>
         ) : (
           <div className="domain-event-list">
@@ -1407,7 +1409,7 @@ function DomainEventRow({
         <summary>Evidence and limitations</summary>
         {segment.domain?.vlm && (
           <p>
-            Sports-event VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
+            Related knowledge VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
             {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
           </p>
         )}
@@ -1637,7 +1639,7 @@ export function SceneDataSummary({ segment }: { segment: AssetRecord["timeline"]
       ))}
       {domainSummary && (
         <span>
-          <b>Domain</b>
+          <b>Related knowledge</b>
           {truncateText(domainSummary, 150)}
         </span>
       )}

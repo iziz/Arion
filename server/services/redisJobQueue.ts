@@ -13,6 +13,8 @@ export type RedisAssetJobData = {
 export const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
 export const assetJobQueueName = normalizeBullMqQueueName(process.env.JOB_QUEUE_NAME, "arion-asset-jobs");
 export const jobWorkerConcurrency = parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 1);
+export const jobWorkerLockDurationMs = parsePositiveInteger(process.env.JOB_WORKER_LOCK_DURATION_MS, 10 * 60 * 1000);
+export const jobWorkerStalledIntervalMs = parsePositiveInteger(process.env.JOB_WORKER_STALLED_INTERVAL_MS, 60 * 1000);
 
 const defaultJobOptions: JobsOptions = {
   attempts: 1,
@@ -74,7 +76,10 @@ export async function enqueueQueuedAssetJobs() {
 export function createAssetJobWorker(processor: Processor<RedisAssetJobData, void, string>) {
   return new Worker<RedisAssetJobData, void, string>(assetJobQueueName, processor, {
     connection: createRedisConnection("worker"),
-    concurrency: jobWorkerConcurrency
+    concurrency: jobWorkerConcurrency,
+    lockDuration: jobWorkerLockDurationMs,
+    stalledInterval: jobWorkerStalledIntervalMs,
+    maxStalledCount: 3
   });
 }
 

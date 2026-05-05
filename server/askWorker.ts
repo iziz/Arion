@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { closePostgresStore } from "./postgresStore";
 import { logJson } from "./observability";
 import { runAskOperationById } from "./workflows/askWorkflow";
+import { closeRealtimeEvents } from "./services/realtimeEvents";
 import {
   askOperationQueueName,
   askQueueReconcileIntervalMs,
@@ -95,6 +96,7 @@ function waitForShutdown() {
       void worker
         .close()
         .then(() => closeAskOperationQueue())
+        .then(() => closeRealtimeEvents())
         .then(() => closePostgresStore())
         .then(resolve);
     };

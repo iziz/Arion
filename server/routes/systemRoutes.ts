@@ -68,16 +68,22 @@ export function registerSystemRoutes(app: Express) {
   app.get("/api/events/stream", async (req, res) => {
     writeSseHeaders(res);
     const operationId = req.query.operationId ? String(req.query.operationId) : null;
-    const heartbeat = setInterval(() => writeSseComment(res, "heartbeat"), 15000);
+    const writeCurrentAskOperation = async () => {
+      if (!operationId || res.writableEnded) return;
+      const response = await getAskOperationResponse(operationId);
+      if (response && !res.writableEnded) writeSseRealtimeEvent(res, "ask.operation.updated", { operationId, operation: response.operation, response });
+    };
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded) return;
+      writeSseComment(res, "heartbeat");
+      void writeCurrentAskOperation().catch(() => undefined);
+    }, 15000);
     const unsubscribe = registerRealtimeSubscriber(res, {
       jobId: req.query.jobId ? String(req.query.jobId) : null,
       assetId: req.query.assetId ? String(req.query.assetId) : null,
       operationId
     });
-    if (operationId) {
-      const response = await getAskOperationResponse(operationId);
-      if (response) writeSseRealtimeEvent(res, "ask.operation.updated", { operationId, operation: response.operation, response });
-    }
+    await writeCurrentAskOperation();
     req.on("close", () => {
       clearInterval(heartbeat);
       unsubscribe();

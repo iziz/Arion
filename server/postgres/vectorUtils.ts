@@ -1,5 +1,6 @@
 import type { TimelineSegment } from "../../shared/types";
-import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone } from "../evidenceTrust";
+import { isTrustedDomainSegment } from "../evidenceTrust";
+import { videoVlmSearchText } from "../videoVlmText";
 
 export type VectorRow = {
   id: string;
@@ -68,8 +69,6 @@ export function vectorLiteral(vector: number[]) {
 }
 
 export function vectorRecordText(segment: TimelineSegment) {
-  const vision = segment.sceneData?.vision;
-  const trustedVision = isTrustedVisionEvidence(vision);
   const domainSearchText = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.searchText : "";
   const domainCaptions = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.captions : [];
   const domainLabels = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.labels : [];
@@ -79,15 +78,7 @@ export function vectorRecordText(segment: TimelineSegment) {
     domainSearchText,
     ...domainCaptions,
     ...domainLabels,
-    trustedVision && vision?.pitch.present ? `pitch ${Math.round(vision.pitch.confidence * 100)}%` : "",
-    trustedVision && vision?.objects.players.status === "detected" ? `players ${vision.objects.players.status} ${vision.objects.players.countEstimate}` : "",
-    trustedVision && vision?.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
-    isTrustedVisionFieldZone(vision) ? `zone ${vision?.fieldZone.zone}` : "",
-    isTrustedVisionFieldZone(vision) && vision?.fieldCalibration ? `field calibration ${vision.fieldCalibration.status} ${vision.fieldCalibration.method}` : "",
-    trustedVision && vision?.fieldCalibration && vision.fieldCalibration.attackingDirection !== "unknown" ? `attacking direction ${vision.fieldCalibration.attackingDirection}` : "",
-    trustedVision && vision?.tracking?.ballTrackId ? `ball track ${vision.tracking.ballTrackId}` : "",
-    trustedVision && vision?.tracking?.nearestPlayerTrackId ? `nearest player ${vision.tracking.nearestPlayerTrackId}` : "",
-    trustedVision && vision?.eventClassification && vision.eventClassification.label !== "unknown" ? `event classifier ${vision.eventClassification.label}` : ""
+    videoVlmSearchText(segment)
   ]
     .filter(Boolean)
     .join(" ");

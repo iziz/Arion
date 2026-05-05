@@ -1,4 +1,4 @@
-import type { SportsDomainGroup } from "../shared/types";
+import type { KnowledgeSourceId } from "../shared/types";
 import { embedPassageTexts } from "./localEmbeddingRuntime";
 import * as pgStore from "./postgresStore";
 import type { SportsKnowledgeDocument, SportsKnowledgeVectorHit, SportsKnowledgeVectorRecord } from "./sportsKnowledgeDocuments";
@@ -24,7 +24,7 @@ export async function rebuildKnowledgeVectorStore(documents: SportsKnowledgeDocu
   return { count: next.length, storage: "postgres" as const };
 }
 
-export async function searchKnowledgeVectors(domainGroup: SportsDomainGroup | undefined, queryVector: number[], limit = 24, queryText = ""): Promise<SportsKnowledgeVectorHit[]> {
+export async function searchKnowledgeVectors(domainGroup: KnowledgeSourceId | undefined, queryVector: number[], limit = 24, queryText = ""): Promise<SportsKnowledgeVectorHit[]> {
   assertPostgresRuntime();
   return pgStore.searchKnowledgeVectors(domainGroup, queryVector, limit, queryText);
 }

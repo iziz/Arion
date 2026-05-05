@@ -5,7 +5,7 @@ import { logJson, traceAsync } from "../observability";
 import { updateJob } from "../services/jobState";
 import { getAsset, getIndex, saveAsset } from "../store";
 import { upsertAssetTracking } from "../trackingStore";
-import { getVlmWorkerModelName, isVlmWorkerEnabled, refineSportsDomainTimelineWithVlm } from "../vlmWorkerClient";
+import { getVlmWorkerModelName, isVlmWorkerEnabled, refineRelatedKnowledgeTimelineWithVlm } from "../vlmWorkerClient";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../../shared/types";
 
 export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
@@ -15,13 +15,13 @@ export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, tim
 
 export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
   try {
-    await updateJob(jobId, { status: "running", stage: "domain-vlm", progress: 5 }, `Starting sports event VLM refinement with ${getVlmWorkerModelName()}`);
+    await updateJob(jobId, { status: "running", stage: "domain-vlm", progress: 5 }, `Starting related knowledge VLM refinement with ${getVlmWorkerModelName()}`);
     const asset = await getAsset(assetId);
     if (!asset) throw new Error("Asset not found");
     const index = await getIndex(asset.indexId);
     if (!index) throw new Error("Index not found");
     if (!index.domainIndexing?.enabled || index.domainIndexing.groups.length === 0) {
-      throw new Error("Sports event VLM refinement requires Sports domain indexing for this asset group.");
+      throw new Error("Related knowledge VLM refinement requires related knowledge indexing for this asset group.");
     }
     if (!isVlmWorkerEnabled()) {
       throw new Error("VLM_WORKER_URL is not configured.");
@@ -31,12 +31,12 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
     }
 
     const timelineWithDomain = ensureDomainTimeline(asset, index, asset.timeline);
-    await updateJob(jobId, { stage: "domain-vlm", progress: 10 }, `Prepared ${timelineWithDomain.length} timeline segments for sports event VLM refinement`);
+    await updateJob(jobId, { stage: "domain-vlm", progress: 10 }, `Prepared ${timelineWithDomain.length} timeline segments for related knowledge VLM refinement`);
     const result = await traceAsync(
-      "model.vlm.sports_domain.retry",
+      "model.vlm.related_knowledge_domain.retry",
       { jobId, assetId, segments: timelineWithDomain.length, model: getVlmWorkerModelName() },
       () =>
-        refineSportsDomainTimelineWithVlm({ ...asset, timeline: timelineWithDomain }, index, timelineWithDomain, {
+        refineRelatedKnowledgeTimelineWithVlm({ ...asset, timeline: timelineWithDomain }, index, timelineWithDomain, {
           onProgress: async (event) => {
             await updateJob(
               jobId,
@@ -46,17 +46,17 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
             );
           }
         }),
-      "model.vlm.sports_domain.retry"
+      "model.vlm.related_knowledge_domain.retry"
     );
 
-    await updateJob(jobId, { stage: "embed", progress: 84 }, "Rebuilding text embeddings after VLM domain refinement");
+    await updateJob(jobId, { stage: "embed", progress: 84 }, "Rebuilding text embeddings after related knowledge VLM refinement");
     const timeline = await traceAsync(
       "model.embedding.text.domain_vlm",
       { jobId, assetId, segments: result.timeline.length },
       () => embedTimelineSegments(result.timeline),
       "model.embedding.text.domain_vlm"
     );
-    await updateJob(jobId, { stage: "vector-upsert-text", progress: 92 }, "Writing refined domain timeline vectors");
+    await updateJob(jobId, { stage: "vector-upsert-text", progress: 92 }, "Writing refined related knowledge timeline vectors");
     await traceAsync(
       "stage.vector_upsert.text.domain_vlm",
       { jobId, assetId, segments: timeline.length },
@@ -85,10 +85,10 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
     await updateJob(
       jobId,
       { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
-      `Sports event VLM refinement complete: ${result.refinedSegments}/${result.attemptedSegments} refined, ${result.invalidSegments} invalid, ${result.failedSegments} failed`
+      `Related knowledge VLM refinement complete: ${result.refinedSegments}/${result.attemptedSegments} refined, ${result.invalidSegments} invalid, ${result.failedSegments} failed`
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sports event VLM refinement failed";
+    const message = error instanceof Error ? error.message : "Related knowledge VLM refinement failed";
     logJson("error", "job.domain_vlm.failed", message, { jobId, assetId });
     await updateJob(
       jobId,

@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { TimelineSegment } from "../shared/types";
-import { isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "./evidenceTrust";
+import { isTrustedDomainSegment, trustedDomainEvents } from "./evidenceTrust";
 import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
+import { videoVlmSearchText } from "./videoVlmText";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const embedScript = path.resolve("scripts", "embed_text.py");
@@ -54,41 +55,9 @@ export function segmentToEmbeddingText(segment: TimelineSegment) {
   const textEvidence = sceneText
     ? [sceneText.speech, ...sceneText.subtitles, ...sceneText.screenText, ...sceneText.overlays].filter(Boolean).join(" ")
     : segment.transcript;
-  const trustedVision = isTrustedVisionEvidence(segment.sceneData?.vision);
-  const imageEvidence = trustedVision ? (segment.sceneData?.image.labels.join(", ") ?? "") : "";
-  const visionEvidence = segment.sceneData?.vision && trustedVision
-    ? [
-        segment.sceneData.vision.pitch.present ? `pitch ${Math.round(segment.sceneData.vision.pitch.confidence * 100)}%` : "",
-        segment.sceneData.vision.objects.players.status === "detected"
-          ? `players ${segment.sceneData.vision.objects.players.status} ${segment.sceneData.vision.objects.players.countEstimate}`
-          : "",
-        segment.sceneData.vision.objects.ball.status === "detected" ? `ball ${segment.sceneData.vision.objects.ball.status}` : "",
-        isTrustedVisionFieldZone(segment.sceneData.vision) ? `zone ${segment.sceneData.vision.fieldZone.zone}` : "",
-        isTrustedVisionFieldZone(segment.sceneData.vision) && segment.sceneData.vision.fieldCalibration ? `field calibration ${segment.sceneData.vision.fieldCalibration.status} ${segment.sceneData.vision.fieldCalibration.method}` : "",
-        segment.sceneData.vision.fieldCalibration?.attackingDirection !== "unknown" ? `attacking direction ${segment.sceneData.vision.fieldCalibration?.attackingDirection}` : "",
-        segment.sceneData.vision.tracking?.ballTrackId ? `ball track ${segment.sceneData.vision.tracking.ballTrackId}` : "",
-        segment.sceneData.vision.tracking?.nearestPlayerTrackId ? `nearest player ${segment.sceneData.vision.tracking.nearestPlayerTrackId}` : "",
-        segment.sceneData.vision.eventClassification && segment.sceneData.vision.eventClassification.label !== "unknown" ? `event classifier ${segment.sceneData.vision.eventClassification.label}` : ""
-      ]
-      .filter(Boolean)
-      .join(" ")
-    : "";
-  const videoVlm = segment.sceneData?.vlm;
-  const videoVlmEvidence = videoVlm?.status === "described"
-      ? [
-        videoVlm.caption,
-        videoVlm.description,
-        videoVlm.sceneType ? `scene type ${videoVlm.sceneType}` : "",
-        videoVlm.labels.length > 0 ? `labels ${videoVlm.labels.join(", ")}` : "",
-        videoVlm.objects.length > 0 ? `objects ${videoVlm.objects.join(", ")}` : "",
-        videoVlm.actions.length > 0 ? `actions ${videoVlm.actions.join(", ")}` : "",
-        videoVlm.visibleText.length > 0 ? `visible text ${videoVlm.visibleText.join(" ")}` : ""
-      ]
-      .filter(Boolean)
-      .join(" ")
-    : "";
+  const videoVlmEvidence = videoVlmSearchText(segment);
   const domainEvidence = segment.domain && isTrustedDomainSegment(segment.domain) ? `${segment.domain.searchText}. Events: ${trustedDomainEvents(segment).map((event) => event.caption).join(" ")}` : "";
-  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. Image: ${imageEvidence}. Vision: ${visionEvidence}. VLM: ${videoVlmEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
+  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. VLM: ${videoVlmEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
 }
 
 async function embedTexts(texts: string[], kind: EmbeddingKind) {

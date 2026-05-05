@@ -227,7 +227,7 @@ export async function analyzeTimelineWithVlm(
   };
 }
 
-export async function refineSportsDomainTimelineWithVlm(
+export async function refineRelatedKnowledgeTimelineWithVlm(
   asset: AssetRecord,
   index: IndexRecord,
   timeline: TimelineSegment[],
@@ -284,12 +284,12 @@ export async function refineSportsDomainTimelineWithVlm(
           skippedSegments,
           segmentId: segment.id,
           status: "refined",
-          message: `Sports event VLM refined segment ${attemptedSegments}/${totalSegments}`,
+          message: `Related knowledge VLM refined segment ${attemptedSegments}/${totalSegments}`,
           progress: getProgress(attemptedSegments, totalSegments)
         });
       } else {
         invalidSegments += 1;
-        refined.push(markVlmQuality(segment, response, "invalid", "Sports event VLM response did not contain a usable caption and confidence.", null, model));
+        refined.push(markVlmQuality(segment, response, "invalid", "Related knowledge VLM response did not contain a usable caption and confidence.", null, model));
         await emitProgress(options, {
           totalSegments,
           attemptedSegments,
@@ -299,15 +299,15 @@ export async function refineSportsDomainTimelineWithVlm(
           skippedSegments,
           segmentId: segment.id,
           status: "invalid",
-          message: `Sports event VLM returned invalid structure for segment ${attemptedSegments}/${totalSegments}`,
+          message: `Related knowledge VLM returned invalid structure for segment ${attemptedSegments}/${totalSegments}`,
           progress: getProgress(attemptedSegments, totalSegments)
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Sports event VLM refinement failed";
+      const message = error instanceof Error ? error.message : "Related knowledge VLM refinement failed";
       failedSegments += 1;
       errors.push(`${segment.id}: ${message}`);
-      refined.push(markVlmQuality(segment, null, "failed", "Sports event VLM refinement failed.", message, model));
+      refined.push(markVlmQuality(segment, null, "failed", "Related knowledge VLM refinement failed.", message, model));
       await emitProgress(options, {
         totalSegments,
         attemptedSegments,
@@ -317,7 +317,7 @@ export async function refineSportsDomainTimelineWithVlm(
         skippedSegments,
         segmentId: segment.id,
         status: "failed",
-        message: `Sports event VLM failed for segment ${attemptedSegments}/${totalSegments}: ${message}`,
+        message: `Related knowledge VLM failed for segment ${attemptedSegments}/${totalSegments}: ${message}`,
         progress: getProgress(attemptedSegments, totalSegments)
       });
     }
@@ -335,6 +335,15 @@ export async function refineSportsDomainTimelineWithVlm(
     skipped: false,
     errors: errors.slice(0, 8)
   };
+}
+
+export function refineSportsDomainTimelineWithVlm(
+  asset: AssetRecord,
+  index: IndexRecord,
+  timeline: TimelineSegment[],
+  options: VlmRefinementOptions = {}
+) {
+  return refineRelatedKnowledgeTimelineWithVlm(asset, index, timeline, options);
 }
 
 function getVlmWorkerUrl() {

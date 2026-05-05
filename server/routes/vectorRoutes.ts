@@ -14,15 +14,16 @@ export function registerVectorRoutes(app: Express) {
     res.json(await searchVectors(req.query.indexId ? String(req.query.indexId) : undefined, queryVector, Number(req.query.limit ?? 25)));
   });
 
-	  app.get("/api/visual-search", async (req, res) => {
-	    const query = String(req.query.q ?? "");
-	    try {
-	      const queryVector = await traceAsync("search.embed_visual_query", {}, () => embedVisualQuery(query), "search.embed_visual_query");
-	      res.json(await searchVisualVectors(req.query.indexId ? String(req.query.indexId) : undefined, queryVector, Number(req.query.limit ?? 25)));
-	    } catch (error) {
-	      res.status(503).json({ available: false, error: error instanceof Error ? error.message : "Visual embedding unavailable" });
-	    }
-	  });
+  app.get("/api/visual-search", async (req, res) => {
+    const query = String(req.query.q ?? "");
+    const expandedQuery = expandDomainQuery(query).expandedText;
+    try {
+      const queryVector = await traceAsync("search.embed_visual_query", {}, () => embedVisualQuery(expandedQuery), "search.embed_visual_query");
+      res.json(await searchVisualVectors(req.query.indexId ? String(req.query.indexId) : undefined, queryVector, Number(req.query.limit ?? 25)));
+    } catch (error) {
+      res.status(503).json({ available: false, error: error instanceof Error ? error.message : "Visual embedding unavailable" });
+    }
+  });
 
   app.post("/api/vector-store/rebuild", async (_req, res) => {
     res.json(await rebuildVectorStores());

@@ -1,6 +1,6 @@
 import { BarChart3, Database, Layers3, Route, X } from "lucide-react";
 import { useState } from "react";
-import type { KnowledgeVectorStoreStatus, SportsDomainGroup, SportsKnowledgeSnapshot } from "../../../shared/types";
+import type { KnowledgeSourceId, KnowledgeVectorStoreStatus, SportsKnowledgeSnapshot } from "../../../shared/types";
 import { EmptyState } from "../common/ConsolePrimitives";
 
 export function SportsKnowledgePanel({
@@ -10,7 +10,7 @@ export function SportsKnowledgePanel({
   onDelete
 }: {
   sportsKnowledge: SportsKnowledgeSnapshot | null;
-  selectedDomain: SportsDomainGroup;
+  selectedDomain: KnowledgeSourceId;
   knowledgeVectorStore: KnowledgeVectorStoreStatus | null;
   onDelete: (id: string) => Promise<void>;
 }) {
@@ -55,13 +55,13 @@ export function SportsKnowledgePanel({
     <section className="panel knowledge-panel">
       <div className="panel-title">
         <Layers3 size={18} />
-        <h2>Sports Knowledge</h2>
+        <h2>Related Knowledge</h2>
       </div>
       {sportsKnowledge ? (
         <>
-          <section className="knowledge-domain-summary" aria-label="Selected knowledge domain summary">
+          <section className="knowledge-domain-summary" aria-label="Selected related knowledge summary">
             <div>
-              <p className="section-label">Knowledge Domain</p>
+              <p className="section-label">Related Knowledge</p>
               <h2>{selectedDomainInfo?.label ?? selectedDomain}</h2>
               <p>{selectedDomain} · {domainSport.replace(/_/g, " ")}</p>
             </div>
@@ -78,7 +78,7 @@ export function SportsKnowledgePanel({
             selectedDomain={selectedDomain}
             availableKnowledgeDocuments={availableKnowledgeDocuments}
           />
-          <div className="knowledge-stat-grid" aria-label="Domain knowledge statistics">
+          <div className="knowledge-stat-grid" aria-label="Related knowledge statistics">
             <KnowledgeStatCard title="Providers" items={providerStats} />
             <KnowledgeStatCard title="Seasons" items={seasonStats} />
             <KnowledgeStatCard title="Teams" items={teamStats} />
@@ -103,7 +103,7 @@ export function SportsKnowledgePanel({
           <div className="knowledge-columns">
             <section className="knowledge-list-block wide">
               <div className="subsection-heading compact">
-                <p className="section-label">Domain Registry</p>
+                <p className="section-label">Knowledge Registry</p>
                 <h3>{domainCompetitions.length} competitions · {domainTeams.length} teams</h3>
               </div>
               <div className="knowledge-registry-grid">
@@ -116,7 +116,7 @@ export function SportsKnowledgePanel({
                       </span>
                     </article>
                   ))}
-                  {domainCompetitions.length === 0 && <EmptyState text="No competition registry exists for this domain." />}
+                  {domainCompetitions.length === 0 && <EmptyState text="No competition registry exists for this related knowledge." />}
                 </div>
                 <div className="table-list knowledge-table compact-table">
                   {domainTeams.slice(0, 80).map((team) => (
@@ -127,7 +127,7 @@ export function SportsKnowledgePanel({
                       </span>
                     </article>
                   ))}
-                  {domainTeams.length === 0 && <EmptyState text="No team registry exists for this domain." />}
+                  {domainTeams.length === 0 && <EmptyState text="No team registry exists for this related knowledge." />}
                 </div>
               </div>
             </section>
@@ -174,7 +174,7 @@ export function SportsKnowledgePanel({
                     </span>
                   </article>
                 ))}
-                {domainActivities.length === 0 && <EmptyState text="No match activity has been imported for this domain yet." />}
+                {domainActivities.length === 0 && <EmptyState text="No match activity has been imported for this related knowledge yet." />}
               </div>
             </section>
             <section className="knowledge-list-block wide">
@@ -191,13 +191,13 @@ export function SportsKnowledgePanel({
                     </span>
                   </article>
                 ))}
-                {domainFacts.length === 0 && <EmptyState text="No team, table, attendance, or nationality facts have been imported for this domain yet." />}
+                {domainFacts.length === 0 && <EmptyState text="No team, table, attendance, or nationality facts have been imported for this related knowledge yet." />}
               </div>
             </section>
           </div>
         </>
       ) : (
-        <EmptyState text="Sports knowledge registry is loading." />
+        <EmptyState text="Knowledge registry is loading." />
       )}
     </section>
   );
@@ -209,7 +209,7 @@ function KnowledgeRagCard({
   availableKnowledgeDocuments
 }: {
   status: KnowledgeVectorStoreStatus | null;
-  selectedDomain: SportsDomainGroup;
+  selectedDomain: KnowledgeSourceId;
   availableKnowledgeDocuments: number;
 }) {
   const domainStatus = status?.domains.find((domain) => domain.domainGroup === selectedDomain) ?? null;
@@ -226,14 +226,14 @@ function KnowledgeRagCard({
           <p className="section-label">Knowledge RAG</p>
           <h3>{ready ? "Vectorized knowledge retrieval" : "Vector store not built"}</h3>
           <p>
-            {status?.storage ?? "unknown"} · {domainVectors}/{availableKnowledgeDocuments} selected-domain documents · {status?.vectors ?? 0} total vectors
+            {status?.storage ?? "unknown"} · {domainVectors}/{availableKnowledgeDocuments} selected knowledge documents · {status?.vectors ?? 0} total vectors
           </p>
         </div>
         <span className="rag-status-pill">{ready ? `${coverage}% coverage` : "not ready"}</span>
       </div>
       <div className="knowledge-rag-metrics">
         <span><b>Storage</b>{status?.storage ?? "unknown"}</span>
-        <span><b>Domain vectors</b>{domainVectors}</span>
+        <span><b>Knowledge vectors</b>{domainVectors}</span>
         <span><b>Total vectors</b>{status?.vectors ?? 0}</span>
         <span><b>Coverage</b>{ready ? `${coverage}%` : "0%"}</span>
       </div>
@@ -278,7 +278,7 @@ function KnowledgeStatCard({ title, items }: { title: string; items: Array<{ lab
 }
 
 function sourceLabel(source: string) {
-  return source === "sports_knowledge" ? "sports knowledge" : source;
+  return source === "sports_knowledge" ? "knowledge registry" : source;
 }
 
 function kindLabel(kind: string) {

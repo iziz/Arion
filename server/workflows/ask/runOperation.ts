@@ -7,7 +7,6 @@ import { completeAskOperation, failAskOperation, updateAskOperation } from "./op
 import { executeSearchPipeline, scopeAssetsForQuery } from "./searchPipeline";
 import {
   applyScopeDomainDefaults,
-  buildScopedMetadataMomentPlan,
   buildStatSeededMomentPlan,
   shouldContinueWithMomentRetrieval
 } from "./statMomentSeed";
@@ -50,11 +49,11 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       };
     });
 
-    const shouldRunSportsKnowledgeAnswer = request.useKnowledgeLayer && queryPlan.route === "sports_stat_qa";
-    const sportsAnswer = shouldRunSportsKnowledgeAnswer
+    const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && queryPlan.route === "sports_stat_qa";
+    const sportsAnswer = shouldRunKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
-          label: "Sports knowledge answer",
+          label: "Knowledge answer",
           owner: "knowledge",
           input: queryPlan.rewrittenQuery
         }, async () => {
@@ -68,29 +67,26 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       : disabledSportsKnowledgeAnswer(
           queryPlan,
           request.useKnowledgeLayer
-            ? "Sports knowledge direct answer is skipped for non-stat video retrieval."
-            : "Sports knowledge layer is disabled for this search.",
+            ? "Knowledge direct answer is skipped for non-stat video retrieval."
+            : "Knowledge layer is disabled for this search.",
           request.useKnowledgeLayer
-            ? "Sports knowledge direct answer was skipped because the route is not sports_stat_qa."
-            : "Sports knowledge layer was disabled by the search option."
+            ? "Knowledge direct answer was skipped because the route is not a knowledge-answer route."
+            : "Knowledge layer was disabled by the selected search scope."
         );
-    if (!shouldRunSportsKnowledgeAnswer) {
+    if (!shouldRunKnowledgeAnswer && queryPlan.route === "sports_stat_qa") {
       skipAskStep(entry, {
         id: "knowledge_answer",
-        label: "Sports knowledge answer",
+        label: "Knowledge answer",
         owner: "knowledge",
         input: queryPlan.rewrittenQuery,
-        output: request.useKnowledgeLayer ? "Skipped because this route does not need a direct sports-stat answer." : "Disabled by search option."
+        output: request.useKnowledgeLayer ? "Skipped because this route does not need a direct knowledge answer." : "Disabled by selected search scope."
       });
     }
 
     const statSeeded = shouldContinueWithMomentRetrieval(queryPlan, sportsAnswer);
-    const metadataSeeded = statSeeded ? null : buildScopedMetadataMomentPlan(queryPlan, sportsAnswer, scoped.scopedAssets, request.domainGroup);
-    const continueWithRetrieval = statSeeded || Boolean(metadataSeeded);
+    const continueWithRetrieval = statSeeded;
     if (statSeeded) {
       queryPlan = buildStatSeededMomentPlan(queryPlan, sportsAnswer);
-    } else if (metadataSeeded) {
-      queryPlan = metadataSeeded;
     }
 
     const orchestrationPlan = await runAskStep(entry, {

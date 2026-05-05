@@ -1,95 +1,52 @@
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, IndexRecord, OrchestrationPlan, PlayerIdentity } from "../shared/types";
+import { isKnownKnowledgeSourceId } from "../shared/knowledgeSources";
 import { trustedDomainEvents } from "./evidenceTrust";
 import { getKnowledgePlayer } from "./sportsKnowledge";
 
 export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: AssetRecord[], indexes: IndexRecord[]): OrchestrationPlan {
   const mode = inferMode(queryPlan);
+  const domainWorkflow = shouldUseDomainWorkflow(queryPlan, indexes, assets);
   const knowledgePlayer = queryPlan.intent.player ? getKnowledgePlayer(queryPlan.intent.player) : null;
-  const identityCandidates = collectIdentityCandidates(queryPlan.intent.player, assets);
-  const scopeCoverage = estimateScopeCoverage(queryPlan, assets);
-  const identityDecision = buildIdentityDecision(queryPlan.intent.player, identityCandidates, mode, knowledgePlayer);
-  const scopeDecision = buildScopeDecision(queryPlan, scopeCoverage);
+  const identityCandidates = domainWorkflow ? collectIdentityCandidates(queryPlan.intent.player, assets) : [];
+  const scopeCoverage = domainWorkflow ? estimateScopeCoverage(queryPlan, assets) : { competition: "not_requested", season: "not_requested" };
+  const identityDecision = domainWorkflow ? buildIdentityDecision(queryPlan.intent.player, identityCandidates, mode, knowledgePlayer) : null;
+  const scopeDecision = domainWorkflow ? buildScopeDecision(queryPlan, scopeCoverage) : null;
   const routeDecision = buildRouteDecision(mode, indexes, assets, queryPlan);
-  const retrievalFallback = [
-    routeDecision.status !== "ready" ? routeDecision.reason : "",
-    scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
-    scopeCoverage.season === "missing" ? "Season scope is not indexed for some matching assets; keep it as a soft constraint." : "",
-    queryPlan.intent.player && identityCandidates.length === 0 && !knowledgePlayer ? "Player identity is unresolved; use lexical title/ASR fallback." : "",
-    queryPlan.intent.player && identityCandidates.length === 0 && knowledgePlayer && mode !== "stat_qa"
-      ? "Player identity is known in sports knowledge, but not grounded in indexed video evidence yet."
-      : ""
-  ].filter(Boolean);
-  const warnings = [
-    ...queryPlan.warnings,
-    routeDecision.status !== "ready" ? routeDecision.reason : "",
-    identityDecision.status !== "ready" ? identityDecision.reason : "",
-    scopeDecision.status !== "ready" ? scopeDecision.reason : "",
-    mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
-  ].filter(Boolean);
+  const decisions = domainWorkflow && identityDecision && scopeDecision ? [identityDecision, scopeDecision, routeDecision] : [routeDecision];
+  const retrievalFallback = domainWorkflow
+    ? [
+        routeDecision.status !== "ready" ? routeDecision.reason : "",
+        scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
+        scopeCoverage.season === "missing" ? "Season scope is not indexed for some matching assets; keep it as a soft constraint." : "",
+        queryPlan.intent.player && identityCandidates.length === 0 && !knowledgePlayer ? "Player identity is unresolved; use lexical title/ASR fallback." : "",
+        queryPlan.intent.player && identityCandidates.length === 0 && knowledgePlayer && mode !== "stat_qa"
+          ? "Player identity is known in the selected related knowledge, but not grounded in indexed video evidence yet."
+          : ""
+      ].filter(Boolean)
+    : [routeDecision.status !== "ready" ? routeDecision.reason : ""].filter(Boolean);
+  const warnings = domainWorkflow
+    ? [
+        ...queryPlan.warnings,
+        routeDecision.status !== "ready" ? routeDecision.reason : "",
+        identityDecision && identityDecision.status !== "ready" ? identityDecision.reason : "",
+        scopeDecision && scopeDecision.status !== "ready" ? scopeDecision.reason : "",
+        mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
+      ].filter(Boolean)
+    : [
+        ...queryPlan.warnings,
+        routeDecision.status !== "ready" ? routeDecision.reason : "",
+        mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
+      ].filter(Boolean);
+  const confidence = Number(Math.min(queryPlan.confidence, ...decisions.map((decision) => decision.confidence)).toFixed(2));
 
   return {
     query: queryPlan.originalQuery,
     mode,
-    confidence: Number(Math.min(queryPlan.confidence, identityDecision.confidence, scopeDecision.confidence, routeDecision.confidence).toFixed(2)),
-    decisions: [identityDecision, scopeDecision, routeDecision],
-    steps: [
-      {
-        id: "parse",
-        label: "Intent and constraint parsing",
-        owner: "router",
-        action: "Extract player, event, field zone, role, competition, and season constraints.",
-        input: queryPlan.originalQuery,
-        output: queryPlan.rewrittenQuery,
-        status: "ready",
-        trigger: "Every natural-language query starts here."
-      },
-      {
-        id: "identity",
-        label: "Identity resolution",
-        owner: "knowledge",
-        action: "Resolve requested player name against indexed roster/title/ASR/OCR evidence.",
-        input: queryPlan.intent.player ?? "No player constraint",
-        output: identityCandidates.slice(0, 3).map((candidate) => `${candidate.value} ${Math.round(candidate.confidence * 100)}%`).join(", ") || "No candidate",
-        status: identityDecision.status,
-        trigger: "Player-specific query or role-specific event."
-      },
-      {
-        id: "scope",
-        label: "Context scope check",
-        owner: "knowledge",
-        action: "Check whether competition and season are grounded in domain scope metadata.",
-        input: [queryPlan.domainFilters.competition, queryPlan.domainFilters.season].filter(Boolean).join(" · ") || "No scope constraint",
-        output: `competition=${scopeCoverage.competition}, season=${scopeCoverage.season}`,
-        status: scopeDecision.status,
-        trigger: "Competition or season is present in the query."
-      },
-      buildGroundingStep(queryPlan),
-      {
-        id: "retrieve",
-        label: mode === "stat_qa" ? "Stats retrieval" : "Moment retrieval",
-        owner: mode === "stat_qa" ? "knowledge" : "retrieval",
-        action: mode === "stat_qa" ? "Query imported sports statistics before video moment retrieval." : "Run semantic retrieval and merge it with structured event filters.",
-        input: queryPlan.semanticQuery,
-        output: mode === "stat_qa" ? "Player metric answer with source evidence" : "Ranked timeline segments with match reasons",
-        status: retrievalFallback.length > 0 ? "fallback" : "ready",
-        trigger: mode === "stat_qa" ? "Questions asking for counts or season totals." : "Need to find all candidate moments before analysis."
-      },
-      {
-        id: "generate",
-        label: mode === "stat_qa" ? "Direct answer" : "Pattern analysis",
-        owner: "analysis",
-        action:
-          mode === "stat_qa"
-            ? "Return a sourced stats answer without treating video search results as official totals."
-            : mode === "search"
-              ? "Skip generation unless the user asks for summary, comparison, or decision patterns."
-              : "Generate a grounded pattern summary from retrieved segments only.",
-        input: mode === "stat_qa" ? "Imported sports knowledge rows" : mode === "search" ? "Not required" : "Retrieved moments + domain evidence + scope metadata",
-        output: mode === "stat_qa" ? "Sourced statistics answer" : mode === "search" ? "Search results only" : "Evidence-backed tactical or player pattern report",
-        status: mode === "search" ? "fallback" : "ready",
-        trigger: mode === "stat_qa" ? "Aggregate stat question." : "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
-      }
-    ],
+    confidence,
+    decisions,
+    steps: domainWorkflow && identityDecision && scopeDecision
+      ? buildRelatedKnowledgeOrchestrationSteps(queryPlan, mode, identityCandidates, identityDecision, scopeDecision, scopeCoverage, retrievalFallback)
+      : buildGenericOrchestrationSteps(queryPlan, mode, routeDecision, retrievalFallback),
     retrieval: {
       engine: retrievalEngineForRoute(queryPlan),
       filters: queryPlan.domainFilters,
@@ -98,8 +55,8 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
     analysis: {
       required: mode !== "search" && mode !== "stat_qa",
       model: mode === "search" || mode === "stat_qa" ? "none" : "pattern_analysis_generate",
-      prompt: buildAnalysisPrompt(queryPlan),
-      inputs: analysisInputsForRoute(queryPlan)
+      prompt: buildAnalysisPrompt(queryPlan, domainWorkflow),
+      inputs: analysisInputsForRoute(queryPlan, domainWorkflow)
     },
     warnings
   };
@@ -122,21 +79,157 @@ function inferMode(queryPlan: DomainQueryPlan): OrchestrationPlan["mode"] {
 
 function retrievalEngineForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["retrieval"]["engine"] {
   if (queryPlan.route === "sports_stat_qa") return "structured_domain";
-  if (isSportsRoute(queryPlan.route)) return "hybrid";
+  if (isRelatedKnowledgeRoute(queryPlan.route)) return "hybrid";
   return "semantic_retrieval";
 }
 
+function shouldUseDomainWorkflow(queryPlan: DomainQueryPlan, indexes: IndexRecord[], assets: AssetRecord[]) {
+  if (!isRelatedKnowledgeRoute(queryPlan.route)) return false;
+  return scopedDomainIndexes(queryPlan, indexes, assets).length > 0;
+}
+
+function scopedDomainIndexes(queryPlan: DomainQueryPlan, indexes: IndexRecord[], assets: AssetRecord[]) {
+  const requestedDomain = isKnownKnowledgeSourceId(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
+  const scopedIndexIds = new Set(assets.map((asset) => asset.indexId));
+  const scopedIndexes = scopedIndexIds.size > 0 ? indexes.filter((index) => scopedIndexIds.has(index.id)) : indexes;
+  return scopedIndexes.filter((index) => index.domainIndexing?.enabled && (!requestedDomain || index.domainIndexing.groups.includes(requestedDomain)));
+}
+
+function buildRelatedKnowledgeOrchestrationSteps(
+  queryPlan: DomainQueryPlan,
+  mode: OrchestrationPlan["mode"],
+  identityCandidates: DomainScopeValue[],
+  identityDecision: OrchestrationPlan["decisions"][number],
+  scopeDecision: OrchestrationPlan["decisions"][number],
+  scopeCoverage: { competition: string; season: string },
+  retrievalFallback: string[]
+): OrchestrationPlan["steps"] {
+  return [
+    {
+      id: "parse",
+      label: "Intent and constraint parsing",
+      owner: "router",
+      action: "Extract player, event, field zone, role, competition, and season constraints.",
+      input: queryPlan.originalQuery,
+      output: queryPlan.rewrittenQuery,
+      status: "ready",
+      trigger: "Every natural-language query starts here."
+    },
+    {
+      id: "identity",
+      label: "Identity resolution",
+      owner: "knowledge",
+      action: "Resolve requested player name against indexed roster/title/ASR/OCR evidence.",
+      input: queryPlan.intent.player ?? "No player constraint",
+      output: identityCandidates.slice(0, 3).map((candidate) => `${candidate.value} ${Math.round(candidate.confidence * 100)}%`).join(", ") || "No candidate",
+      status: identityDecision.status,
+      trigger: "Player-specific query or role-specific event."
+    },
+    {
+      id: "scope",
+      label: "Context scope check",
+      owner: "knowledge",
+      action: "Check whether competition and season are grounded in domain scope metadata.",
+      input: [queryPlan.domainFilters.competition, queryPlan.domainFilters.season].filter(Boolean).join(" · ") || "No scope constraint",
+      output: `competition=${scopeCoverage.competition}, season=${scopeCoverage.season}`,
+      status: scopeDecision.status,
+      trigger: "Competition or season is present in the query."
+    },
+    buildGroundingStep(queryPlan),
+    buildRetrievalStep(queryPlan, mode, true, retrievalFallback),
+    buildGenerationStep(mode)
+  ];
+}
+
+function buildGenericOrchestrationSteps(
+  queryPlan: DomainQueryPlan,
+  mode: OrchestrationPlan["mode"],
+  routeDecision: OrchestrationPlan["decisions"][number],
+  retrievalFallback: string[]
+): OrchestrationPlan["steps"] {
+  return [
+    {
+      id: "parse",
+      label: "Video request parsing",
+      owner: "router",
+      action: "Classify the video request and preserve the user-facing semantic query.",
+      input: queryPlan.originalQuery,
+      output: queryPlan.rewrittenQuery,
+      status: "ready",
+      trigger: "Every natural-language query starts here."
+    },
+    {
+      id: "route",
+      label: "Evidence route",
+      owner: "router",
+      action: "Keep retrieval scoped to indexed video evidence for this route.",
+      input: routeLabel(queryPlan.route),
+      output: routeDecision.reason,
+      status: routeDecision.status,
+      trigger: "Video-only retrieval does not use related-knowledge identity or scope grounding."
+    },
+    {
+      id: "evidence_scope",
+      label: "Indexed evidence scope",
+      owner: "retrieval",
+      action: "Use stored ASR, OCR, visual, VLM, title, and metadata evidence from the selected videos.",
+      input: queryPlan.semanticQuery,
+      output: "Related knowledge grounding not required",
+      status: "ready",
+      trigger: "The selected search scope does not activate matching related knowledge."
+    },
+    buildRetrievalStep(queryPlan, mode, false, retrievalFallback),
+    buildGenerationStep(mode)
+  ];
+}
+
+function buildRetrievalStep(queryPlan: DomainQueryPlan, mode: OrchestrationPlan["mode"], useDomainRetrieval: boolean, retrievalFallback: string[]): OrchestrationPlan["steps"][number] {
+  return {
+    id: "retrieve",
+    label: mode === "stat_qa" ? "Stats retrieval" : "Moment retrieval",
+    owner: mode === "stat_qa" ? "knowledge" : "retrieval",
+    action:
+      mode === "stat_qa"
+        ? "Query imported related knowledge statistics before video moment retrieval."
+        : useDomainRetrieval
+          ? "Run semantic retrieval and merge it with structured event filters."
+          : "Run semantic retrieval over indexed video evidence.",
+    input: queryPlan.semanticQuery,
+    output: mode === "stat_qa" ? "Player metric answer with source evidence" : "Ranked timeline segments with match reasons",
+    status: retrievalFallback.length > 0 ? "fallback" : "ready",
+    trigger: mode === "stat_qa" ? "Questions asking for counts or season totals." : "Need to find candidate moments before analysis."
+  };
+}
+
+function buildGenerationStep(mode: OrchestrationPlan["mode"]): OrchestrationPlan["steps"][number] {
+  return {
+    id: "generate",
+    label: mode === "stat_qa" ? "Direct answer" : "Answer generation",
+    owner: "analysis",
+    action:
+      mode === "stat_qa"
+        ? "Return a sourced stats answer without treating video search results as official totals."
+        : mode === "search"
+          ? "Skip generation unless the user asks for summary, comparison, or decision patterns."
+          : "Generate a grounded answer from retrieved segments only.",
+    input: mode === "stat_qa" ? "Imported knowledge rows" : mode === "search" ? "Not required" : "Retrieved video evidence",
+    output: mode === "stat_qa" ? "Sourced statistics answer" : mode === "search" ? "Search results only" : "Evidence-backed video answer",
+    status: mode === "search" ? "fallback" : "ready",
+    trigger: mode === "stat_qa" ? "Aggregate stat question." : "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
+  };
+}
+
 function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["steps"][number] {
-  if (!isSportsRoute(queryPlan.route)) {
+  if (!isRelatedKnowledgeRoute(queryPlan.route)) {
     return {
       id: "ground",
       label: "Knowledge grounding",
       owner: "knowledge",
-      action: "Skip sports knowledge grounding and keep retrieval scoped to indexed video evidence.",
+      action: "Skip related knowledge grounding and keep retrieval scoped to indexed video evidence.",
       input: queryPlan.rewrittenQuery,
-      output: "No sports knowledge expansion required",
+      output: "No related knowledge expansion required",
       status: "ready",
-      trigger: "Non-sports routes use ASR, OCR, visual, title, and metadata evidence only."
+      trigger: "Routes without matching related knowledge use ASR, OCR, visual, title, and metadata evidence only."
     };
   }
   return {
@@ -147,7 +240,7 @@ function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["step
     input: queryPlan.rewrittenQuery,
     output: "Grounded entity evidence for retrieval expansion and result attribution",
     status: "ready",
-    trigger: "Sports routes need information beyond the video pixels, ASR, or OCR."
+    trigger: "Domain routes need selected knowledge beyond the video pixels, ASR, or OCR."
   };
 }
 
@@ -221,20 +314,20 @@ function buildIdentityDecision(player: string | null, candidates: DomainScopeVal
     return {
       id: "identity",
       label: "Identity",
-      value: `${knowledgePlayer.canonical} (sports knowledge)`,
+      value: `${knowledgePlayer.canonical} (related knowledge)`,
       confidence: 0.94,
       status: "ready",
-      reason: "The player identity is resolved against imported sports knowledge."
+      reason: "The player identity is resolved against the selected related knowledge."
     };
   }
   if (knowledgePlayer && candidates.length === 0) {
     return {
       id: "identity",
       label: "Identity",
-      value: `${knowledgePlayer.canonical} (sports knowledge)`,
+      value: `${knowledgePlayer.canonical} (related knowledge)`,
       confidence: 0.62,
       status: "fallback",
-      reason: "The player is resolved in sports knowledge, but no indexed video segment currently grounds that identity."
+      reason: "The player is resolved in the selected related knowledge, but no indexed video segment currently grounds that identity."
     };
   }
   if (candidates.length === 0) {
@@ -282,7 +375,7 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
 }
 
 function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], assets: AssetRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
-  if (!isSportsRoute(queryPlan.route)) {
+  if (!isRelatedKnowledgeRoute(queryPlan.route)) {
     return {
       id: "route",
       label: "Route",
@@ -291,14 +384,12 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
       status: assets.length > 0 ? "ready" : "fallback",
       reason:
         assets.length > 0
-          ? "This route uses indexed video evidence without sports knowledge expansion."
+          ? "This route uses indexed video evidence without related knowledge expansion."
           : "No assets are available in the selected scope."
     };
   }
-  const requestedDomain = isSupportedSportsDomain(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
-  const scopedIndexIds = new Set(assets.map((asset) => asset.indexId));
-  const scopedIndexes = scopedIndexIds.size > 0 ? indexes.filter((index) => scopedIndexIds.has(index.id)) : indexes;
-  const domainIndexes = scopedIndexes.filter((index) => index.domainIndexing?.enabled && (!requestedDomain || index.domainIndexing.groups.includes(requestedDomain)));
+  const requestedDomain = isKnownKnowledgeSourceId(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
+  const domainIndexes = scopedDomainIndexes(queryPlan, indexes, assets);
   if (mode === "stat_qa") {
     return {
       id: "route",
@@ -306,7 +397,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
       value: routeLabel(queryPlan.route),
       confidence: 0.86,
       status: "ready",
-      reason: "This query asks for an aggregate statistic, so it should be answered from sports knowledge."
+      reason: "This query asks for an aggregate statistic, so it should be answered from the selected related knowledge."
     };
   }
   return {
@@ -318,17 +409,20 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
     reason:
       domainIndexes.length > 0
         ? requestedDomain
-          ? `At least one ${requestedDomain} asset group has sports domain indexing enabled.`
-          : "At least one asset group has sports domain indexing enabled."
+          ? `At least one asset group has ${requestedDomain} related knowledge enabled.`
+          : "At least one asset group has related knowledge enabled."
         : requestedDomain
-          ? `No ${requestedDomain} asset group is indexed yet.`
-          : "No domain-indexed asset group is available."
+          ? `No asset group with ${requestedDomain} related knowledge is active in this scope.`
+          : "No related knowledge is active in this scope."
   };
 }
 
-function buildAnalysisPrompt(queryPlan: DomainQueryPlan) {
+function buildAnalysisPrompt(queryPlan: DomainQueryPlan, useRelatedKnowledge: boolean) {
   if (queryPlan.route === "video_summary") {
     return "Summarize only from retrieved indexed video evidence. Prefer ASR/OCR text when present, include key time ranges, and report evidence gaps.";
+  }
+  if (!useRelatedKnowledge) {
+    return "Answer only from retrieved indexed video evidence. Report confidence gaps and missing ASR/OCR/visual evidence.";
   }
   return [
     "Answer only from retrieved evidence.",
@@ -342,8 +436,8 @@ function buildAnalysisPrompt(queryPlan: DomainQueryPlan) {
     .join(" ");
 }
 
-function analysisInputsForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["analysis"]["inputs"] {
-  if (!isSportsRoute(queryPlan.route)) return ["retrieved_segments", "asr_text", "ocr_text", "visual_evidence", "asset_metadata"];
+function analysisInputsForRoute(queryPlan: DomainQueryPlan, useRelatedKnowledge: boolean): OrchestrationPlan["analysis"]["inputs"] {
+  if (!useRelatedKnowledge) return ["retrieved_segments", "asr_text", "ocr_text", "visual_evidence", "asset_metadata"];
   return ["retrieved_segments", "domain_events", "knowledge_evidence", "identity_resolution", "scope_metadata"];
 }
 
@@ -354,11 +448,11 @@ function routeLabel(route: DomainQueryPlan["route"]) {
     case "generic_video_qa":
       return "Generic video QA";
     case "sports_moment_retrieval":
-      return "Sports moment retrieval";
+      return "Related knowledge moment retrieval";
     case "sports_analysis":
-      return "Sports analysis";
+      return "Related knowledge analysis";
     case "sports_stat_qa":
-      return "Sports stats QA";
+      return "Related knowledge stats QA";
     case "asset_lookup":
       return "Asset lookup";
     case "unsupported":
@@ -374,10 +468,6 @@ function splitRequestedValues(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function isSupportedSportsDomain(value: string | null): value is "sports.football" | "sports.american_football" {
-  return value === "sports.football" || value === "sports.american_football";
-}
-
-function isSportsRoute(route: DomainQueryPlan["route"]) {
+function isRelatedKnowledgeRoute(route: DomainQueryPlan["route"]) {
   return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }

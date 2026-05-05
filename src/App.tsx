@@ -4,8 +4,9 @@ import type {
   ClipDetailResult,
   IndexRecord,
   JobRecord,
-  SportsDomainGroup,
+  KnowledgeSourceId,
 } from "../shared/types";
+import { KNOWLEDGE_SOURCES } from "../shared/knowledgeSources";
 import {
   api,
   getFailureMessage,
@@ -55,7 +56,7 @@ export default function App() {
   const [pendingSeek, setPendingSeek] = useState<{ assetId: string; at: number } | null>(null);
   const [activeTab, setActiveTab] = useState<ConsoleTab>("system");
   const [assetDetailTab, setAssetDetailTab] = useState<AssetDetailTab>("overview");
-  const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<SportsDomainGroup>("sports.football");
+  const [selectedKnowledgeDomain, setSelectedKnowledgeDomain] = useState<KnowledgeSourceId>(KNOWLEDGE_SOURCES[0]?.id ?? "");
   const [dialogMode, setDialogMode] = useState<DialogMode>(null);
   const [busy, setBusy] = useState(false);
   const [routeReady, setRouteReady] = useState(false);
@@ -75,16 +76,14 @@ export default function App() {
     searchScopeLabel,
     trustFilters,
     useKnowledgeLayer,
-    setUseKnowledgeLayer,
+    searchKnowledgeContext,
     queryPlan,
-    orchestrationPlan,
-    sportsAnswer,
-    askResponse,
     searchConversation,
     searchResults,
     filteredSearchResults,
     searching,
     runSearch,
+    clearSearchHistory,
     buildAssetMomentUrl
   } = useSearchController({ indexes, assets, selectedIndexId, selectedAssetId, setMessage });
   const { deleteKnowledgePlayer } = useKnowledgeActions({
@@ -389,7 +388,7 @@ export default function App() {
     setMessage("");
     try {
       const result = await api.post<DomainVlmBulkRefineResult>(`/api/indexes/${indexId}/domain-vlm/refine`, {});
-      setMessage(`Queued ${result.queued} sports event VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
+      setMessage(`Queued ${result.queued} related knowledge VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
       await refresh();
     } finally {
       setBusy(false);
@@ -475,6 +474,7 @@ export default function App() {
       setQuery={setQuery}
       searching={searching}
       runSearch={runSearch}
+      clearSearchHistory={clearSearchHistory}
       searchScopeMode={searchScopeMode}
       setSearchScopeMode={setSearchScopeMode}
       searchIndexId={searchIndexId}
@@ -484,14 +484,11 @@ export default function App() {
       searchScopeLabel={searchScopeLabel}
       trustFilters={trustFilters}
       useKnowledgeLayer={useKnowledgeLayer}
-      setUseKnowledgeLayer={setUseKnowledgeLayer}
+      searchKnowledgeContext={searchKnowledgeContext}
       searchConversation={searchConversation}
       buildAssetMomentUrl={buildAssetMomentUrl}
-      askResponse={askResponse}
       filteredSearchResults={filteredSearchResults}
-      sportsAnswer={sportsAnswer}
       queryPlan={queryPlan}
-      orchestrationPlan={orchestrationPlan}
       jobs={jobs}
       setSelectedJobId={setSelectedJobId}
       retryJob={retryJob}

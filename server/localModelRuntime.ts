@@ -477,14 +477,27 @@ function inferLanguageHints(asset: AssetRecord) {
   const whisperLanguage = normalizeAuto(process.env.WHISPER_LANGUAGE);
   const configuredOcr = normalizeAuto(process.env.PADDLEOCR_LANG);
   if (configuredOcr) return { whisperLanguage, paddleOcrLanguages: [configuredOcr] };
+  const asrOcrLanguage = ocrLanguageFromAsr(asset.intelligence.asr.language);
+  if (asrOcrLanguage) return { whisperLanguage, paddleOcrLanguages: unique(asrOcrLanguage === "en" ? ["en"] : [asrOcrLanguage, "en"]) };
   if (/[가-힣]/.test(text)) return { whisperLanguage, paddleOcrLanguages: ["korean", "en"] };
   if (/[\u3040-\u30ff\u3400-\u9fff]/.test(text)) return { whisperLanguage, paddleOcrLanguages: ["japan", "ch", "en"] };
   return { whisperLanguage, paddleOcrLanguages: ["en"] };
 }
 
 function normalizeAuto(value?: string) {
-  if (!value || value === "auto") return null;
-  return value;
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "auto") return null;
+  return normalized;
+}
+
+function ocrLanguageFromAsr(language: string | null | undefined) {
+  const normalized = normalizeAuto(language?.trim().toLowerCase());
+  if (!normalized || normalized === "unknown") return null;
+  if (normalized === "ko" || normalized === "kor" || normalized === "korean") return "korean";
+  if (normalized === "ja" || normalized === "jp" || normalized === "jpn" || normalized === "japanese") return "japan";
+  if (normalized === "zh" || normalized === "zho" || normalized === "chi" || normalized === "chinese") return "ch";
+  if (normalized === "en" || normalized === "eng" || normalized === "english") return "en";
+  return null;
 }
 
 function getLocalModelHeavyConcurrency() {

@@ -15,25 +15,23 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import type {
-  AskResponse,
   AssetRecord,
   ClipDetailResult,
   DomainQueryPlan,
   EventRecord,
   IndexRecord,
   JobRecord,
+  KnowledgeSourceId,
   KnowledgeVectorStoreStatus,
   MetricsSummary,
-  OrchestrationPlan,
   SearchResult,
-  SportsDomainGroup,
-  SportsKnowledgeAnswer,
   SportsKnowledgeSnapshot
 } from "../../shared/types";
+import { KNOWLEDGE_SOURCES } from "../../shared/knowledgeSources";
 import type { DatabaseStatus, ObservabilitySnapshot } from "../api";
-import type { ConsoleTab, DialogMode, SearchScopeMode } from "../consoleTypes";
+import type { ConsoleTab, DialogMode, SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import { formatDuration, mediaPath } from "../displayUtils";
-import { buildEvidenceLedger, type SearchTrustFilters } from "../searchTrust";
+import { type SearchTrustFilters } from "../searchTrust";
 import {
   AssetDetailTabs,
   AssetFlow,
@@ -41,25 +39,18 @@ import {
   AssetGroupSummary,
   AssetStatusIndicator,
   ClipDetailDrawer,
-  ClipStrip,
   EmptyState,
   getAssetProgressLine,
-  KnowledgeEvidenceRow,
-  SearchSceneEvidence,
   SportsKnowledgePanel,
   TabButton,
   Timeline,
-  TrustBadge,
   VideoStatusSummary,
   type AssetDetailTab
 } from "./ConsoleComponents";
 import {
-  ResultTrustSummary,
   SearchConversation,
   SearchScopeSelector,
   SearchScopeSummary,
-  SearchWorkflowTrace,
-  SportsAnswerCard,
   type SearchConversationTurn
 } from "./SearchPanels";
 
@@ -90,8 +81,8 @@ export type ConsoleLayoutProps = {
   refineAssetGroupVlm: (indexId: string) => Promise<void>;
   assetDetailTab: AssetDetailTab;
   setAssetDetailTab: (tab: AssetDetailTab) => void;
-  selectedKnowledgeDomain: SportsDomainGroup;
-  setSelectedKnowledgeDomain: (domain: SportsDomainGroup) => void;
+  selectedKnowledgeDomain: KnowledgeSourceId;
+  setSelectedKnowledgeDomain: (domain: KnowledgeSourceId) => void;
   playerRef: RefObject<HTMLVideoElement | null>;
   retryAssetStage: (assetId: string, stage: string) => Promise<void>;
   selectSegment: (assetId: string, segmentId: string, at: number) => void;
@@ -100,6 +91,7 @@ export type ConsoleLayoutProps = {
   setQuery: Dispatch<SetStateAction<string>>;
   searching: boolean;
   runSearch: (event: FormEvent) => Promise<void>;
+  clearSearchHistory: () => void;
   searchScopeMode: SearchScopeMode;
   setSearchScopeMode: (mode: SearchScopeMode) => void;
   searchIndexId: string;
@@ -109,14 +101,11 @@ export type ConsoleLayoutProps = {
   searchScopeLabel: string;
   trustFilters: SearchTrustFilters;
   useKnowledgeLayer: boolean;
-  setUseKnowledgeLayer: Dispatch<SetStateAction<boolean>>;
+  searchKnowledgeContext: SearchKnowledgeContext;
   searchConversation: SearchConversationTurn[];
   buildAssetMomentUrl: (assetId: string, segmentId?: string | null, at?: number | null) => string;
-  askResponse: AskResponse | null;
   filteredSearchResults: SearchResult[];
-  sportsAnswer: SportsKnowledgeAnswer | null;
   queryPlan: DomainQueryPlan | null;
-  orchestrationPlan: OrchestrationPlan | null;
   jobs: JobRecord[];
   setSelectedJobId: Dispatch<SetStateAction<string | null>>;
   retryJob: (id: string) => Promise<void>;
@@ -148,7 +137,7 @@ const dataTechStack = ["React", "Express", "Multer", "FFmpeg/ffprobe", "Whisper"
 
 const sectionTechStacks = {
   search: "Query planner · multilingual-e5 · OpenCLIP visual vectors · pgvector HNSW · hybrid lexical ranking",
-  knowledge: "Sports registry · Football-Data · StatBunker · StatsBomb · nflverse · knowledge vectors",
+  knowledge: "Related knowledge · registry sources · semantic vectors · evidence grounding",
   system: "TypeScript · Vite · Node.js/Express · PostgreSQL · OpenTelemetry · local queue · NDJSON logs"
 } as const;
 
@@ -224,6 +213,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setQuery,
     searching,
     runSearch,
+    clearSearchHistory,
     searchScopeMode,
     setSearchScopeMode,
     searchIndexId,
@@ -233,14 +223,9 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     searchScopeLabel,
     trustFilters,
     useKnowledgeLayer,
-    setUseKnowledgeLayer,
+    searchKnowledgeContext,
     searchConversation,
     buildAssetMomentUrl,
-    askResponse,
-    filteredSearchResults,
-    sportsAnswer,
-    queryPlan,
-    orchestrationPlan,
     jobs,
     setSelectedJobId,
     retryJob,
@@ -257,8 +242,9 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     message
   } = props;
   const [searchVideoPreview, setSearchVideoPreview] = useState<SearchVideoPreview | null>(null);
+  const [searchTargetOpen, setSearchTargetOpen] = useState(false);
   const knowledgeDomains = sportsKnowledge?.domains ?? defaultKnowledgeDomains();
-  const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? "sports.football";
+  const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? KNOWLEDGE_SOURCES[0]?.id ?? "";
   const observabilityView = observability ? buildObservabilityView(observability) : null;
   const failedJobCount = jobs.filter((job) => job.status === "failed").length;
   const succeededJobCount = jobs.filter((job) => job.status === "succeeded").length;
@@ -283,7 +269,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
 
   useEffect(() => {
     if (knowledgeDomains.some((domain) => domain.id === selectedKnowledgeDomain)) return;
-    setSelectedKnowledgeDomain(knowledgeDomains[0]?.id ?? "sports.football");
+    setSelectedKnowledgeDomain(knowledgeDomains[0]?.id ?? KNOWLEDGE_SOURCES[0]?.id ?? "");
   }, [knowledgeDomains, selectedKnowledgeDomain]);
 
   function openSearchVideo(
@@ -322,7 +308,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
 
       <nav className="view-tabs" aria-label="Console sections">
         <a className="brand-logo" href="/" aria-label="Arion.AI home">
-          <span className="brand-mark">
+          <span className="brand-mark" aria-hidden="true">
             <img src="/arion-mark.svg" alt="" />
           </span>
           <span className="brand-copy">
@@ -401,13 +387,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "knowledge"}
           icon={<Layers3 size={17} />}
           label="지식"
-          meta={`${sportsKnowledge?.players.length ?? 0} players`}
+          meta={`${sportsKnowledge?.players.length ?? 0} records`}
           onClick={() => setActiveTab("knowledge")}
         />
         {activeTab === "knowledge" && (
-          <section className="asset-nav knowledge-nav" aria-label="Knowledge domain navigation">
+          <section className="asset-nav knowledge-nav" aria-label="Related knowledge navigation">
             <div className="asset-nav-header">
-              <span>도메인</span>
+              <span>관련 지식</span>
             </div>
             <div className="asset-nav-list">
               {knowledgeDomains.map((domain) => (
@@ -583,123 +569,60 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           </div>
         </div>
       <section className="tools">
-        <section className="panel">
-          <div className="panel-title">
-            <Search size={18} />
-            <h2>Ask</h2>
-          </div>
-          <form onSubmit={runSearch} className="search-row search-form ask-form">
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask for stats, moments, clips, or patterns" />
-            <button type="submit" disabled={searching}>
-              <Search size={16} />
-              {searching ? "Thinking..." : "Ask"}
-            </button>
-          </form>
-          <div className="search-under-input">
-            <SearchScopeSelector
-              mode={searchScopeMode}
-              onModeChange={setSearchScopeMode}
-              indexes={indexes}
-              assets={assets}
-              indexId={searchIndexId}
-              onIndexChange={setSearchIndexId}
-              assetId={searchAssetId}
-              onAssetChange={setSearchAssetId}
-            />
-            <div className="search-option-actions">
-              <label className={`knowledge-layer-toggle ${useKnowledgeLayer ? "active" : ""}`}>
-                <input type="checkbox" checked={useKnowledgeLayer} onChange={(event) => setUseKnowledgeLayer(event.target.checked)} />
-                <span>Knowledge layer</span>
-              </label>
+        <section className="panel search-chat-panel">
+          <div className="search-history-bar">
+            <div>
+              <span>Search history</span>
+              <strong>{searchConversation.length} turns</strong>
             </div>
+            <button type="button" className="small-button search-clear-button" disabled={searching || searchConversation.length === 0} onClick={clearSearchHistory}>
+              <Trash2 size={14} />
+              Clear
+            </button>
           </div>
-          <SearchScopeSummary
-            scopeLabel={searchScopeLabel}
-            trustFilters={trustFilters}
-            useKnowledgeLayer={useKnowledgeLayer}
-          />
           <SearchConversation
             turns={searchConversation}
+            trustFilters={trustFilters}
             getMomentHref={buildAssetMomentUrl}
+            activeMoment={searchVideoPreview ? { assetId: searchVideoPreview.asset.id, segmentId: searchVideoPreview.segment.id } : null}
             onOpenMoment={(asset, segment, options) => openSearchVideo(asset, segment, options)}
           />
-          <SearchWorkflowTrace
-            operation={askResponse?.operation ?? null}
-            queryPlan={queryPlan}
-            orchestrationPlan={orchestrationPlan}
-            totalResults={searchResults.length}
-            visibleResults={filteredSearchResults.length}
-          />
-          {sportsAnswer?.route !== "stat_qa" && (
-            <ResultTrustSummary total={searchResults.length} visible={filteredSearchResults.length} trustFilters={trustFilters} />
+          {!searching && searchConversation.length === 0 && (
+            <div className="assistant-empty-state">
+              <Search size={24} />
+              <strong>Ask Arion</strong>
+            </div>
           )}
-          {sportsAnswer && <SportsAnswerCard answer={sportsAnswer} />}
-          <div className="result-list">
-            {searching && (
-              <article className="result-card search-loading-card" aria-live="polite">
-                <div>
-                  <strong>Searching indexed moments</strong>
-                  <span>Planning query filters, matching vectors, and ranking evidence.</span>
-                </div>
-                <span className="search-loading-bar" />
-              </article>
+          <div className="search-composer-shell">
+            <SearchScopeSummary
+              scopeLabel={searchScopeLabel}
+              trustFilters={trustFilters}
+              useKnowledgeLayer={useKnowledgeLayer}
+              knowledgeContext={searchKnowledgeContext}
+              onTargetClick={() => setSearchTargetOpen((current) => !current)}
+              targetExpanded={searchTargetOpen}
+            />
+            {searchTargetOpen && (
+              <div className="search-target-panel">
+                <SearchScopeSelector
+                  mode={searchScopeMode}
+                  onModeChange={setSearchScopeMode}
+                  indexes={indexes}
+                  assets={assets}
+                  indexId={searchIndexId}
+                  onIndexChange={setSearchIndexId}
+                  assetId={searchAssetId}
+                  onAssetChange={setSearchAssetId}
+                />
+              </div>
             )}
-            {filteredSearchResults.map((result) => (
-              <article key={result.asset.id} className="result-card">
-                <div className="result-card-header">
-                  <div>
-                    <strong>{result.asset.title}</strong>
-                    <span>
-                      Relevance {Math.round(result.score)} · {Math.min(result.segments.length, 3)} key moments ·{" "}
-                      {result.index?.name ?? "Unknown index"}
-                    </span>
-                  </div>
-                  <TrustBadge ledger={buildEvidenceLedger(result.verification, result.matchReasons, result.segments)} />
-                </div>
-                {result.explain.some((item) => item.includes("mentioned players:")) && (
-                  <span className="result-summary-row">
-                    {result.explain
-                      .filter((item) => item.includes("mentioned players:"))
-                      .map((item) => (
-                        <em key={item}>{item}</em>
-                      ))}
-                  </span>
-                )}
-                {result.knowledgeEvidence.length > 0 && <KnowledgeEvidenceRow evidence={result.knowledgeEvidence} />}
-                {result.segments.slice(0, 3).map((segment) => (
-                  <button
-                    key={segment.id}
-                    type="button"
-                    className={`result-segment ${
-                      searchVideoPreview?.asset.id === result.asset.id && searchVideoPreview.segment.id === segment.id ? "active" : ""
-                    }`}
-                    onClick={() => openSearchVideo(result.asset, segment)}
-                  >
-                    <SearchSceneEvidence
-                      segment={segment}
-                      query={queryPlan?.semanticQuery ?? query}
-                      reasons={result.matchReasons.filter((reason) => reason.segmentId === segment.id)}
-                      verification={result.verification.filter((check) => check.segmentId === segment.id)}
-                    />
-                  </button>
-                ))}
-                {result.clips.length > 0 && (
-                  <ClipStrip
-                    clips={result.clips}
-                    onOpen={async (clip) => {
-                      const segment = result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId);
-                      if (segment) openSearchVideo(result.asset, segment, { start: clip.start, end: clip.end, label: clip.title });
-                    }}
-                  />
-                )}
-              </article>
-            ))}
-            {!searching && !sportsAnswer && query && searchResults.length === 0 && (
-              <EmptyState text="No indexed moment matched the query." />
-            )}
-            {!searching && searchResults.length > 0 && filteredSearchResults.length === 0 && (
-              <EmptyState text="No results passed the evidence threshold. Try a more specific query." />
-            )}
+            <form onSubmit={runSearch} className="search-row search-form ask-form chat-composer">
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask for stats, moments, clips, or patterns" />
+              <button type="submit" disabled={searching} aria-label={searching ? "Searching" : "Ask"}>
+                <Search size={16} />
+                <span>{searching ? "Thinking" : "Ask"}</span>
+              </button>
+            </form>
           </div>
         </section>
 
@@ -972,7 +895,7 @@ function formatJobTypeLabel(type: JobRecord["type"]) {
   const labels: Record<JobRecord["type"], string> = {
     "asset.index": "Index asset",
     "asset.reindex": "Reindex asset",
-    "asset.domain-vlm.refine": "Sports event VLM",
+    "asset.domain-vlm.refine": "Related knowledge VLM",
     "webhook.test": "Webhook test"
   };
   return labels[type] ?? type;

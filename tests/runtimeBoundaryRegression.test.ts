@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { callPythonRuntimeService } from "../server/modelRuntime/pythonRuntimeService";
-import { analyzeTimelineWithVlm, refineSportsDomainTimelineWithVlm } from "../server/vlmWorkerClient";
+import { analyzeTimelineWithVlm, refineRelatedKnowledgeTimelineWithVlm } from "../server/vlmWorkerClient";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../shared/types";
 
 test("Python runtime service calls ignore deprecated timeout environment settings", async () => {
@@ -88,7 +88,7 @@ test("VLM worker analysis and refinement ignore deprecated timeout environment s
     assert.equal(analysis.failedSegments, 0);
     assert.equal(analysis.timeline[0]?.sceneData?.vlm?.status, "described");
 
-    const refinement = await refineSportsDomainTimelineWithVlm(baseAsset(), baseIndex(), [baseSegment()]);
+    const refinement = await refineRelatedKnowledgeTimelineWithVlm(baseAsset(), baseIndex(), [baseSegment()]);
     assert.equal(refinement.refinedSegments, 1);
     assert.equal(refinement.failedSegments, 0);
     assert.equal(refinement.timeline[0]?.domain?.vlm?.status, "refined");
@@ -133,6 +133,10 @@ test("long-running runtime boundaries do not reintroduce timeout cutoffs", async
 test("Python model HTTP services keep blocking model work off the event loop", async () => {
   const runtimeService = await readFile(path.resolve("scripts", "arion_model_runtime_service.py"), "utf8");
   assert.match(runtimeService, /asyncio\.create_subprocess_exec/);
+  assert.match(runtimeService, /TEXT_EMBEDDING_MODELS/);
+  assert.match(runtimeService, /VISUAL_EMBEDDING_MODELS/);
+  assert.match(runtimeService, /asyncio\.to_thread\(encode_text_embeddings/);
+  assert.match(runtimeService, /asyncio\.to_thread\(encode_visual_embeddings/);
   assert.doesNotMatch(runtimeService, /subprocess\.run/);
   assert.doesNotMatch(runtimeService, /timeout_ms/);
 
@@ -279,7 +283,7 @@ function baseIndex(): IndexRecord {
       videoVlmAnalysis: "optional",
       visionDetector: "optional",
       visionTracker: "optional",
-      soccerNetActionSpotting: "optional",
+      knowledgeActionSpotting: "optional",
       domainVlmRefinement: "optional"
     },
     assetIds: ["asset-1"],

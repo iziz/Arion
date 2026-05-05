@@ -5,7 +5,7 @@ import type {
   DomainQueryPlan,
   DomainSearchFilters,
   IndexRecord,
-  SportsDomainGroup
+  KnowledgeSourceId
 } from "../../../shared/types";
 
 export type AskRequest = {
@@ -13,7 +13,7 @@ export type AskRequest = {
   explicitFilters: DomainSearchFilters;
   indexId?: string;
   assetId?: string;
-  domainGroup?: SportsDomainGroup;
+  domainGroup?: KnowledgeSourceId;
   tag?: string;
   modality?: string;
   limit?: number;

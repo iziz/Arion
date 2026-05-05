@@ -1,4 +1,5 @@
-import { AlertTriangle, CircleHelp, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, CircleHelp, FileText, Image as ImageIcon, ListChecks, Mic2, ScanText, Search, ShieldCheck, Sparkles, X } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { AssetRecord, ClipDetailResult, OcrBox, SearchResult, VerificationCheck } from "../../../shared/types";
 import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
 import { buildEvidenceLedger, type EvidenceLedger } from "../../searchTrust";
@@ -166,87 +167,239 @@ export function SearchSceneEvidence({
   const scene = getSearchSceneData(segment, query);
   const imagePath = scene.image.thumbnailPath ?? segment.thumbnailPath ?? scene.image.framePath;
   const domainSummary = getDomainSummary(segment);
-  const textRows = [
-    { label: "Speech", value: scene.text.speech },
-    { label: "Subtitle", value: scene.text.subtitles.join(" ") },
-    { label: "Screen", value: scene.text.screenText.join(" ") },
-    { label: "Overlay", value: scene.text.overlays.join(" ") }
-  ].filter((row) => row.value.trim().length > 0);
   const review = scene.text.comparisons?.find((item) => item.status !== "match");
   const ledger = buildEvidenceLedger(verification, reasons, [segment]);
+  const evidenceRows = buildSceneEvidenceRows(scene);
+  const metaRows = buildSceneMetaRows(scene, domainSummary, review, shouldShowDetailedVisionMeta(reasons, domainSummary));
+  const matchReasons = reasons.slice(0, 6).map(formatSearchReason);
   return (
     <>
       {imagePath ? <img src={mediaPath(imagePath) ?? ""} alt="" /> : <span className="result-image-placeholder">No image</span>}
       <span className="result-segment-copy">
-        <strong>
-          {formatDuration(segment.start)}-{formatDuration(segment.end)} · shot {segment.scene?.shotIndex ?? "-"}
-        </strong>
-        <TrustBadge ledger={ledger} compact />
+        <span className="scene-evidence-title-row">
+          <strong>
+            {formatDuration(segment.start)}-{formatDuration(segment.end)} · shot {segment.scene?.shotIndex ?? "-"}
+          </strong>
+          <TrustBadge ledger={ledger} compact />
+        </span>
         <span className="scene-evidence-grid">
-          <span className="scene-evidence-block">
-            <em>Image</em>
-            <span>
-              {scene.image.labels.length > 0 ? scene.image.labels.slice(0, 3).join(" · ") : "keyframe"}
-              {scene.image.dominantColor ? ` · ${scene.image.dominantColor}` : ""}
+          <span className="scene-evidence-panel match">
+            <span className="scene-evidence-panel-title">
+              <Search size={14} />
+              <em>Match reasons</em>
             </span>
-          </span>
-          <span className="scene-evidence-block text">
-            <em>Text</em>
-            {textRows.length > 0 ? (
-              textRows.slice(0, 2).map((row) => (
-                <span key={row.label}>
-                  <b>{row.label}</b> · {truncateText(row.value, 130)}
-                </span>
-              ))
-            ) : (
-              <span>No scene text extracted</span>
-            )}
-          </span>
-          {domainSummary && (
-            <span className="scene-evidence-block domain">
-              <em>Domain</em>
-              <span>{domainSummary}</span>
-            </span>
-          )}
-          {scene.vision && (
-            <span className="scene-evidence-block vision">
-              <em>Vision</em>
-              <span>
-                pitch {Math.round(scene.vision.pitch.confidence * 100)}% · players {scene.vision.objects.players.status}
-                {scene.vision.objects.ball.status === "estimated" || scene.vision.objects.ball.status === "detected" ? ` · ball ${scene.vision.objects.ball.status}` : ""}
-                {scene.vision.fieldZone.zone !== "unknown" ? ` · ${scene.vision.fieldZone.zone}` : ""}
-                {scene.vision.fieldCalibration ? ` · field ${scene.vision.fieldCalibration.status}/${scene.vision.fieldCalibration.method}` : ""}
-                {scene.vision.tracking?.ballTrackId ? ` · ${scene.vision.tracking.ballTrackId}` : ""}
-                {scene.vision.eventClassification && scene.vision.eventClassification.label !== "unknown" ? ` · ${scene.vision.eventClassification.label} ${Math.round(scene.vision.eventClassification.confidence * 100)}%` : ""}
-              </span>
-            </span>
-          )}
-          {review && (
-            <span className={`scene-evidence-block compare ${review.status}`}>
-              <em>Compare</em>
-              <span>
-                <b>{Math.round(review.similarity * 100)}%</b> · {review.status} · {truncateText(review.suggestedText, 90)}
-              </span>
-            </span>
-          )}
-          {reasons.length > 0 && (
             <span className="scene-evidence-reasons">
-              {reasons.slice(0, 5).map((reason, index) => (
-                <em key={`${reason.kind}-${reason.label}-${index}`} className={reason.kind}>
-                  <b>{reason.label}</b>
-                  {reason.value}
-                  {typeof reason.confidence === "number" ? ` · ${Math.round(reason.confidence * 100)}%` : ""}
+              {matchReasons.length > 0 ? (
+                matchReasons.map((reason, index) => {
+                  const Icon = reason.icon;
+                  return (
+                    <em key={`${reason.kind}-${reason.label}-${index}`} className={reason.kind}>
+                      <Icon size={13} />
+                      <b>{reason.label}</b>
+                      {reason.value}
+                      {reason.confidence ? <small>{reason.confidence}</small> : null}
+                    </em>
+                  );
+                })
+              ) : (
+                <small>No segment-level match reason stored.</small>
+              )}
+            </span>
+          </span>
+          <span className="scene-evidence-panel sources">
+            <span className="scene-evidence-panel-title">
+              <ListChecks size={14} />
+              <em>Evidence snippets</em>
+            </span>
+            <span className="scene-evidence-source-list">
+              {evidenceRows.map((row) => {
+                const Icon = row.icon;
+                return (
+                  <span key={`${row.label}-${row.value}`} className={row.tone}>
+                    <b>
+                      <Icon size={13} />
+                      {row.label}
+                    </b>
+                    <span>{truncateText(row.value, 190)}</span>
+                  </span>
+                );
+              })}
+            </span>
+          </span>
+          {metaRows.length > 0 && (
+            <span className="scene-evidence-meta-row">
+              {metaRows.map((row) => (
+                <em key={`${row.label}-${row.value}`} className={row.tone}>
+                  <b>{row.label}</b>
+                  {row.value}
                 </em>
               ))}
             </span>
           )}
-          {verification.length > 0 && (
-            <EvidenceLedgerCompact ledger={ledger} />
-          )}
+          {verification.length > 0 && <EvidenceLedgerCompact ledger={ledger} />}
         </span>
       </span>
     </>
   );
+}
+
+type SearchSceneData = ReturnType<typeof getSearchSceneData>;
+type SceneEvidenceRow = {
+  label: string;
+  value: string;
+  tone: "speech" | "text" | "vlm" | "missing";
+  icon: LucideIcon;
+};
+type SceneMetaRow = {
+  label: string;
+  value: string;
+  tone: "image" | "vlm" | "domain" | "vision" | "review" | "mismatch";
+};
+
+function buildSceneEvidenceRows(scene: SearchSceneData): SceneEvidenceRow[] {
+  const rows: SceneEvidenceRow[] = [];
+  appendSceneEvidenceRow(rows, "VLM caption", scene.vlm?.caption, "vlm", Sparkles);
+  appendSceneEvidenceRow(rows, "Visible text", scene.vlm?.visibleText.join(" · "), "vlm", ScanText);
+  appendSceneEvidenceRow(rows, "Speech", scene.text.speech, "speech", Mic2);
+  appendSceneEvidenceRow(rows, "Screen text", scene.text.screenText.join(" · "), "text", ScanText);
+  appendSceneEvidenceRow(rows, "Subtitle", scene.text.subtitles.join(" · "), "text", FileText);
+  appendSceneEvidenceRow(rows, "Overlay", scene.text.overlays.join(" · "), "text", FileText);
+  appendSceneEvidenceRow(rows, "VLM evidence", scene.vlm?.evidence.join(" · "), "vlm", ListChecks);
+  appendSceneEvidenceRow(rows, "VLM visual", [...(scene.vlm?.actions ?? []), ...(scene.vlm?.objects ?? [])].join(" · "), "vlm", ImageIcon);
+  appendSceneEvidenceRow(rows, "VLM description", scene.vlm?.description, "vlm", Sparkles);
+
+  if (rows.length === 0) {
+    return [{ label: "Stored evidence", value: "No text, audio, OCR, or VLM snippet stored for this moment.", tone: "missing", icon: AlertTriangle }];
+  }
+  return dedupeSceneEvidenceRows(rows).slice(0, 6);
+}
+
+function appendSceneEvidenceRow(rows: SceneEvidenceRow[], label: string, value: string | null | undefined, tone: SceneEvidenceRow["tone"], icon: LucideIcon) {
+  const cleaned = cleanEvidenceValue(value);
+  if (cleaned) {
+    rows.push({ label, value: cleaned, tone, icon });
+  }
+}
+
+function dedupeSceneEvidenceRows(rows: SceneEvidenceRow[]) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = cleanEvidenceValue(row.value).toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildSceneMetaRows(
+  scene: SearchSceneData,
+  domainSummary: string,
+  review: SearchSceneData["text"]["comparisons"][number] | undefined,
+  showDetailedVision: boolean
+): SceneMetaRow[] {
+  const rows: SceneMetaRow[] = [];
+  const imageSummary = [
+    scene.image.labels.length > 0 ? scene.image.labels.slice(0, 4).join(" · ") : "keyframe",
+    scene.image.dominantColor
+  ].filter(Boolean).join(" · ");
+  if (imageSummary) {
+    rows.push({ label: "Image", value: imageSummary, tone: "image" });
+  }
+  if (scene.vlm) {
+    rows.push({
+      label: "VLM",
+      value: [scene.vlm.status, scene.vlm.sceneType, `${Math.round(scene.vlm.confidence * 100)}%`, scene.vlm.model].filter(Boolean).join(" · "),
+      tone: "vlm"
+    });
+  }
+  if (domainSummary) {
+    rows.push({ label: "Domain", value: domainSummary, tone: "domain" });
+  }
+  const visionSummary = showDetailedVision ? formatVisionSummary(scene) : "";
+  if (visionSummary) {
+    rows.push({ label: "Vision", value: visionSummary, tone: "vision" });
+  }
+  if (review) {
+    rows.push({
+      label: "Text compare",
+      value: `${Math.round(review.similarity * 100)}% · ${review.status} · ${truncateText(review.suggestedText, 90)}`,
+      tone: review.status === "mismatch" ? "mismatch" : "review"
+    });
+  }
+  return rows.slice(0, 5);
+}
+
+function shouldShowDetailedVisionMeta(reasons: SearchResult["matchReasons"], domainSummary: string) {
+  return Boolean(domainSummary) || reasons.some((reason) => reason.kind === "visual" && reason.label !== "Visual");
+}
+
+function formatVisionSummary(scene: SearchSceneData) {
+  const vision = scene.vision;
+  if (!vision) return "";
+  return [
+    `pitch ${Math.round(vision.pitch.confidence * 100)}%`,
+    `players ${vision.objects.players.status}`,
+    vision.objects.ball.status === "estimated" || vision.objects.ball.status === "detected" ? `ball ${vision.objects.ball.status}` : "",
+    vision.fieldZone.zone !== "unknown" ? vision.fieldZone.zone : "",
+    vision.fieldCalibration ? `field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}` : "",
+    vision.tracking?.ballTrackId ?? "",
+    vision.eventClassification && vision.eventClassification.label !== "unknown"
+      ? `${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%`
+      : ""
+  ].filter(Boolean).join(" · ");
+}
+
+function formatSearchReason(reason: SearchResult["matchReasons"][number]): {
+  kind: SearchResult["matchReasons"][number]["kind"];
+  label: string;
+  value: string;
+  confidence: string | null;
+  icon: LucideIcon;
+} {
+  return {
+    kind: reason.kind,
+    label: readableReasonLabel(reason),
+    value: readableReasonValue(reason),
+    confidence: typeof reason.confidence === "number" ? `${Math.round(reason.confidence * 100)}%` : null,
+    icon: reasonIcon(reason.kind)
+  };
+}
+
+function readableReasonLabel(reason: SearchResult["matchReasons"][number]) {
+  if (reason.kind === "lexical") return "Text match";
+  if (reason.kind === "semantic" && reason.label === "Vector") return "Semantic match";
+  if (reason.kind === "semantic") return reason.label;
+  if (reason.kind === "visual" && reason.label === "Visual") return "Visual match";
+  if (reason.kind === "domain_filter") return reason.label;
+  if (reason.kind === "query_plan") return "Query rewrite";
+  if (reason.kind === "evidence") return reason.label === "Knowledge" ? "Knowledge" : "Grounded evidence";
+  return reason.label;
+}
+
+function readableReasonValue(reason: SearchResult["matchReasons"][number]) {
+  if (reason.kind === "lexical") {
+    if (reason.value.includes("matched:")) return reason.value;
+    const count = Number(reason.value.match(/\d+/)?.[0] ?? 0);
+    if (count > 0) return `${count} query ${count === 1 ? "term" : "terms"}`;
+  }
+  if (reason.kind === "semantic" && reason.label === "Vector") {
+    return reason.value.replace("text similarity", "semantic similarity");
+  }
+  return reason.value;
+}
+
+function reasonIcon(kind: SearchResult["matchReasons"][number]["kind"]): LucideIcon {
+  if (kind === "lexical") return FileText;
+  if (kind === "semantic") return Sparkles;
+  if (kind === "visual") return ImageIcon;
+  if (kind === "domain_filter") return ScanText;
+  if (kind === "query_plan") return Search;
+  if (kind === "limitation") return AlertTriangle;
+  return ListChecks;
+}
+
+function cleanEvidenceValue(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 export function ClipStrip({
@@ -273,6 +426,13 @@ export function ClipStrip({
             <small>
               pass {clip.verificationSummary.pass} · soft {clip.verificationSummary.softPass} · unknown {clip.verificationSummary.unknown} · fail {clip.verificationSummary.fail}
             </small>
+            {clip.reasons.length > 0 && (
+              <div className="clip-reason-list">
+                {clip.reasons.slice(0, 2).map((reason) => (
+                  <span key={reason}>{reason}</span>
+                ))}
+              </div>
+            )}
           </>
         );
         const href = getHref?.(clip);
@@ -416,7 +576,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
         <article className="evidence-card domain-evidence-card">
           <div className="evidence-title">
             <strong>Domain events</strong>
-            <span>{domainEvents.length} candidates · {vlmSegments.length} sports-event VLM checks</span>
+            <span>{domainEvents.length} candidates · {vlmSegments.length} related knowledge VLM checks</span>
           </div>
           <div className="domain-event-list">
             {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
@@ -450,7 +610,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
                   <summary>Evidence and limitations</summary>
                   {segment.domain?.vlm && (
                     <p>
-                      Sports-event VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
+                      Related knowledge VLM {segment.domain.vlm.status} · {segment.domain.vlm.model} · {Math.round(segment.domain.vlm.confidence * 100)}% · {segment.domain.vlm.message}
                       {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
                     </p>
                   )}
@@ -466,7 +626,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
               .map((segment) => (
                 <article key={`${segment.id}-vlm-quality`} className="domain-event-row">
                   <div>
-                    <strong>Sports-event VLM check</strong>
+                    <strong>Related knowledge VLM check</strong>
                     <span>
                       {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.domain?.vlm?.status} · {Math.round((segment.domain?.vlm?.confidence ?? 0) * 100)}%
                     </span>

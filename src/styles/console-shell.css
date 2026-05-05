@@ -753,8 +753,8 @@ textarea {
 
 .brand-logo {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
   width: 100%;
   min-height: 50px;
@@ -767,14 +767,16 @@ textarea {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
 }
 
 .brand-mark img {
   display: block;
-  width: 40px;
-  height: auto;
+  width: 34px;
+  height: 28px;
+  object-fit: contain;
 }
 
 .brand-copy {

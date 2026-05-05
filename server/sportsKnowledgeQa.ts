@@ -25,7 +25,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
       return {
         applicable: true,
         route: "stat_qa",
-        answer: `${leader.player} leads ${formatScope(leader.competition, leader.season)} with ${leader.value} ${metric} according to imported sports knowledge.`,
+        answer: `${leader.player} leads ${formatScope(leader.competition, leader.season)} with ${leader.value} ${metric} according to imported related knowledge.`,
         confidence: leader.rows.length > 0 ? 0.82 : 0.68,
         subject: { player: leader.player, competition: leader.competition, season: leader.season, metric },
         value: leader.value,
@@ -33,8 +33,8 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
         evidence: leader.rows.map(evidenceFromActivity).slice(0, 6),
         fallback: null,
         warnings: [
-          "Resolved the ranking subject from imported sports knowledge.",
-          competition ? "" : "Competition was not explicit; the leader was selected from available imported sports knowledge.",
+          "Resolved the ranking subject from imported related knowledge.",
+          competition ? "" : "Competition was not explicit; the leader was selected from available imported related knowledge.",
           season ? "" : "Season was not explicit; the answer may be broad."
         ].filter(Boolean)
       };
@@ -80,7 +80,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
     return {
       applicable: true,
       route: "stat_qa",
-      answer: `${playerMatch.canonical} has ${exact.value} ${metric} in ${formatScope(competition, season)} according to imported sports knowledge.`,
+      answer: `${playerMatch.canonical} has ${exact.value} ${metric} in ${formatScope(competition, season)} according to imported related knowledge.`,
       confidence: exact.aggregateRows.length > 0 ? 0.88 : 0.74,
       subject: { player: playerMatch.canonical, competition, season, metric },
       value: exact.value,
@@ -111,7 +111,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
     evidence: latest ? [evidenceFromActivity(latest.activity)] : [],
     fallback,
     warnings: [
-      "The direct answer uses imported sports knowledge, not video moment retrieval.",
+      "The direct answer uses imported related knowledge, not video moment retrieval.",
       season ? `No matching imported aggregate was found for season ${season}.` : "No season was resolved for this stats question.",
       fallback ? "A latest available imported record is shown as fallback evidence." : "Import a current stats source to answer this question."
     ]
@@ -313,7 +313,7 @@ function evidenceFromActivity(activity: MatchActivity): SportsKnowledgeAnswer["e
 
 function buildWarnings(rows: MatchActivity[], competition: string | null, season: string | null) {
   return [
-    "The direct answer uses imported sports knowledge, not video moment retrieval.",
+    "The direct answer uses imported related knowledge, not video moment retrieval.",
     rows.some((activity) => activity.provider === "kaggle") ? "Some imported rows may contain provider-specific competition/team normalization noise." : "",
     competition ? "" : "Competition was inferred from the player profile.",
     season ? "" : "Season was not explicit, so the answer may be broad."

@@ -1,0 +1,2 @@
+export const SEMANTIC_ONLY_THRESHOLD = 0.88;
+export const VISUAL_ONLY_THRESHOLD = 0.45;
