@@ -222,6 +222,11 @@ def normalize_label(label: str) -> str:
 
 def evidence_for_item(item: dict[str, Any]) -> list[str]:
     evidence = []
+    raw_evidence = item.get("evidence")
+    if isinstance(raw_evidence, list):
+        for value in raw_evidence:
+            if isinstance(value, str) and value.strip():
+                evidence.append(value.strip()[:240])
     if "gameTime" in item:
         evidence.append(f"gameTime={item['gameTime']}")
     if "position" in item:
