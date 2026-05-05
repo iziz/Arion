@@ -88,6 +88,7 @@ npm run docker:full
 The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
 Asset job execution, ask operation execution, and application persistence require Docker-managed Redis and PostgreSQL in the standard development path. `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` run `dev:infra` first, which starts `redis` and `postgres` through Docker Compose and waits for readiness.
 `REDIS_URL` defaults to `redis://127.0.0.1:16379` for Docker-backed host development, and Docker app services use `redis://redis:6379`.
+The Vite dev server allows `.ngrok-free.dev` hosts by default for HTTPS tunnel testing. Set `VITE_DEV_ALLOWED_HOSTS` to a comma-separated list when additional tunnel or LAN hostnames need access.
 Local environment values are loaded from `.env` automatically when present.
 
 ## API
@@ -287,7 +288,7 @@ Legacy migration from earlier local JSON development data is explicit and one-wa
 npm run legacy:migrate
 ```
 
-The migration imports legacy metadata/vector/tracking JSON files into Docker PostgreSQL, registers recoverable orphan source media as uploaded assets, copies media into the Docker app-data volume, and archives the old JSON stores.
+The migration imports legacy metadata/vector/tracking JSON files into Docker PostgreSQL, copies referenced media into the Docker app-data volume, and archives the old JSON stores. Orphan source-media directories are not synthesized into new assets; they are left in place unless the migration is run with its orphan-media deletion option.
 
 ## Production Extension Points
 

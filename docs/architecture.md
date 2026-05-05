@@ -24,6 +24,9 @@ Primary code references:
 - `server/localModelRuntime.ts`
 - `server/localEmbeddingRuntime.ts`
 - `server/localVisualEmbeddingRuntime.ts`
+- `server/llmQueryPlanner.ts`
+- `server/queryRetrievalPlan.ts`
+- `server/intelligenceCore/evidence.ts`
 - `server/sceneDetection.ts`
 - `server/modelRuntime/pythonRuntimeService.ts`
 - `server/services/redisJobQueue.ts`
@@ -126,7 +129,7 @@ flowchart TB
   Routes --> Services["TypeScript application services\nworkflows, job state, search/vector,\nknowledge, events/webhooks, direct store calls"]
   Services -->|"asset job dispatch"| RedisAssetQueue["Redis + BullMQ asset queue\nJobRecord id"]
   Services -->|"ask operation dispatch"| RedisAskQueue["Redis + BullMQ ask queue\nAskOperation id"]
-  Services -->|"query-time embeddings,\nVLM health, OpenAI planner"| RuntimeBoundary["Runtime and external service boundary"]
+  Services -->|"query-time embeddings,\nVLM health, OpenAI/VLM planning"| RuntimeBoundary["Runtime and external service boundary"]
 
   subgraph WorkerProcess["Asset job worker process\nserver/jobWorker.ts"]
     RedisAssetQueue --> AssetWorker["BullMQ Worker\nclaim queued JobRecord"]
@@ -191,7 +194,7 @@ flowchart TB
 | Workflow layer | `server/workflows/*` | Coordinates ingestion/indexing, ask/search, analysis, domain VLM refinement, and diarization retry jobs. |
 | Storage adapter | `server/store.ts` | Requires PostgreSQL, delegates to `server/postgresStore.ts`, and fails fast when `DATABASE_URL` is unset. |
 | Postgres adapter | `server/postgres/*` | Creates schema, repositories, vector repositories, status, defaults, and reset logic. |
-| Legacy migration | `scripts/migrate_legacy_to_docker.ts` | One-time migration from earlier local JSON stores and orphan source media into Docker PostgreSQL and the Docker app-data volume. |
+| Legacy migration | `scripts/migrate_legacy_to_docker.ts` | One-time migration from earlier local JSON stores into Docker PostgreSQL and the Docker app-data volume. Referenced media is copied; orphan source-media directories are left in place unless the deletion option is used. |
 | Video data purge | `scripts/purge_video_data.ts` | Clears asset groups, assets, jobs, ask state, video vectors, tracking records, media files, and Redis queues while preserving knowledge vectors and users. |
 | Local runtime adapters | `server/localModelRuntime.ts`, `server/modelRuntime/*` | Coordinates FFmpeg, ASR, OCR, diarization, audio probing, visual sampling, and Python runtime service calls. |
 | Embedding adapters | `server/localEmbeddingRuntime.ts`, `server/localVisualEmbeddingRuntime.ts` | Calls text and visual embedding runtimes and validates dimensions. |
@@ -480,7 +483,7 @@ The API process also does not execute ask operations. It persists `AskOperation`
 | Indexes | `GET /api/indexes`, `POST /api/indexes`, `GET /api/indexes/:id`, `DELETE /api/indexes/:id`, `PATCH /api/indexes/:id` | `server/routes/indexRoutes.ts` | `store`, `domainConfig`, `localEmbeddingRuntime`, `events`, `mediaLifecycle` |
 | Assets | `GET /api/assets`, `GET /api/assets/summary`, `GET /api/assets/:id`, `DELETE /api/assets/:id`, `POST /api/assets`, `POST /api/indexes/:id/assets`, clip endpoints, tracking endpoints, `POST /api/indexes/:id/analyze`, reindex/domain refinement endpoints | `server/routes/assetRoutes.ts` | `indexingWorkflow`, `jobState`, `intelligence`, `trackingStore`, `events`, `mediaLifecycle` |
 | Jobs | `GET /api/jobs`, `GET /api/jobs/:id`, `POST /api/jobs/:id/retry` | `server/routes/jobRoutes.ts` | `store`, `jobState`, `redisJobQueue` |
-| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `llmQueryPlanner`, structured knowledge answer dispatcher, `vlmWorkerClient` |
+| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `llmQueryPlanner`, `statMomentSeed`, structured knowledge answer dispatcher, `vlmWorkerClient` |
 | Knowledge | generic `/api/knowledge/*` plus legacy `/api/knowledge/sports/*` aliases for snapshot, summary, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `knowledge/registry`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
 | Vectors | `GET /api/vector-search`, `GET /api/visual-search`, `POST /api/vector-store/rebuild` | `server/routes/vectorRoutes.ts` | `localEmbeddingRuntime`, `localVisualEmbeddingRuntime`, vector stores, `vectorMaintenance` |
 | Orchestration | `GET /api/orchestrate/plan` | `server/routes/orchestrationRoutes.ts` | `orchestrator`, query planning, asset scoping |
@@ -732,6 +735,8 @@ Stage details:
    - Uses `analyzeTimelineWithVlm`.
 7. `vision-detection` and `vision-tracking`
    - Object detection uses the Vision runtime service.
+   - Detector output is applied only when a configured detector backend such as Ultralytics or RF-DETR is available.
+   - There is no OpenCV heuristic detector fallback. Detector unavailability remains unavailable evidence and is handled by capability policy.
    - Tracking uses the Vision runtime service.
    - The output is merged into timeline `sceneData.vision`.
 8. Event classification
@@ -841,16 +846,20 @@ flowchart TD
   Queue --> Worker["askWorker receives operation id"]
   Worker --> Run["Run persisted AskRequest"]
   Run --> Scope["Scope assets\nasset/index/domain/tag/modality"]
-  Scope --> Plan["Query planning\nrules + optional OpenAI planner"]
-  Plan --> KnowledgeAnswer{"knowledge_evidence +\nstructured_answer + direct_answer?"}
+  Scope --> Plan["Query planning\nOpenAI first, VLM /plan/query fallback,\notherwise unavailable"]
+  Plan --> KnowledgeSeeded{"knowledge_seeded_asset_evidence?"}
+  KnowledgeSeeded -->|yes| SeedKnowledgePlan["Build structured knowledge seed plan\nknowledge_evidence + structured_answer + direct_answer"]
+  SeedKnowledgePlan --> SeedKnowledge["Resolve ranked/stat subject\nfrom selected related knowledge"]
+  SeedKnowledge --> SeedResolved{"Resolved answered subject?"}
+  SeedResolved -->|yes| RewriteFromKnowledge["Build seeded retrieval plan\nsame route + player/event filters"]
+  SeedResolved -->|no| CompleteStructured["Complete structured_answer response\nwith knowledge limitation"]
+  KnowledgeSeeded -->|no| KnowledgeAnswer{"knowledge_evidence +\nstructured_answer + direct_answer?"}
   KnowledgeAnswer -->|yes| DirectKnowledge["Answer from selected related knowledge"]
   KnowledgeAnswer -->|no| SkipKnowledgeAnswer["Skip direct knowledge answer"]
-  DirectKnowledge --> SeedRetrieval{"Answered directly\nand moment retrieval requested?"}
-  SeedRetrieval -->|yes| RewriteFromKnowledge["Rewrite plan from knowledge answer\nasset_evidence + moment_retrieval + grounding"]
-  SeedRetrieval -->|no| Orchestrate
+  DirectKnowledge --> Orchestrate
   SkipKnowledgeAnswer --> Orchestrate["Build orchestration plan"]
   RewriteFromKnowledge --> Orchestrate
-  Orchestrate --> DirectStructured{"Direct structured answer\nand no retrieval seed?"}
+  Orchestrate --> DirectStructured{"Direct structured answer?"}
   DirectStructured -->|yes| CompleteStructured["Complete structured_answer response"]
   DirectStructured -->|no| Retrieval["Execute search pipeline"]
   Retrieval --> Analysis{"Analysis required?"}
@@ -876,16 +885,24 @@ Query planning has two layers:
    - Requests a structured `DomainQueryPlan` from OpenAI first.
    - Falls back to the configured VLM worker `/plan/query` endpoint when OpenAI planning fails.
    - Returns an unavailable plan when neither model planner is configured or reachable.
-   - Runs only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off.
+   - Uses the OpenAI planner only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off; the VLM planner can still run when OpenAI is disabled or unavailable.
    - Merges model output into a neutral plan with allow-lists for routes, response modes, knowledge modes, metrics, stat modes, roles, event types, pass types, and field zones.
+   - Does not fall back to the local rule parser when both model planners are unavailable.
 
 The query plan contract deliberately separates source routing from answer shape and related-knowledge usage:
 
 | Field | Values | Meaning |
 | --- | --- | --- |
-| `route` | `asset_evidence`, `knowledge_evidence`, `asset_catalog`, `unsupported` | Selects the evidence source. It does not encode a domain name such as sports. |
+| `route` | `asset_evidence`, `knowledge_seeded_asset_evidence`, `knowledge_evidence`, `asset_catalog`, `unsupported` | Selects the evidence source and whether a related-knowledge seed is required before asset retrieval. It does not encode a domain name such as sports. |
 | `responseMode` | `moment_retrieval`, `grounded_answer`, `summary`, `analysis`, `structured_answer`, `asset_lookup` | Selects the answer shape. This is what decides whether retrieval-only output or grounded generation is needed. |
 | `knowledgeMode` | `none`, `grounding`, `direct_answer` | Selects whether selected related knowledge is ignored, used only to ground asset retrieval, or used as the primary answer source. |
+
+Additional planner fields are part of the retrieval contract:
+
+- `retrieval.textQuery`, `retrieval.visualQuery`, and `retrieval.evidenceTerms` define concrete search inputs.
+- `retrieval.requiredEvidence` defines hard evidence-channel constraints such as `visible_text` or `spoken_text`.
+- `filterEvidence` records the exact planner evidence for inferred structured filters. Inferred filters without evidence are discarded unless supplied explicitly by the caller.
+- `intent.metric` and `intent.statMode` are explicit. Route alone never implies a statistics question.
 
 Current examples from the code:
 
@@ -895,8 +912,11 @@ Current examples from the code:
 | Ask what something in the video looks like | `asset_evidence + grounded_answer + none` |
 | Summarize selected video evidence | `asset_evidence + summary + none` |
 | Find a moment involving an entity resolved through selected related knowledge | `asset_evidence + moment_retrieval + grounding` |
+| Find moments for the player who leads a selected related-knowledge leaderboard | `knowledge_seeded_asset_evidence + moment_retrieval + grounding` |
 | Answer a structured fact from selected related knowledge | `knowledge_evidence + structured_answer + direct_answer` |
 | List or inspect asset catalog metadata | `asset_catalog + asset_lookup + none` |
+
+`knowledge_seeded_asset_evidence` is an explicit hybrid route. `runAskOperation` first builds a temporary structured knowledge seed plan, resolves the ranked/stat subject, and then constructs the retrieval plan with concrete player and event filters. If selected related knowledge cannot resolve an answered subject, retrieval is not silently downgraded to a broad asset search.
 
 ### Orchestration
 
@@ -932,6 +952,14 @@ Analysis generation is required for `responseMode` values `grounded_answer`, `su
 10. Merge grounding evidence and knowledge vector evidence.
 11. Call `searchAssets` to rank and verify matching timeline segments.
 
+Domain filter matching uses a production evaluation model:
+
+- `trusted`: structured scope/player/event evidence satisfies the filter.
+- `weak`: unstructured text or weak scope context satisfies the filter without trusted structured evidence.
+- `failed`: trusted structured evidence conflicts with the requested event, role, pass type, field zone, player, competition, or season.
+
+Weak event text can admit a candidate only when no trusted structured event is present. It is reported as `soft_pass` verification and receives lower ranking credit. If trusted structured event evidence exists and conflicts with the requested filter, the candidate is rejected before ranking.
+
 Text vector query flow:
 
 - `embedQueryText`
@@ -949,7 +977,7 @@ Knowledge vector flow:
 
 ### Synchronous Search Endpoints
 
-`GET /api/search` exposes a synchronous search path using the same query planning and `executeSearchPipeline` machinery. For direct structured knowledge questions, it may return a `409` instructing clients to use the related knowledge answer endpoint unless it can build a seeded asset-retrieval plan.
+`GET /api/search` exposes a synchronous search path using the same query planning and `executeSearchPipeline` machinery. For direct structured knowledge questions, it returns a `409` instructing clients to use the related knowledge answer endpoint. For `knowledge_seeded_asset_evidence`, it first resolves the seed subject through related knowledge; if that succeeds it runs seeded retrieval, otherwise it returns `409` with the knowledge-answer limitation.
 
 ### Analysis
 
@@ -1261,6 +1289,7 @@ Optional unavailable capabilities are recorded in traces/logs where applicable. 
 
 - video segment description
 - sports domain event refinement
+- query planning fallback through `/plan/query`
 - health check
 
 It is enabled when `VLM_WORKER_URL` is configured. The local `dev:full` command starts `scripts/qwen_vlm_worker.py` through the `.venv-ai` Python path.
@@ -1475,8 +1504,8 @@ The code is already organized around replaceable adapters:
 - Redis/BullMQ is isolated behind `redisJobQueue`, and workflow execution is isolated behind `assetJobRunner`.
 - Ask operation execution is isolated behind `askJobQueue` and `askWorker`.
 - Python runtime categories can be moved independently by configuring ASR, OCR, Vision, and Embedding service URLs.
-- VLM worker is already a separate HTTP boundary.
-- Query planning can run rules-only or rules plus remote OpenAI refinement.
+- VLM worker is already a separate HTTP boundary and can serve both video/domain reasoning and query planning fallback.
+- Query planning is isolated behind `llmQueryPlanner`; it uses OpenAI first, the VLM worker as model fallback, and an unavailable plan instead of local rule fallback when model planning cannot run.
 - Webhook delivery is isolated in `server/services/events.ts`.
 - The knowledge facade has generic names, but the current adapter dispatch is still wired directly to `server/knowledge/adapters/sports/*`.
 
@@ -1494,4 +1523,6 @@ These are direct consequences of the code shape:
 - CORS is enabled globally.
 - Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.
 - Visual embedding failures do not necessarily fail indexing; they are logged and traced as unavailable unless policy requires downstream capabilities elsewhere.
+- OpenCV heuristic object detection is not a runtime fallback. Detector failures remain unavailable detector evidence, and capability policy decides whether indexing can continue.
 - Direct structured answers come from the current sports related-knowledge adapter. It answers aggregate stat questions from imported related knowledge, not from video moment counts.
+- Knowledge-seeded asset retrieval must resolve the ranked/stat subject from selected related knowledge before searching video evidence; unresolved seeds complete with a knowledge limitation instead of broad moment retrieval.

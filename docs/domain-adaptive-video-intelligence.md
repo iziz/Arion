@@ -15,12 +15,12 @@ Arion implements this as an application-layer orchestration system rather than a
 
 | Brief concept | Arion implementation |
 | --- | --- |
-| Marengo-style retrieval | Local text/visual embeddings plus vector stores in `server/localVectorStore.ts` and `server/localVisualVectorStore.ts` |
+| Marengo-style retrieval | Text/visual embeddings plus PostgreSQL/pgvector stores in `server/postgres/*VectorRepository.ts`, reached through `server/localVectorStore.ts` and `server/localVisualVectorStore.ts` |
 | Pegasus-style generation | Local grounded analysis generator in `server/analysisGenerator.ts` and pattern aggregation in `server/intelligence.ts` |
 | Domain knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
-| Query orchestrator | `/api/ask` pipeline in `server/index.ts` and decision plan in `server/orchestrator.ts` |
+| Query orchestrator | `/api/ask` operation pipeline in `server/workflows/ask/*`, model-backed planning in `server/llmQueryPlanner.ts`, and decision plans in `server/orchestrator.ts` |
 | Domain event indexing | `server/domainIndex.ts` football and American-football event structures |
-| Optional visual grounding | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` |
+| Optional visual and planning model | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` for video/domain reasoning and `/plan/query` fallback |
 
 ## Design Changes Applied
 
@@ -51,9 +51,11 @@ The first version is intentionally heuristic: it uses text, OCR, coarse vision c
 
 ### 3. Confidence-Aware Scope Handling
 
-The retrieval filter no longer drops a candidate only because `competition` or `season` scope is missing when stronger player and event evidence exists. Instead:
+The retrieval filter now evaluates domain filters as `trusted`, `weak`, or `failed`. It no longer drops a candidate only because `competition` or `season` scope is missing when stronger player and event evidence exists. Instead:
 
-- Player/event constraints can keep the segment in the candidate set.
+- Trusted structured player/event/scope constraints satisfy the filter.
+- Text-only event or weak scope context can keep the segment in the candidate set as weak evidence.
+- Trusted structured event evidence that conflicts with the requested event or role fails the candidate before ranking.
 - Missing competition/season remains visible as `unknown` verification.
 - Analysis gates can exclude weak or failed evidence before generating pattern claims.
 
@@ -77,6 +79,14 @@ The second form expands to current season plus the previous three seasons. For P
 
 The VLM worker accepts both supported sports domains. The TypeScript client sends the domain selected by the asset group or segment, and merges VLM output back into the correct event schema.
 
+### 6. Knowledge-Seeded Stat Moment Retrieval
+
+Ranking/stat questions that ask for matching video moments use an explicit hybrid route:
+
+- `knowledge_seeded_asset_evidence + moment_retrieval + grounding`
+
+The ask workflow first builds a temporary structured knowledge plan, resolves the ranked/stat subject from selected related knowledge, and only then builds the video retrieval plan with concrete player and event filters. If the subject cannot be resolved, Arion returns the knowledge limitation instead of silently broadening to generic moment retrieval.
+
 ## Query Workflows
 
 ### Haaland Through Ball Search
@@ -84,8 +94,16 @@ The VLM worker accepts both supported sports domains. The TypeScript client send
 1. Parse query into `player=Erling Haaland`, `event=pass_receive`, `pass=through_ball`, `zone=final_third`.
 2. Resolve Haaland through the selected related-knowledge adapter.
 3. Retrieve vector/domain candidates from football-indexed assets.
-4. Keep strong player/event candidates even when competition or season scope is missing.
+4. Keep strong player/event candidates when competition or season scope is missing only as weak evidence; reject candidates whose trusted structured events conflict with the requested pass/role/event.
 5. Return moments with verification checks for player, event, pass type, field zone, competition, and season.
+
+### Leaderboard-to-Moment Retrieval
+
+1. Parse the query into `metric=goals`, `statMode=leaderboard`, and a video-moment intent.
+2. Route as `knowledge_seeded_asset_evidence`.
+3. Resolve the leaderboard subject from imported related knowledge.
+4. Build retrieval filters such as `player=<resolved leader>`, `event=shot`, and `role=shooter`.
+5. Search indexed video evidence for that resolved subject and surface any missing or weak video evidence separately from the knowledge answer.
 
 ### Son Dribbling Pattern Analysis
 
@@ -108,7 +126,7 @@ The VLM worker accepts both supported sports domains. The TypeScript client send
 - Stable player identity still needs jersey/roster tracking, not just text or VLM inference.
 - Field zone and pocket state remain heuristic until sport-specific calibration/tracking is added.
 - Multi-camera game synchronization is not implemented.
-- Large-scale ingestion needs distributed job queues and durable task state beyond the local queue.
+- Large-scale ingestion already has Redis/BullMQ dispatch and persisted job/ask records, but multi-region scheduling, autoscaling, and cross-cluster queue ownership are not implemented.
 - Provider knowledge should be versioned by weekly roster snapshots and transfer windows.
 
 ## MVP Execution Order
