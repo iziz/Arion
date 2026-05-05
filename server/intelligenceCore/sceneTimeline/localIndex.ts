@@ -1,7 +1,7 @@
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../../../shared/types";
 import { withDomainSegment } from "../../domainIndex";
 import { createShotWindows, type SceneBoundary } from "../../sceneDetection";
-import { extractKeywords, toTitleCase, unique, vectorize } from "../textUtils";
+import { extractKeywords, unique, vectorize } from "../textUtils";
 import { buildSceneData, ocrTextForTimelineSegment } from "./sceneData";
 import { fuseTimelineBasis, normalizeWhisperTimeline, overlappingWhisperText } from "./timelineBasis";
 
@@ -46,7 +46,7 @@ export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBou
       id: `${asset.id}-segment-${item + 1}`,
       start,
       end,
-      label: toTitleCase(`${primary} scene`),
+      label: labelForTimelineSegment(sceneData, basis?.text, item),
       transcript,
       sceneData,
       tags: unique([primary, secondary, tertiary, ...visualLabels.slice(0, 2)]),
@@ -119,4 +119,69 @@ function chooseModalities(modalities: IndexRecord["modalities"], index: number) 
   const fallback: IndexRecord["modalities"] = ["metadata"];
   const source = modalities.length > 0 ? modalities : fallback;
   return unique([source[index % source.length], source[(index + 1) % source.length] ?? "metadata"]);
+}
+
+function labelForTimelineSegment(
+  sceneData: NonNullable<TimelineSegment["sceneData"]>,
+  basisText: string | undefined,
+  index: number
+) {
+  const candidates = [
+    sceneData.text.speech,
+    ...sceneData.text.subtitles,
+    ...sceneData.text.screenText,
+    sceneData.vlm?.caption,
+    sceneData.vlm?.description,
+    basisText
+  ];
+  for (const candidate of candidates) {
+    const label = labelFromCandidate(candidate);
+    if (label) return label;
+  }
+  return `Moment ${index + 1}`;
+}
+
+function labelFromCandidate(candidate: string | null | undefined) {
+  const cleaned = cleanTimelineLabelCandidate(candidate ?? "");
+  if (!cleaned) return null;
+  const clauses = cleaned
+    .split(/(?:\s+-\s+|[.!?。！？…]+|[|/]| {2,})/g)
+    .map(cleanTimelineLabelCandidate)
+    .filter(isMeaningfulTimelineLabel)
+    .sort((a, b) => labelScore(b) - labelScore(a));
+  const selected = clauses[0] ?? (isMeaningfulTimelineLabel(cleaned) ? cleaned : null);
+  return selected ? truncateTimelineLabel(selected) : null;
+}
+
+function cleanTimelineLabelCandidate(candidate: string) {
+  return candidate
+    .normalize("NFKC")
+    .replace(/\b(?:subtitle|screen|overlay|watermark)\s*[·:]\s*/gi, " ")
+    .replace(/[“”"']/g, "")
+    .replace(/^\s*[-–—•·:]+/g, "")
+    .replace(/\s*[-–—•·:]+\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isMeaningfulTimelineLabel(label: string) {
+  const searchable = label.replace(/[^0-9A-Za-z가-힣]/g, "");
+  if (searchable.length < 4) return false;
+  if (/^[0-9]+$/.test(searchable)) return false;
+  if (/^(scene|moment|unknown|metadata)$/i.test(searchable)) return false;
+  return true;
+}
+
+function labelScore(label: string) {
+  const searchableLength = label.replace(/[^0-9A-Za-z가-힣]/g, "").length;
+  const targetLengthScore = Math.max(0, 32 - Math.abs(searchableLength - 18));
+  const wordScore = label.includes(" ") ? 8 : 0;
+  return targetLengthScore + wordScore;
+}
+
+function truncateTimelineLabel(label: string) {
+  const maxLength = 48;
+  const characters = Array.from(label);
+  if (characters.length <= maxLength) return label;
+  return `${characters.slice(0, maxLength - 3).join("").trimEnd()}...`;
 }

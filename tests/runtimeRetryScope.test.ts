@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getForcedRuntimeStages } from "../server/workflows/indexingWorkflow";
+import { getForcedRuntimeStages, invalidateAssetForRetryStage, mapRetryStageToCheckpoint, normalizeWorkflowStage } from "../server/workflows/indexingWorkflow";
 import type { AssetRecord, JobRecord, LocalIntelligence } from "../shared/types";
 
 test("fresh ASR retry forces ASR and diarization even when previous data exists", () => {
   assert.deepEqual(getForcedRuntimeStages("asr", baseJob(), assetWithRuntimeData()), ["asr", "diarization"]);
 });
 
-test("recovered ASR retry does not rerun runtime stages with stored successful data", () => {
+test("recovered ASR retry still forces requested stages when previous asset data exists", () => {
   assert.deepEqual(
     getForcedRuntimeStages(
       "asr",
@@ -17,7 +17,24 @@ test("recovered ASR retry does not rerun runtime stages with stored successful d
       },
       assetWithRuntimeData()
     ),
-    []
+    ["asr", "diarization"]
+  );
+});
+
+test("recovered OCR retry still forces OCR when previous OCR data exists", () => {
+  assert.deepEqual(
+    getForcedRuntimeStages(
+      "ocr",
+      {
+        ...baseJob(),
+        parameters: { retryStage: "ocr", resumeFromStage: "local-model-runtime" },
+        runtimeStages: {
+          ocr: runtimeStage("ocr", "failed")
+        }
+      },
+      assetWithRuntimeData()
+    ),
+    ["ocr"]
   );
 });
 
@@ -36,6 +53,48 @@ test("runtime stage success records prevent repeated forced retries in the same 
     ),
     ["diarization"]
   );
+});
+
+test("workflow node retry stages map to the precise rebuild checkpoint", () => {
+  assert.equal(normalizeWorkflowStage("detector"), "detector");
+  assert.equal(normalizeWorkflowStage("vision-detection"), "detector");
+  assert.equal(normalizeWorkflowStage("textEmbedding"), "textEmbedding");
+  assert.equal(mapRetryStageToCheckpoint("detector"), "vision-detection");
+  assert.equal(mapRetryStageToCheckpoint("tracker"), "vision-tracking");
+  assert.equal(mapRetryStageToCheckpoint("textEmbedding"), "embed");
+  assert.equal(mapRetryStageToCheckpoint("visualEmbedding"), "visual-embedding");
+  assert.equal(mapRetryStageToCheckpoint("vector"), "vector-upsert-text");
+});
+
+test("OCR retry invalidates stale OCR and downstream search artifacts only", () => {
+  const asset = indexedAssetWithDerivedData();
+  const next = invalidateAssetForRetryStage(asset, "ocr");
+
+  assert.equal(next.intelligence.asr.transcript, "hello");
+  assert.deepEqual(next.intelligence.ocr.tokens, []);
+  assert.deepEqual(next.timeline, []);
+  assert.deepEqual(next.keyframes, []);
+  assert.deepEqual(next.tags, []);
+  assert.equal(next.summary, "");
+  assert.ok(next.intelligence.modelTrace.includes("faster-whisper:large-v3"));
+  assert.ok(!next.intelligence.modelTrace.some((trace) => trace.startsWith("paddleocr") || trace.startsWith("ocr-")));
+  assert.ok(!next.intelligence.modelTrace.some((trace) => trace.startsWith("embedding:") || trace.startsWith("visual-embedding")));
+});
+
+test("detector retry invalidates detector descendants without dropping timeline or VLM evidence", () => {
+  const asset = indexedAssetWithDerivedData();
+  const next = invalidateAssetForRetryStage(asset, "detector");
+  const segment = next.timeline[0];
+
+  assert.equal(next.timeline.length, 1);
+  assert.equal(next.keyframes.length, 1);
+  assert.equal(segment?.sceneData?.vlm?.status, "described");
+  assert.equal(segment?.sceneData?.vision, undefined);
+  assert.equal(segment?.domain, undefined);
+  assert.deepEqual(segment?.embedding, []);
+  assert.ok(next.intelligence.modelTrace.includes("video-vlm:qwen:1/1:invalid=0:failed=0"));
+  assert.ok(next.intelligence.modelTrace.includes("visual-embedding:clip-test-model"));
+  assert.ok(!next.intelligence.modelTrace.some((trace) => trace.startsWith("vision-detector") || trace.startsWith("vision-tracker") || trace.startsWith("domain-vlm") || trace.startsWith("embedding:")));
 });
 
 function baseJob(): JobRecord {
@@ -108,6 +167,107 @@ function assetWithRuntimeData(): AssetRecord {
       }
     }
   };
+}
+
+function indexedAssetWithDerivedData(): AssetRecord {
+  return {
+    ...assetWithRuntimeData(),
+    status: "indexed",
+    progress: 100,
+    tags: ["stored"],
+    summary: "Stored summary",
+    timeline: [derivedTimelineSegment()],
+    keyframes: [{ id: "keyframe-1", segmentId: "segment-1", at: 0, path: "generated/keyframe.jpg", width: 320, height: 180 }],
+    intelligence: {
+      ...assetWithRuntimeData().intelligence,
+      modelTrace: [
+        "faster-whisper:large-v3",
+        "asr-language:en",
+        "paddleocr:en",
+        "ocr-language:en",
+        "ocr-source:paddleocr",
+        "video-vlm:qwen:1/1:invalid=0:failed=0",
+        "vision-detector:yolo:test:1",
+        "vision-tracker:bytetrack:test:1",
+        "domain-vlm:qwen:1/1:invalid=0:failed=0",
+        "embedding:local-test-model",
+        "visual-embedding:clip-test-model"
+      ]
+    }
+  };
+}
+
+function derivedTimelineSegment(): AssetRecord["timeline"][number] {
+  return {
+    id: "segment-1",
+    start: 0,
+    end: 10,
+    label: "Moment 1",
+    transcript: "hello",
+    tags: ["stored"],
+    modalities: ["visual", "audio", "transcription"],
+    confidence: 0.9,
+    embedding: [0.1, 0.2, 0.3],
+    thumbnailPath: "generated/keyframe.jpg",
+    sources: ["whisper", "paddleocr", "visual", "domain"],
+    sceneData: {
+      image: {
+        thumbnailPath: "generated/keyframe.jpg",
+        framePath: "generated/frame.jpg",
+        labels: ["player"],
+        dominantColor: "#111111",
+        brightness: 0.4,
+        motionScore: 0.2,
+        keyframeAt: 0
+      },
+      text: {
+        speech: "hello",
+        subtitles: ["hello"],
+        screenText: ["score"],
+        overlays: [],
+        watermarks: [],
+        comparisons: []
+      },
+      vlm: {
+        provider: "local",
+        model: "qwen",
+        status: "described",
+        attemptedAt: "2026-05-05T00:00:00.000Z",
+        confidence: 0.8,
+        caption: "Player runs",
+        description: "A player runs.",
+        sceneType: "sports",
+        labels: ["player"],
+        objects: ["player"],
+        actions: ["run"],
+        visibleText: [],
+        evidence: [],
+        rawResponse: null,
+        error: null
+      },
+      vision: {
+        generatedBy: "detector",
+        frameAt: 0,
+        pitch: { present: true, greenDominance: 0.7, confidence: 0.8 },
+        objects: {
+          players: { countEstimate: 2, confidence: 0.8, status: "detected", boxes: [] },
+          ball: { present: true, confidence: 0.6, status: "detected", boxes: [] }
+        },
+        fieldZone: { zone: "middle_third", confidence: 0.5, method: "detector_x_position" },
+        eventCandidates: [],
+        limitations: []
+      }
+    },
+    domain: {
+      groups: ["sports.football"],
+      captions: ["Stored event"],
+      labels: ["pass"],
+      events: [],
+      searchText: "stored event",
+      confidence: 0.7,
+      generatedBy: "domain-index"
+    }
+  } as AssetRecord["timeline"][number];
 }
 
 function baseAsset(): AssetRecord {

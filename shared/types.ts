@@ -17,6 +17,7 @@ export type JobParameters = {
   retryStage?: string | null;
   resumeFromStage?: string | null;
   rebuildFromStage?: string | null;
+  invalidatedRetryStage?: string | null;
 };
 
 export type StorageProvider = "local-s3" | "local-r2";

@@ -2,7 +2,7 @@ import type { JobRecord } from "./types";
 
 export type WorkflowStepState = "done" | "active" | "waiting" | "skipped" | "error";
 
-type WorkflowEvidence =
+export type WorkflowEvidence =
   | "source"
   | "probe"
   | "audio"
@@ -137,7 +137,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   scene: {
     id: "scene",
     description: "Splits the video into visual moments so evidence can attach to stable time windows.",
-    retryStage: "timeline",
+    retryStage: "scene",
     produces: ["timeline"],
     dependsOn: ["source", "probe"],
     stageAliases: ["timeline", "scene-detection"],
@@ -159,7 +159,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   keyframes: {
     id: "keyframes",
     description: "Stores representative thumbnails for each moment for review, visual models, and result previews.",
-    retryStage: "timeline",
+    retryStage: "keyframes",
     produces: ["keyframes"],
     dependsOn: ["source", "timeline"],
     stageAliases: ["keyframes"],
@@ -183,7 +183,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   detector: {
     id: "detector",
     description: "Detects configured objects or actors in keyframes to add object-level evidence.",
-    retryStage: "visual",
+    retryStage: "detector",
     produces: ["vision-detector"],
     dependsOn: ["keyframes"],
     stageAliases: ["vision-detection"],
@@ -195,7 +195,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   tracker: {
     id: "tracker",
     description: "Links detections over time to add movement and continuity evidence.",
-    retryStage: "visual",
+    retryStage: "tracker",
     produces: ["vision-tracker"],
     dependsOn: ["source", "timeline", "vision-detector"],
     stageAliases: ["vision-tracking"],
@@ -207,7 +207,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   knowledgeAction: {
     id: "knowledgeAction",
     description: "Runs action spotting for the selected related knowledge source when that adapter supports it.",
-    retryStage: "domain",
+    retryStage: "knowledgeAction",
     produces: ["knowledge-action"],
     dependsOn: ["source", "timeline", "vision-tracker"],
     stageAliases: ["knowledge-action", "soccernet-action"],
@@ -231,7 +231,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   domainVlm: {
     id: "domainVlm",
     description: "Refines related knowledge event candidates with VLM checks before they affect search context.",
-    retryStage: "domain",
+    retryStage: "domainVlm",
     produces: ["domain-vlm"],
     dependsOn: ["domain"],
     stageAliases: ["domain-vlm"],
@@ -243,7 +243,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   textEmbedding: {
     id: "textEmbedding",
     description: "Turns timeline text into vectors for semantic moment ranking.",
-    retryStage: "vector",
+    retryStage: "textEmbedding",
     produces: ["text-embedding"],
     dependsOn: ["timeline", "video-vlm", "vision-detector", "vision-tracker", "domain", "domain-vlm"],
     stageAliases: ["embed"],
@@ -255,7 +255,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   visualEmbedding: {
     id: "visualEmbedding",
     description: "Turns keyframes into image vectors for visual similarity ranking.",
-    retryStage: "vector",
+    retryStage: "visualEmbedding",
     produces: ["visual-embedding"],
     dependsOn: ["keyframes"],
     stageAliases: ["visual-embedding", "visual-embedding-unavailable"],
@@ -456,6 +456,17 @@ export function getWorkflowRetryStage(stepId: string) {
   return workflowNodeDefinitions[stepId]?.retryStage ?? stepId;
 }
 
+export function getWorkflowRetryImpactedEvidence(retryStage: string | null | undefined) {
+  if (!retryStage) return new Set<WorkflowEvidence>();
+  const activeEvidence = new Set<WorkflowEvidence>();
+  for (const definition of Object.values(workflowNodeDefinitions)) {
+    if (definition.id === retryStage || definition.retryStage === retryStage) {
+      for (const output of definition.produces) activeEvidence.add(output);
+    }
+  }
+  return expandImpactedWorkflowEvidence(activeEvidence).evidence;
+}
+
 export function getWorkflowRuntimeStageIds(stepId: string) {
   return workflowNodeDefinitions[stepId]?.runtimeStages ?? [];
 }
@@ -494,6 +505,10 @@ export function getImpactedWorkflowNodeIds(job: JobRecord | null) {
   const activeEvidence = getActiveWorkflowEvidence(job);
   if (activeEvidence.size === 0) return new Set<string>();
 
+  return expandImpactedWorkflowEvidence(activeEvidence).nodeIds;
+}
+
+function expandImpactedWorkflowEvidence(activeEvidence: Set<WorkflowEvidence>) {
   const impactedEvidence = new Set(activeEvidence);
   const impactedNodeIds = new Set<string>();
   let changed = true;
@@ -511,7 +526,7 @@ export function getImpactedWorkflowNodeIds(job: JobRecord | null) {
       }
     }
   }
-  return impactedNodeIds;
+  return { evidence: impactedEvidence, nodeIds: impactedNodeIds };
 }
 
 export function getWorkflowWaitingDetailForJob(job: JobRecord | null) {

@@ -85,6 +85,11 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const diarizationRuntimeRunning = diarizationRuntimeStatus === "running";
   const ocrRuntimeRunning = ocrRuntimeStatus === "running";
   const visualRuntimeRunning = visualRuntimeStatus === "running";
+  const audioRuntimeFailed = isCurrentRuntimeStageFailure(job, "audio", audioRuntimeStatus);
+  const asrRuntimeFailed = isCurrentRuntimeStageFailure(job, "asr", asrRuntimeStatus);
+  const diarizationRuntimeFailed = isCurrentRuntimeStageFailure(job, "diarization", diarizationRuntimeStatus);
+  const ocrRuntimeFailed = isCurrentRuntimeStageFailure(job, "ocr", ocrRuntimeStatus);
+  const visualRuntimeFailed = isCurrentRuntimeStageFailure(job, "visual", visualRuntimeStatus);
 
   const storedWhisperFailure = findTrace(traces, "whisper-unavailable:");
   const storedDiarizationError = findTrace(traces, "whisperx-unavailable:")?.replace(/^whisperx-unavailable:/, "");
@@ -165,6 +170,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? "16kHz mono WAV ready"
         : audioRuntimeRunning
           ? "Extracting audio"
+          : audioRuntimeFailed
+            ? formatCurrentRuntimeFailure(job, "audio", "Audio extraction")
           : audioRuntimeWaitingForMerge
             ? audioRuntimeStatus === "failed"
               ? "Audio extraction failed; waiting for local runtime merge"
@@ -176,10 +183,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             : isIndexed
               ? skipped("indexing finished without an extracted audio artifact")
               : "Waiting for ffmpeg audio extraction",
-      state: audioRuntimeStatus === "failed" && !audioDone
-        ? audioRuntimeWaitingForMerge
-          ? "waiting"
-          : "error"
+      state: audioRuntimeFailed
+        ? currentRuntimeFailureState(job, "audio")
         : audioDone
           ? "done"
           : audioRuntimeRunning
@@ -195,6 +200,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? `${asset.intelligence.audio?.speechSegments.length ?? 0} speech · ${asset.intelligence.audio?.musicSegments.length ?? 0} music`
         : audioRuntimeRunning
           ? "Detecting speech/music regions"
+          : audioRuntimeFailed
+            ? formatCurrentRuntimeFailure(job, "audio", "Speech/music detection")
           : vadRuntimeWaitingForMerge
             ? audioRuntimeStatus === "failed"
               ? "Speech/music detection failed; waiting for local runtime merge"
@@ -208,10 +215,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
               : isIndexed
                 ? skipped("audio analysis found no speech or music regions to store")
                 : "Waiting for speech/music detection",
-      state: audioRuntimeStatus === "failed" && !vadDone
-        ? vadRuntimeWaitingForMerge
-          ? "waiting"
-          : "error"
+      state: audioRuntimeFailed
+        ? currentRuntimeFailureState(job, "audio")
         : vadDone
           ? "done"
           : audioRuntimeRunning
@@ -225,6 +230,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       label: asrModel ? `Faster-Whisper ${asrModel} ASR` : "Faster-Whisper ASR",
       detail: asrRuntimeRunning
         ? "Running transcription"
+        : asrRuntimeFailed
+          ? formatCurrentRuntimeFailure(job, "asr", "Whisper ASR")
         : hasAsr
           ? `${asset.intelligence.asr.segments.length} segments · ${Math.round(asset.intelligence.asr.confidence * 100)}% confidence`
           : asrRuntimeWaitingForMerge
@@ -242,10 +249,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
               : isIndexed
                 ? skipped("ASR produced no transcript segments for this indexed asset")
                 : "Waiting for transcription",
-      state: (asrRuntimeStatus === "failed" || whisperFailure) && !asrDone
-        ? asrRuntimeWaitingForMerge
-          ? "waiting"
-          : "error"
+      state: asrRuntimeFailed
+        ? currentRuntimeFailureState(job, "asr")
+        : whisperFailure && !asrDone
+          ? "error"
         : asrRuntimeRunning
             ? "active"
           : asrDone
@@ -262,6 +269,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       label: "WhisperX diarization",
       detail: (job?.status === "running" && job.stage === "diarization") || diarizationRuntimeRunning
         ? "Running speaker diarization"
+        : diarizationRuntimeFailed
+          ? formatCurrentRuntimeFailure(job, "diarization", "Speaker diarization")
         : hasDiarization
           ? `${asset.intelligence.diarization?.speakers.length ?? 0} speakers`
           : diarizationRuntimeWaitingForMerge
@@ -281,10 +290,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                 : isIndexed
                   ? skipped("optional WhisperX diarization produced no speaker segments")
                   : "Optional: configure WHISPERX_HF_TOKEN",
-      state: diarizationRuntimeStatus === "failed" && !diarizationError
-          ? diarizationRuntimeWaitingForMerge
-            ? "waiting"
-            : "error"
+      state: diarizationRuntimeFailed
+          ? currentRuntimeFailureState(job, "diarization")
           : (job?.status === "running" && job.stage === "diarization") || diarizationRuntimeRunning
             ? "active"
           : diarizationDone
@@ -312,6 +319,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       label: "PaddleOCR",
       detail: ocrRuntimeRunning
         ? "Running PaddleOCR"
+        : ocrRuntimeFailed
+          ? formatCurrentRuntimeFailure(job, "ocr", "PaddleOCR")
         : hasOcr
           ? `${asset.intelligence.ocr.tokens.length} tokens · ${Math.round(asset.intelligence.ocr.confidence * 100)}% confidence`
           : ocrRuntimeWaitingForMerge
@@ -329,10 +338,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
               : isIndexed
                 ? skipped("PaddleOCR found no frame text tokens to store")
                 : "Waiting for frame text",
-      state: (ocrRuntimeStatus === "failed" || ocrFailure) && !ocrDone
-        ? ocrRuntimeWaitingForMerge
-          ? "waiting"
-          : "error"
+      state: ocrRuntimeFailed
+        ? currentRuntimeFailureState(job, "ocr")
+        : ocrFailure && !ocrDone
+          ? "error"
         : ocrRuntimeRunning
             ? "active"
           : ocrDone
@@ -352,6 +361,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? `Coarse frame profile · ${asset.intelligence.visual.dominantColor}`
         : visualRuntimeRunning
           ? "Sampling visual frames"
+          : visualRuntimeFailed
+            ? formatCurrentRuntimeFailure(job, "visual", "Visual sampling")
           : visualRuntimeWaitingForMerge
             ? visualRuntimeStatus === "failed"
               ? "Visual sampler returned no usable frames; waiting for local runtime merge"
@@ -367,10 +378,8 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                     : isIndexed
                       ? skipped("indexing finished without stored visual samples")
                       : "Waiting for visual profile sampling",
-      state: visualRuntimeStatus === "failed" && !visualDone
-        ? visualRuntimeWaitingForMerge
-          ? "waiting"
-          : "error"
+      state: visualRuntimeFailed
+        ? currentRuntimeFailureState(job, "visual")
         : visualDone
           ? "done"
           : visualRuntimeRunning
@@ -839,6 +848,23 @@ function getRuntimeStageStatus(job: JobRecord | null, stage: string): "running" 
   if (job.stage === `runtime-${stage}-succeeded`) return "succeeded";
   if (job.stage === `runtime-${stage}-failed`) return "failed";
   return null;
+}
+
+function isCurrentRuntimeStageFailure(job: JobRecord | null, stage: string, status: ReturnType<typeof getRuntimeStageStatus>) {
+  return Boolean((job?.status === "queued" || job?.status === "running") && status === "failed" && job.runtimeStages?.[stage]?.status === "failed");
+}
+
+function currentRuntimeFailureState(job: JobRecord | null, stage: string): FlowStepState {
+  return isRecoverableRuntimeFailure(job, stage) ? "waiting" : "error";
+}
+
+function formatCurrentRuntimeFailure(job: JobRecord | null, stage: string, label: string) {
+  return isRecoverableRuntimeFailure(job, stage) ? `${label} interrupted; waiting for retry` : `${label} failed`;
+}
+
+function isRecoverableRuntimeFailure(job: JobRecord | null, stage: string) {
+  const message = job?.runtimeStages?.[stage]?.message ?? job?.runtimeStages?.[stage]?.error ?? "";
+  return /will rerun from checkpoint|durable worker recovery/i.test(message);
 }
 
 function flowState(asset: AssetRecord, activeStatuses: AssetRecord["status"][], complete: boolean, isFailed: boolean): FlowStepState {

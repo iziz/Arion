@@ -19,6 +19,10 @@ type MomentOpenOptions = {
 
 type OpenMomentHandler = (segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
 
+const SEGMENT_PREVIEW_LIMIT = 120;
+const OCR_TOKEN_PREVIEW_LIMIT = 160;
+const OCR_FRAME_PREVIEW_LIMIT = 40;
+
 export function AssetGroupForm({ index, onSubmit }: { index: IndexRecord | null; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> }) {
   const domain = index?.domainIndexing;
   const domainEnabled = Boolean(domain?.enabled);
@@ -246,13 +250,13 @@ export function AssetFlow({
     },
     {
       label: "3. Scene and vision evidence",
-      detail: "Build scene windows, keyframes, VLM scene evidence, detector evidence, and tracker evidence.",
-      steps: flow.filter((step) => step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "videoVlm" || step.id === "detector" || step.id === "tracker")
+      detail: "Build scene windows, keyframes, and VLM scene evidence before domain grounding.",
+      steps: flow.filter((step) => step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "videoVlm")
     },
     {
       label: "4. Domain evidence",
-      detail: "Apply trusted action spotting, related knowledge event construction, and optional event-level VLM refinement.",
-      steps: flow.filter((step) => step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
+      detail: "Apply detector, tracker, trusted action spotting, related knowledge event construction, and optional event-level VLM refinement.",
+      steps: flow.filter((step) => step.id === "detector" || step.id === "tracker" || step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
     },
     {
       label: "5. Vector index",
@@ -364,9 +368,9 @@ export function FlowNode({
         </div>
         <p>{step.detail}</p>
         <p className="node-description">{step.description}</p>
-        {step.serverProgress && (
+        {step.serverProgress && !expanded && (
           <span className="node-server-progress">
-            server {step.serverProgress.status} · {step.serverProgress.stage} · {step.serverProgress.progress}%
+            Overall job · {step.serverProgress.status} · {step.serverProgress.stage} · {step.serverProgress.progress}%
           </span>
         )}
         <div className="node-badge-row" aria-label={`${step.label} quality and search impact`}>
@@ -378,7 +382,7 @@ export function FlowNode({
         </div>
         <div className="node-actions">
           <span className="node-state">{step.state}</span>
-          {progressLabel && <span className="node-percent">{progressLabel}</span>}
+          {progressLabel && <span className="node-percent">Node {progressLabel}</span>}
           <span className="node-open">{expanded ? "Hide" : "View"}</span>
           <button
             type="button"
@@ -476,6 +480,12 @@ function WorkflowUsageSection({ items }: { items: string[] }) {
   );
 }
 
+function PreviewLimitNotice({ total, visible, label }: { total: number; visible: number; label: string }) {
+  const hidden = Math.max(0, total - visible);
+  if (hidden === 0) return null;
+  return <span className="preview-limit-note">Showing {visible} of {total} {label}; use search or timeline filters for the rest.</span>;
+}
+
 function WorkflowRunDetails({ job, step }: { job: JobRecord | null; step: FlowStep }) {
   if (!job) return null;
   const currentStage = isWorkflowStageMatch(step, job.stage);
@@ -489,9 +499,9 @@ function WorkflowRunDetails({ job, step }: { job: JobRecord | null; step: FlowSt
       <div className="workflow-run-header">
         <div>
           <h4>Run details</h4>
-          <span>{job.type} · {job.status} · {job.stage}</span>
+          <span>Overall job · {job.type} · {job.status} · {job.stage}</span>
         </div>
-        <strong>{job.progress}%</strong>
+        <strong>Overall {job.progress}%</strong>
       </div>
       <div className="workflow-run-progress" aria-label={`${job.progress}% job progress`}>
         <span style={{ width: `${job.progress}%` }} />
@@ -502,7 +512,7 @@ function WorkflowRunDetails({ job, step }: { job: JobRecord | null; step: FlowSt
           {step.state}
         </span>
         <span>
-          <b>Step</b>
+          <b>Node progress</b>
           {step.progress === null ? step.state : `${step.progress}%`}
         </span>
         <span>
@@ -787,6 +797,7 @@ function AudioResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: 
 
 function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const segments = asset.intelligence.asr.segments;
+  const visibleSegments = segments.slice(0, SEGMENT_PREVIEW_LIMIT);
   const transcript = asset.intelligence.asr.transcript.trim();
   const coverage = formatCoverage(sumWindowDuration(segments), asset.duration);
   const confidence = asset.intelligence.asr.confidence;
@@ -810,7 +821,7 @@ function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
         <div className="workflow-result-stack">
           <p className="transcript-box">{truncateText(sample, 520)}</p>
           <div className="segment-list compact-list">
-            {segments.map((segment) => (
+            {visibleSegments.map((segment) => (
               <button
                 key={`${segment.start}-${segment.end}-${segment.text}`}
                 type="button"
@@ -821,6 +832,7 @@ function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
                 {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
               </button>
             ))}
+            <PreviewLimitNotice total={segments.length} visible={visibleSegments.length} label="ASR segments" />
             {segments.length === 0 && <span>No timestamped ASR segments are stored.</span>}
           </div>
         </div>
@@ -832,6 +844,7 @@ function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
 
 function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const diarization = asset.intelligence.diarization;
+  const visibleSegments = (diarization?.segments ?? []).slice(0, SEGMENT_PREVIEW_LIMIT);
   const currentRunActive = step.state === "active";
   const speakerCount = currentRunActive ? null : (diarization?.speakers.length ?? 0);
   const segmentCount = currentRunActive ? null : (diarization?.segments.length ?? 0);
@@ -858,7 +871,7 @@ function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step
             <span>Current speaker diarization run is still in progress.</span>
           ) : (
             <>
-              {(diarization?.segments ?? []).map((segment) => (
+              {visibleSegments.map((segment) => (
                 <button
                   key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}
                   type="button"
@@ -869,6 +882,7 @@ function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step
                   {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
                 </button>
               ))}
+              <PreviewLimitNotice total={diarization?.segments.length ?? 0} visible={visibleSegments.length} label="speaker segments" />
               {(diarization?.segments.length ?? 0) === 0 && <span>No speaker diarization segments are stored.</span>}
             </>
           )}
@@ -881,6 +895,8 @@ function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step
 
 function OcrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const frames = asset.intelligence.ocr.frames;
+  const visibleTokens = asset.intelligence.ocr.tokens.slice(0, OCR_TOKEN_PREVIEW_LIMIT);
+  const visibleFrames = frames.slice(0, OCR_FRAME_PREVIEW_LIMIT);
   const boxes = frames.flatMap((frame) => frame.boxes ?? []);
   const roleCounts = boxes.reduce<Record<string, number>>((counts, box) => {
     counts[box.role] = (counts[box.role] ?? 0) + 1;
@@ -910,15 +926,16 @@ function OcrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
       inspect={
         <div className="workflow-result-stack">
           <div className="ocr-token-list">
-            {asset.intelligence.ocr.tokens.map((token) => <span key={token}>{token}</span>)}
+            {visibleTokens.map((token) => <span key={token}>{token}</span>)}
+            <PreviewLimitNotice total={asset.intelligence.ocr.tokens.length} visible={visibleTokens.length} label="OCR tokens" />
             {asset.intelligence.ocr.tokens.length === 0 && <span>No OCR text was extracted.</span>}
           </div>
           <div className="ocr-frame-list">
-            {frames.map((frame) => {
+            {visibleFrames.map((frame) => {
               const src = mediaPath(frame.framePath);
               const content = (
                 <>
-                  {src && <img src={src} alt="" />}
+                  {src && <img src={src} alt="" loading="lazy" decoding="async" />}
                   <div>
                     <strong>{Math.round(frame.confidence * 100)}%{typeof frame.at === "number" ? ` · ${formatDuration(frame.at)}` : ""}</strong>
                     <OcrRoleSummary boxes={frame.boxes ?? []} fallback={frame.tokens} />
@@ -941,6 +958,7 @@ function OcrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
                 </article>
               );
             })}
+            <PreviewLimitNotice total={frames.length} visible={visibleFrames.length} label="OCR frames" />
             {frames.length === 0 && <span>No OCR frames are stored.</span>}
           </div>
         </div>

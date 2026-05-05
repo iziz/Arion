@@ -160,6 +160,15 @@
   font-weight: 900;
 }
 
+.compact-list .preview-limit-note,
+.ocr-token-list .preview-limit-note,
+.ocr-frame-list .preview-limit-note {
+  border-style: dashed;
+  background: #f3f8f6;
+  color: #5b736a;
+  font-weight: 850;
+}
+
 .ocr-frame-card {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { inferPaddleOcrLanguages } from "../server/localModelRuntime";
 import { selectBestPaddleOcrResult, type PaddleResult } from "../server/modelRuntime/ocrRuntime";
 
 test("Korean OCR candidate wins over high-volume English OCR noise when Hangul is present", () => {
@@ -25,6 +26,25 @@ test("Korean OCR candidate wins over high-volume English OCR noise when Hangul i
   assert.equal(selected.language, "korean");
 });
 
+test("PaddleOCR language follows detected ASR language without English fallback", () => {
+  withPaddleOcrLang(undefined, () => {
+    assert.deepEqual(inferPaddleOcrLanguages(ocrLanguageAsset("unknown"), "ko"), ["korean"]);
+    assert.deepEqual(inferPaddleOcrLanguages(ocrLanguageAsset("unknown"), "en"), ["en"]);
+  });
+});
+
+test("PaddleOCR falls back to metadata script only when ASR language is unknown", () => {
+  withPaddleOcrLang(undefined, () => {
+    assert.deepEqual(inferPaddleOcrLanguages(ocrLanguageAsset("unknown", "한국어 자막 영상")), ["korean"]);
+  });
+});
+
+test("PaddleOCR explicit language config overrides ASR language", () => {
+  withPaddleOcrLang("ko", () => {
+    assert.deepEqual(inferPaddleOcrLanguages(ocrLanguageAsset("en"), "en"), ["korean"]);
+  });
+});
+
 function paddleResult(language: string, texts: string[]): PaddleResult {
   return {
     available: true,
@@ -48,4 +68,35 @@ function paddleResult(language: string, texts: string[]): PaddleResult {
       }
     ]
   };
+}
+
+function ocrLanguageAsset(asrLanguage: string, title = "Untitled") {
+  return {
+    title,
+    description: "",
+    originalName: "video.mp4",
+    intelligence: {
+      asr: {
+        language: asrLanguage
+      }
+    }
+  };
+}
+
+function withPaddleOcrLang(value: string | undefined, callback: () => void) {
+  const previous = process.env.PADDLEOCR_LANG;
+  if (value === undefined) {
+    delete process.env.PADDLEOCR_LANG;
+  } else {
+    process.env.PADDLEOCR_LANG = value;
+  }
+  try {
+    callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PADDLEOCR_LANG;
+    } else {
+      process.env.PADDLEOCR_LANG = previous;
+    }
+  }
 }

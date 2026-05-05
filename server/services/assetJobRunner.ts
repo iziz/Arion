@@ -5,9 +5,7 @@ import { getAsset } from "../store";
 import { runDomainVlmRefineJob } from "../workflows/domainVlmWorkflow";
 import {
   normalizeWorkflowStage,
-  runAudioExtractionJob,
-  runIndexingJob,
-  runSpeakerDiarizationJob
+  runIndexingJob
 } from "../workflows/indexingWorkflow";
 import type { AssetRecord, JobRecord } from "../../shared/types";
 import { updateAsset } from "./jobState";
@@ -37,20 +35,6 @@ export async function runAssetJob(job: JobRecord): Promise<RunAssetJobResult> {
   }
 
   const sourcePath = getAssetSourcePath(asset);
-  if (job.type === "asset.reindex" && retryStage === "speakers") {
-    await traceJobAsync("job.diarization", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: "speakers" }, () =>
-      runSpeakerDiarizationJob(job.id, asset.id)
-    );
-    return { ran: true, job };
-  }
-
-  if (job.type === "asset.reindex" && (retryStage === "audio" || retryStage === "vad")) {
-    await traceJobAsync("job.audio_retry", { jobId: job.id, assetId: asset.id }, { type: "asset.reindex", stage: retryStage }, () =>
-      runAudioExtractionJob(job.id, asset.id, sourcePath)
-    );
-    return { ran: true, job };
-  }
-
   await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
   await traceJobAsync("job.indexing", { jobId: job.id, assetId: asset.id }, { type: job.type, retryStage }, () =>
     runIndexingJob(job.id, asset.id, sourcePath, { retryStage })

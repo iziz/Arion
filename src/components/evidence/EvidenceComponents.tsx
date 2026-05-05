@@ -6,6 +6,10 @@ import { buildEvidenceLedger, type EvidenceLedger } from "../../searchTrust";
 import { EmptyState } from "../common/ConsolePrimitives";
 import { getDomainSummary, getSearchSceneData } from "./sceneEvidence";
 
+const EVIDENCE_SEGMENT_PREVIEW_LIMIT = 120;
+const EVIDENCE_OCR_TOKEN_PREVIEW_LIMIT = 160;
+const EVIDENCE_OCR_FRAME_PREVIEW_LIMIT = 40;
+
 export function KnowledgeEvidenceRow({ evidence }: { evidence: SearchResult["knowledgeEvidence"] }) {
   return (
     <span className="knowledge-evidence-row">
@@ -558,6 +562,12 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
   const speechSegments = asset.intelligence.audio?.speechSegments ?? [];
   const musicSegments = asset.intelligence.audio?.musicSegments ?? [];
   const speakerSegments = asset.intelligence.diarization?.segments ?? [];
+  const visibleSpeechSegments = speechSegments.slice(0, EVIDENCE_SEGMENT_PREVIEW_LIMIT);
+  const visibleMusicSegments = musicSegments.slice(0, EVIDENCE_SEGMENT_PREVIEW_LIMIT);
+  const visibleAsrSegments = asrSegments.slice(0, EVIDENCE_SEGMENT_PREVIEW_LIMIT);
+  const visibleSpeakerSegments = speakerSegments.slice(0, EVIDENCE_SEGMENT_PREVIEW_LIMIT);
+  const visibleOcrTokens = asset.intelligence.ocr.tokens.slice(0, EVIDENCE_OCR_TOKEN_PREVIEW_LIMIT);
+  const visibleOcrFrames = ocrFrames.slice(0, EVIDENCE_OCR_FRAME_PREVIEW_LIMIT);
   const domainEvents = asset.timeline.flatMap((segment) =>
     (segment.domain?.events ?? []).map((event) => ({
       segment,
@@ -673,16 +683,17 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
           </div>
           <div className="segment-list compact-list">
             {speechSegments.length === 0 && <span>No speech regions were detected.</span>}
-            {speechSegments.map((segment) => (
+            {visibleSpeechSegments.map((segment) => (
               <span key={`speech-${segment.start}-${segment.end}`}>
                 speech · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {Math.round(segment.confidence * 100)}%
               </span>
             ))}
-            {musicSegments.map((segment) => (
+            {visibleMusicSegments.map((segment) => (
               <span key={`music-${segment.start}-${segment.end}`}>
                 music/noise bed · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {Math.round(segment.confidence * 100)}%
               </span>
             ))}
+            <PreviewLimitNotice total={speechSegments.length + musicSegments.length} visible={visibleSpeechSegments.length + visibleMusicSegments.length} label="audio regions" />
           </div>
         </article>
 
@@ -696,11 +707,12 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
             <p className="transcript-box">{asset.intelligence.asr.transcript || "No speech text was extracted."}</p>
             <div className="segment-list compact-list">
               {asrSegments.length === 0 && <span>No timestamped ASR segments.</span>}
-              {asrSegments.map((segment) => (
+              {visibleAsrSegments.map((segment) => (
                 <span key={`${segment.start}-${segment.end}-${segment.text}`}>
                   {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
                 </span>
               ))}
+              <PreviewLimitNotice total={asrSegments.length} visible={visibleAsrSegments.length} label="ASR segments" />
             </div>
           </details>
         </article>
@@ -714,11 +726,12 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
             {speakerSegments.length === 0 && (
               <span>{asset.intelligence.diarization?.error ?? "No speaker diarization segments are available."}</span>
             )}
-            {speakerSegments.map((segment) => (
+            {visibleSpeakerSegments.map((segment) => (
               <span key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}>
                 {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
               </span>
             ))}
+            <PreviewLimitNotice total={speakerSegments.length} visible={visibleSpeakerSegments.length} label="speaker segments" />
           </div>
         </article>
 
@@ -729,17 +742,18 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
           </div>
           <div className="ocr-token-list">
             {asset.intelligence.ocr.tokens.length === 0 && <span>No OCR text was extracted.</span>}
-            {asset.intelligence.ocr.tokens.map((token) => (
+            {visibleOcrTokens.map((token) => (
               <span key={token}>{token}</span>
             ))}
+            <PreviewLimitNotice total={asset.intelligence.ocr.tokens.length} visible={visibleOcrTokens.length} label="OCR tokens" />
           </div>
           <div className="ocr-frame-list">
             {ocrFrames.length === 0 && <span>No OCR frames are available.</span>}
-            {ocrFrames.map((frame) => {
+            {visibleOcrFrames.map((frame) => {
               const src = mediaPath(frame.framePath);
               return (
                 <article key={frame.framePath || frame.tokens.join("-")} className="ocr-frame-card">
-                  {src && <img src={src} alt="" />}
+                  {src && <img src={src} alt="" loading="lazy" decoding="async" />}
                   <div>
                     <strong>{Math.round(frame.confidence * 100)}%</strong>
                     <OcrRoleSummary boxes={frame.boxes ?? []} fallback={frame.tokens} />
@@ -747,6 +761,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
                 </article>
               );
             })}
+            <PreviewLimitNotice total={ocrFrames.length} visible={visibleOcrFrames.length} label="OCR frames" />
           </div>
         </article>
       </div>
@@ -777,4 +792,10 @@ export function OcrRoleSummary({ boxes, fallback }: { boxes: OcrBox[]; fallback:
       })}
     </span>
   );
+}
+
+function PreviewLimitNotice({ total, visible, label }: { total: number; visible: number; label: string }) {
+  const hidden = Math.max(0, total - visible);
+  if (hidden === 0) return null;
+  return <span className="preview-limit-note">Showing {visible} of {total} {label}; use search or focused results for the rest.</span>;
 }

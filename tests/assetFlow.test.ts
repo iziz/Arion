@@ -72,6 +72,39 @@ test("running runtime stages take precedence over stored step outputs", () => {
   assert.equal(flow.find((step) => step.id === "ocr")?.detail, "Running PaddleOCR");
 });
 
+test("failed retry runtime stages take precedence over stored OCR output", () => {
+  const asset = {
+    ...baseAsset(),
+    intelligence: {
+      ...emptyIntelligence(),
+      ocr: {
+        tokens: ["STALE"],
+        confidence: 0.8,
+        frames: [{ framePath: "generated/frame.png", at: 1, tokens: ["STALE"], boxes: [], confidence: 0.8 }]
+      }
+    }
+  } satisfies AssetRecord;
+  const ocr = getAssetFlow(asset, baseIndex(), {
+    ...baseJob(),
+    status: "running",
+    stage: "local-model-runtime",
+    progress: 54,
+    parameters: { retryStage: "ocr", resumeFromStage: "local-model-runtime" },
+    runtimeStages: {
+      ocr: {
+        ...runtimeStage("ocr", "Interrupted by durable worker recovery; stage will rerun from checkpoint: local-model-runtime.", 12),
+        status: "failed",
+        error: "Interrupted by durable worker recovery; stage will rerun from checkpoint: local-model-runtime.",
+        completedAt: "2026-05-04T18:02:00.000Z"
+      }
+    }
+  }).find((step) => step.id === "ocr");
+
+  assert.equal(ocr?.state, "waiting");
+  assert.equal(ocr?.detail, "PaddleOCR interrupted; waiting for retry");
+  assert.equal(ocr?.progress, null);
+});
+
 test("completed diarization output is shown after the runtime stage succeeds", () => {
   const asset = {
     ...baseAsset(),

@@ -20,6 +20,17 @@ type LocalModelRuntimeOptions = {
   onPartial?: (stage: string, partial: LocalRuntimePartial) => Promise<void> | void;
 };
 
+type OcrLanguageHintSource = {
+  title: string;
+  description: string;
+  originalName: string;
+  intelligence: {
+    asr: {
+      language?: string | null;
+    };
+  };
+};
+
 export async function runLocalModelRuntime(
   filePath: string,
   asset: AssetRecord,
@@ -40,7 +51,7 @@ export async function runLocalModelRuntime(
     }),
     getAudioProbeRuntimeResult(filePath, audio, asset, reportStage, forceStages)
   ]);
-  const runOcrTask = async () => {
+  const runOcrTask = async (paddleOcrLanguages: string[]) => {
     if (hasCachedOcr(asset) && !forceStages.has("ocr")) {
       await reportStage?.({
         stage: "ocr",
@@ -51,6 +62,7 @@ export async function runLocalModelRuntime(
       });
       return cachedPaddleResult(asset);
     }
+    const languages = paddleOcrLanguages.length > 0 ? paddleOcrLanguages : ["en"];
     const result = await runRuntimeStage(
       reportStage,
       "ocr",
@@ -58,8 +70,8 @@ export async function runLocalModelRuntime(
       () =>
         traceAsync(
           "model.ocr.paddle",
-          { assetId: asset.id, langs: languageHints.paddleOcrLanguages.join(",") },
-          () => runPaddleOcr(filePath, asset.id, languageHints.paddleOcrLanguages, asset.duration, reportStage),
+          { assetId: asset.id, langs: languages.join(",") },
+          () => runPaddleOcr(filePath, asset.id, languages, asset.duration, reportStage),
           "model.ocr.paddle"
         ),
       (paddleResult) => (paddleResult.available ? null : (paddleResult.error ?? "PaddleOCR returned no OCR result"))
@@ -122,15 +134,10 @@ export async function runLocalModelRuntime(
   };
   let paddle: Awaited<ReturnType<typeof runOcrTask>>;
   let speech: Awaited<ReturnType<typeof runSpeechTask>>;
-  if (getLocalModelHeavyConcurrency() >= 2) {
-    [paddle, speech] = await Promise.all([
-      runRecoverableRuntimeTask("ocr", "PaddleOCR", runOcrTask, unavailablePaddleResult),
-      runRecoverableRuntimeTask("asr", "Whisper ASR", runSpeechTask, unavailableSpeechResult)
-    ]);
-  } else {
-    speech = await runRecoverableRuntimeTask("asr", "Whisper ASR", runSpeechTask, unavailableSpeechResult);
-    paddle = await runRecoverableRuntimeTask("ocr", "PaddleOCR", runOcrTask, unavailablePaddleResult);
-  }
+  speech = await runRecoverableRuntimeTask("asr", "Whisper ASR", runSpeechTask, unavailableSpeechResult);
+  const speechLanguage = buildAsrIntelligence(speech.whisper, speech.diarization.segments).language;
+  const paddleOcrLanguages = inferPaddleOcrLanguages(asset, speechLanguage);
+  paddle = await runRecoverableRuntimeTask("ocr", "PaddleOCR", () => runOcrTask(paddleOcrLanguages), unavailablePaddleResult);
   const { whisper, diarization } = speech;
   if (!whisper.available) {
     recordLatency("model.asr.whisper.unavailable", 0, "error", whisper.error ?? "Whisper unavailable");
@@ -473,21 +480,31 @@ async function publishRuntimePartial(options: LocalModelRuntimeOptions, stage: s
 }
 
 function inferLanguageHints(asset: AssetRecord) {
-  const text = `${asset.title} ${asset.description} ${asset.originalName}`;
   const whisperLanguage = normalizeAuto(process.env.WHISPER_LANGUAGE);
-  const configuredOcr = normalizeAuto(process.env.PADDLEOCR_LANG);
-  if (configuredOcr) return { whisperLanguage, paddleOcrLanguages: [configuredOcr] };
-  const asrOcrLanguage = ocrLanguageFromAsr(asset.intelligence.asr.language);
-  if (asrOcrLanguage) return { whisperLanguage, paddleOcrLanguages: unique(asrOcrLanguage === "en" ? ["en"] : [asrOcrLanguage, "en"]) };
-  if (/[가-힣]/.test(text)) return { whisperLanguage, paddleOcrLanguages: ["korean", "en"] };
-  if (/[\u3040-\u30ff\u3400-\u9fff]/.test(text)) return { whisperLanguage, paddleOcrLanguages: ["japan", "ch", "en"] };
-  return { whisperLanguage, paddleOcrLanguages: ["en"] };
+  return { whisperLanguage };
+}
+
+export function inferPaddleOcrLanguages(asset: OcrLanguageHintSource, detectedAsrLanguage?: string | null) {
+  const configuredOcr = normalizePaddleOcrLanguage(process.env.PADDLEOCR_LANG);
+  if (configuredOcr) return [configuredOcr];
+  const asrOcrLanguage = ocrLanguageFromAsr(detectedAsrLanguage) ?? ocrLanguageFromAsr(asset.intelligence.asr.language);
+  if (asrOcrLanguage) return [asrOcrLanguage];
+  const text = `${asset.title} ${asset.description} ${asset.originalName}`;
+  if (/[가-힣]/.test(text)) return ["korean"];
+  if (/[\u3040-\u30ff]/.test(text)) return ["japan"];
+  if (/[\u3400-\u9fff]/.test(text)) return ["ch"];
+  return ["en"];
 }
 
 function normalizeAuto(value?: string) {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === "auto") return null;
   return normalized;
+}
+
+function normalizePaddleOcrLanguage(value?: string) {
+  const normalized = normalizeAuto(value);
+  return ocrLanguageFromAsr(normalized) ?? normalized;
 }
 
 function ocrLanguageFromAsr(language: string | null | undefined) {
@@ -498,12 +515,6 @@ function ocrLanguageFromAsr(language: string | null | undefined) {
   if (normalized === "zh" || normalized === "zho" || normalized === "chi" || normalized === "chinese") return "ch";
   if (normalized === "en" || normalized === "eng" || normalized === "english") return "en";
   return null;
-}
-
-function getLocalModelHeavyConcurrency() {
-  const configured = Number(process.env.LOCAL_MODEL_RUNTIME_HEAVY_CONCURRENCY || 2);
-  if (!Number.isFinite(configured)) return 1;
-  return Math.max(1, Math.min(2, Math.floor(configured)));
 }
 
 function extractTerms(input: string) {

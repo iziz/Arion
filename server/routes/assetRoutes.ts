@@ -139,9 +139,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
     const queuedJob = requestedStage
       ? (await updateJob(job.id, {}, `Retry requested from workflow card: ${requestedStage}`)) ?? job
       : job;
-    if (requestedStage !== "speakers" && requestedStage !== "audio" && requestedStage !== "vad") {
-      await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
-    }
+    await updateAsset(asset.id, { status: "queued", progress: 3, error: null });
     await publishQueueOutbox("asset-job", 10);
     res.status(202).json(queuedJob);
   });

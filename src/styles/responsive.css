@@ -949,7 +949,8 @@ body,
     z-index: 20;
     grid-column: 2;
     grid-row: 1;
-    background: #f7f8f5;
+    background:
+      linear-gradient(135deg, #e6f4ec 0%, #e8f2f6 100%);
   }
 
   .view-tabs {

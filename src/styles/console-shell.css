@@ -705,7 +705,9 @@ textarea {
   align-items: start;
   margin: 0;
   border: 0;
-  background: transparent;
+  border-bottom: 1px solid rgba(43, 139, 112, 0.18);
+  background:
+    linear-gradient(135deg, #e6f4ec 0%, #e8f2f6 100%);
   padding: 28px 28px 16px;
 }
 
@@ -731,6 +733,7 @@ textarea {
 
 .view-tabs {
   position: static;
+  top: 0;
   grid-column: 1;
   grid-row: 1 / span 30;
   align-self: stretch;

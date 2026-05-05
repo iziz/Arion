@@ -5,12 +5,9 @@ import { embedTimelineSegments, getEmbeddingModelName } from "../localEmbeddingR
 import { embedKeyframes, getVisualEmbeddingModelName } from "../localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../keyframes";
 import { runLocalModelRuntime, type LocalRuntimePartial } from "../localModelRuntime";
-import { extractAudioAndVad } from "../modelRuntime/audioRuntime";
-import { toPublicMediaPath } from "../modelRuntime/mediaPath";
-import { runRuntimeStage } from "../modelRuntime/stageReporter";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../modelCapabilities";
 import { applyEventClassification } from "../eventClassifier";
-import { getObjectPath, getPublicMediaRoot, putUploadedObject } from "../localObjectStorage";
+import { putUploadedObject } from "../localObjectStorage";
 import { upsertAssetVectors } from "../localVectorStore";
 import { upsertAssetVisualVectors } from "../localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
@@ -34,11 +31,11 @@ import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/mediaLifecycle";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
 import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
+import { getWorkflowRetryImpactedEvidence, type WorkflowEvidence } from "../../shared/workflowNodes";
 import type { AssetRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
 
 export { analyzeAndEmit } from "./analysisWorkflow";
 export { enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
-export { runSpeakerDiarizationJob } from "./diarizationWorkflow";
 
 export async function createAssetFromUpload(req: Request, res: Response, indexId: string) {
   if (!req.file) {
@@ -126,6 +123,7 @@ const indexingCheckpointOrder = [
 export async function runIndexingJob(jobId: string, assetId: string, filePath: string, options: RunIndexingJobOptions = {}) {
   try {
     await ensureRetryRebuildScope(jobId, options.retryStage);
+    await invalidateRetryStageOutputs(jobId, assetId, options.retryStage);
     await runCheckpointedIndexingStage(jobId, "probe", 38, "Probe and sampling complete", options.retryStage, () => assetHasProbeMetadata(assetId), async () => {
       await updateJob(jobId, { status: "running", stage: "probe", progress: 12 }, "Started media probing");
       await updateAsset(assetId, { status: "probing", progress: 12 });
@@ -540,7 +538,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         status: "succeeded",
         stage: "complete",
         progress: 100,
-        parameters: { ...(await getJob(jobId))?.parameters, retryStage: null, resumeFromStage: null, rebuildFromStage: null },
+        parameters: { ...(await getJob(jobId))?.parameters, retryStage: null, resumeFromStage: null, rebuildFromStage: null, invalidatedRetryStage: null },
         completedAt: new Date().toISOString()
       },
       `Indexed ${indexedAsset.timeline.length} timeline segments`
@@ -564,53 +562,42 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
   }
 }
 
-export async function runAudioExtractionJob(jobId: string, assetId: string, filePath: string) {
-  try {
-    const asset = await getAsset(assetId);
-    if (!asset) return;
-    await updateJob(jobId, { status: "running", stage: "runtime-audio", progress: 40 }, "Running audio extraction retry");
-    await updateAsset(assetId, { status: "scanning", progress: 40, error: null });
-    const audio = await runRuntimeStage(
-      (event) => updateRuntimeStage(jobId, event),
-      "audio",
-      "Extracting audio and detecting speech regions",
-      () => traceAsync("model.audio_extract_vad", { assetId }, () => extractAudioAndVad(filePath, asset.id, asset.duration), "model.audio_extract_vad")
-    );
-    await mergeLocalRuntimePartial(assetId, { audio: buildAudioRuntimePartial(audio) });
-    const refreshed = await getAsset(assetId);
-    const hasSearchArtifacts = Boolean(refreshed?.timeline.length);
-    await updateAsset(assetId, {
-      status: hasSearchArtifacts ? "indexed" : "failed",
-      progress: hasSearchArtifacts ? 100 : Math.max(refreshed?.progress ?? 42, 42),
-      error: hasSearchArtifacts ? null : "Audio extraction retry completed; run full reindex to rebuild downstream search artifacts."
-    });
-    await updateJob(
-      jobId,
-      { status: "succeeded", stage: "complete", progress: 100, completedAt: new Date().toISOString() },
-      "Audio extraction retry complete"
-    );
-    const completedAsset = await getAsset(assetId);
-    if (completedAsset) await pruneGeneratedAssetMedia(completedAsset);
-    await emitForAsset("asset.indexing.progress", "Audio extraction retry complete", assetId, jobId, { progress: 42 });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Audio extraction retry failed";
-    logJson("error", "job.audio_retry.failed", message, { jobId, assetId });
-    await updateAsset(assetId, { status: "failed", error: message });
-    await updateJob(
-      jobId,
-      { status: "failed", stage: "failed", error: message, completedAt: new Date().toISOString() },
-      message,
-      "error"
-    );
-    await emitForAsset("asset.indexing.failed", "Audio extraction retry failed", assetId, jobId, { error: message });
-  }
-}
-
 export function normalizeWorkflowStage(value: unknown) {
   const stage = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (stage === "videovlm" || stage === "video-vlm") return "videoVlm";
-  const allowed = new Set(["input", "probe", "audio", "vad", "asr", "speakers", "ocr", "visual", "timeline", "domain", "vector", "ready"]);
-  return allowed.has(stage) ? stage : null;
+  const aliases: Record<string, string> = {
+    input: "input",
+    probe: "probe",
+    audio: "audio",
+    vad: "vad",
+    asr: "asr",
+    speakers: "speakers",
+    ocr: "ocr",
+    visual: "visual",
+    scene: "scene",
+    timeline: "timeline",
+    keyframes: "keyframes",
+    videovlm: "videoVlm",
+    "video-vlm": "videoVlm",
+    detector: "detector",
+    "vision-detection": "detector",
+    tracker: "tracker",
+    "vision-tracking": "tracker",
+    knowledgeaction: "knowledgeAction",
+    "knowledge-action": "knowledgeAction",
+    "soccernet-action": "knowledgeAction",
+    domain: "domain",
+    domainvlm: "domainVlm",
+    "domain-vlm": "domainVlm",
+    textembedding: "textEmbedding",
+    "text-embedding": "textEmbedding",
+    embed: "textEmbedding",
+    visualembedding: "visualEmbedding",
+    "visual-embedding": "visualEmbedding",
+    vector: "vector",
+    ready: "ready",
+    finalize: "ready"
+  };
+  return aliases[stage] ?? null;
 }
 
 async function updateRuntimeStage(
@@ -659,36 +646,10 @@ export function getForcedRuntimeStages(retryStage: string | null | undefined, jo
             : retryStage === "audio" || retryStage === "vad"
               ? ["audio", "audio-probe", "asr", "diarization"]
               : [];
-  const recoveryResume = Boolean(normalizeCheckpointStage(job?.parameters?.resumeFromStage));
   return requested.filter((stage) => {
     if (job?.runtimeStages?.[stage]?.status === "succeeded") return false;
-    if (recoveryResume && assetHasRuntimeStageData(asset, stage)) return false;
     return true;
   });
-}
-
-function assetHasRuntimeStageData(asset: AssetRecord | null | undefined, stage: string) {
-  if (!asset) return false;
-  if (stage === "audio" || stage === "audio-probe") {
-    return Boolean(asset.intelligence.audio?.extractedPath);
-  }
-  if (stage === "asr") {
-    const asr = asset.intelligence.asr;
-    return Boolean(asr.transcript.trim() || asr.segments.length > 0 || asset.intelligence.modelTrace.some((trace) => trace === "asr-source:whisper" || trace.startsWith("asr-empty:")));
-  }
-  if (stage === "diarization") {
-    const diarization = asset.intelligence.diarization;
-    return diarization.provider !== "none" && diarization.segments.length > 0;
-  }
-  if (stage === "ocr") {
-    const ocr = asset.intelligence.ocr;
-    return Boolean(ocr.tokens.length > 0 || ocr.frames.length > 0 || asset.intelligence.modelTrace.some((trace) => trace.startsWith("paddleocr:") || trace === "ocr-empty"));
-  }
-  if (stage === "visual") {
-    const visual = asset.intelligence.visual;
-    return Boolean(visual.available || visual.labels.length > 0 || visual.dominantColor !== "#000000" || visual.brightness > 0 || visual.motionScore > 0);
-  }
-  return false;
 }
 
 async function mergeLocalRuntimePartial(assetId: string, partial: LocalRuntimePartial) {
@@ -702,17 +663,6 @@ async function mergeLocalRuntimePartial(assetId: string, partial: LocalRuntimePa
     },
     updatedAt: new Date().toISOString()
   });
-}
-
-function buildAudioRuntimePartial(audio: Awaited<ReturnType<typeof extractAudioAndVad>>): LocalIntelligence["audio"] {
-  return {
-    extractedPath: toPublicMediaPath(audio.extractedPath, getPublicMediaRoot()),
-    vad: audio.vad,
-    speechSegments: audio.speechSegments,
-    musicSegments: audio.musicSegments,
-    hasSpeech: audio.vad.available && audio.speechSegments.length > 0,
-    hasMusic: audio.vad.available && audio.musicSegments.length > 0
-  };
 }
 
 type IndexingSnapshotPatch = {
@@ -742,6 +692,162 @@ async function persistIndexingSnapshot(assetId: string, patch: IndexingSnapshotP
     },
     updatedAt: new Date().toISOString()
   });
+}
+
+async function invalidateRetryStageOutputs(jobId: string, assetId: string, fallbackRetryStage: string | null | undefined) {
+  const job = await getJob(jobId);
+  const retryStage = getEffectiveRetryStage(job, fallbackRetryStage);
+  if (!retryStage) return;
+  const parameters = { ...(job?.parameters ?? {}) };
+  if (parameters.invalidatedRetryStage === retryStage) return;
+  const asset = await getAsset(assetId);
+  if (!asset) return;
+
+  const invalidated = invalidateAssetForRetryStage(asset, retryStage);
+  await saveAsset(invalidated);
+  const vectors = getRetryVectorInvalidation(retryStage);
+  if (vectors.text) await upsertAssetVectors(asset.indexId, asset.id, []);
+  if (vectors.visual) await upsertAssetVisualVectors(asset.indexId, asset.id, []);
+  await updateJob(
+    jobId,
+    {
+      parameters: {
+        ...parameters,
+        invalidatedRetryStage: retryStage
+      }
+    },
+    `Invalidated stale outputs for retry stage: ${retryStage}`
+  );
+}
+
+export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: string | null | undefined): AssetRecord {
+  const evidence = getWorkflowRetryImpactedEvidence(retryStage);
+  if (evidence.size === 0) return asset;
+  const empty = emptyIntelligence();
+  let duration = asset.duration;
+  let width = asset.width;
+  let height = asset.height;
+  let technicalMetadata = asset.technicalMetadata;
+  let tags = asset.tags;
+  let summary = asset.summary;
+  let timeline = asset.timeline;
+  let keyframes = asset.keyframes;
+  const intelligence: LocalIntelligence = {
+    ...asset.intelligence,
+    audio: asset.intelligence.audio,
+    asr: asset.intelligence.asr,
+    diarization: asset.intelligence.diarization,
+    ocr: asset.intelligence.ocr,
+    visual: asset.intelligence.visual,
+    modelTrace: filterModelTraceForRetryEvidence(asset.intelligence.modelTrace, evidence)
+  };
+
+  if (evidence.has("probe")) {
+    duration = null;
+    width = null;
+    height = null;
+    technicalMetadata = {
+      ...technicalMetadata,
+      frameRate: null,
+      audioCodec: null,
+      videoCodec: null
+    };
+  }
+  if (evidence.has("audio") || evidence.has("vad")) intelligence.audio = empty.audio;
+  if (evidence.has("asr")) {
+    intelligence.asr = empty.asr;
+  } else if (evidence.has("diarization")) {
+    intelligence.asr = {
+      ...intelligence.asr,
+      segments: intelligence.asr.segments.map((segment) => ({ ...segment, speaker: null }))
+    };
+  }
+  if (evidence.has("diarization")) intelligence.diarization = empty.diarization;
+  if (evidence.has("ocr")) intelligence.ocr = empty.ocr;
+  if (evidence.has("visual-profile")) intelligence.visual = empty.visual;
+  if (evidence.has("timeline")) {
+    tags = [];
+    summary = "";
+    timeline = [];
+  }
+  if (evidence.has("keyframes")) keyframes = [];
+  if (timeline.length > 0) {
+    timeline = invalidateTimelineEvidence(timeline, evidence);
+  }
+
+  return {
+    ...asset,
+    duration,
+    width,
+    height,
+    technicalMetadata,
+    tags,
+    summary,
+    timeline,
+    keyframes,
+    intelligence,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function getRetryVectorInvalidation(retryStage: string | null | undefined) {
+  const evidence = getWorkflowRetryImpactedEvidence(retryStage);
+  return {
+    text: evidence.has("text-embedding") || evidence.has("vector") || evidence.has("ready"),
+    visual: evidence.has("visual-embedding") || evidence.has("vector") || evidence.has("ready")
+  };
+}
+
+function invalidateTimelineEvidence(timeline: AssetRecord["timeline"], evidence: Set<WorkflowEvidence>): AssetRecord["timeline"] {
+  const clearVideoVlm = evidence.has("video-vlm");
+  const clearVision = evidence.has("vision-detector") || evidence.has("vision-tracker");
+  const clearDomain = evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm");
+  const clearTextEmbedding = evidence.has("text-embedding") || evidence.has("vector") || evidence.has("ready");
+  if (!clearVideoVlm && !clearVision && !clearDomain && !clearTextEmbedding) return timeline;
+  return timeline.map((segment) => {
+    const sceneData = segment.sceneData
+      ? {
+          ...segment.sceneData,
+          ...(clearVideoVlm ? { vlm: undefined } : {}),
+          ...(clearVision ? { vision: undefined } : {})
+        }
+      : segment.sceneData;
+    const withoutDomain = clearDomain ? stripTimelineDomain(segment) : segment;
+    return {
+      ...withoutDomain,
+      sceneData,
+      embedding: clearTextEmbedding ? [] : withoutDomain.embedding
+    };
+  });
+}
+
+function stripTimelineDomain(segment: AssetRecord["timeline"][number]): AssetRecord["timeline"][number] {
+  const { domain: _domain, ...rest } = segment;
+  return rest;
+}
+
+function filterModelTraceForRetryEvidence(traces: string[], evidence: Set<WorkflowEvidence>) {
+  return traces.filter((trace) => !traceMatchesRetryEvidence(trace, evidence));
+}
+
+function traceMatchesRetryEvidence(trace: string, evidence: Set<WorkflowEvidence>) {
+  if ((evidence.has("audio") || evidence.has("vad")) && traceHasPrefix(trace, ["audio-extract:", "asr-input:", "vad:", "vad-unavailable:", "music-detect:"])) return true;
+  if (evidence.has("asr") && traceHasPrefix(trace, ["faster-whisper:", "whisper-unavailable:", "asr-language:", "asr-source:", "asr-empty:"])) return true;
+  if (evidence.has("diarization") && traceHasPrefix(trace, ["whisperx:", "whisperx-unavailable:"])) return true;
+  if (evidence.has("ocr") && traceHasPrefix(trace, ["paddleocr:", "paddleocr-unavailable:", "ocr-language:", "ocr-source:", "ocr-empty"])) return true;
+  if (evidence.has("visual-profile") && traceHasPrefix(trace, ["visual-source:", "visual-unavailable:", "ffmpeg-visual-sampler:"])) return true;
+  if (evidence.has("video-vlm") && traceHasPrefix(trace, ["video-vlm", "video-vlm-unavailable:"])) return true;
+  if (evidence.has("vision-detector") && traceHasPrefix(trace, ["vision-detector", "vision-detector-unavailable:"])) return true;
+  if (evidence.has("vision-tracker") && traceHasPrefix(trace, ["vision-tracker", "vision-tracker-unavailable:"])) return true;
+  if (evidence.has("knowledge-action") && traceHasPrefix(trace, ["knowledge-action", "knowledge-action-unavailable:", "soccernet-action", "soccernet-action-unavailable:"])) return true;
+  if (evidence.has("domain-vlm") && traceHasPrefix(trace, ["domain-vlm", "domain-vlm-refine:"])) return true;
+  if (evidence.has("text-embedding") && trace.startsWith("embedding:")) return true;
+  if (evidence.has("visual-embedding") && traceHasPrefix(trace, ["visual-embedding", "visual-embedding-unavailable:"])) return true;
+  return false;
+}
+
+function traceHasPrefix(trace: string, prefixes: string[]) {
+  return prefixes.some((prefix) => trace.startsWith(prefix));
 }
 
 async function runCheckpointedIndexingStage<T>(
@@ -806,10 +912,16 @@ async function clearCompletedCheckpointParameters(jobId: string, stage: string, 
     changed = true;
   }
   if (stage === "finalize") {
-    if (nextParameters.resumeFromStage !== null || nextParameters.rebuildFromStage !== null || nextParameters.retryStage !== null) {
+    if (
+      nextParameters.resumeFromStage !== null ||
+      nextParameters.rebuildFromStage !== null ||
+      nextParameters.retryStage !== null ||
+      nextParameters.invalidatedRetryStage !== null
+    ) {
       nextParameters.resumeFromStage = null;
       nextParameters.rebuildFromStage = null;
       nextParameters.retryStage = null;
+      nextParameters.invalidatedRetryStage = null;
       changed = true;
     }
   }
@@ -902,17 +1014,21 @@ function traceFromAsset(asset: AssetRecord, prefix: string) {
   return asset.intelligence.modelTrace.find((trace) => trace.startsWith(prefix)) ?? null;
 }
 
-function mapRetryStageToCheckpoint(retryStage: string | null | undefined) {
+export function mapRetryStageToCheckpoint(retryStage: string | null | undefined) {
   if (!retryStage) return null;
   const normalized = normalizeWorkflowStage(retryStage);
   if (normalized === "probe" || normalized === "input") return "probe";
   if (normalized === "audio" || normalized === "vad" || normalized === "asr" || normalized === "speakers" || normalized === "ocr" || normalized === "visual") {
     return "local-model-runtime";
   }
-  if (normalized === "timeline") return "timeline";
+  if (normalized === "scene" || normalized === "timeline" || normalized === "keyframes") return "timeline";
   if (normalized === "videoVlm") return "video-vlm";
-  if (normalized === "domain") return "domain-index";
-  if (normalized === "vector") return "embed";
+  if (normalized === "detector") return "vision-detection";
+  if (normalized === "tracker") return "vision-tracking";
+  if (normalized === "knowledgeAction" || normalized === "domain" || normalized === "domainVlm") return "domain-index";
+  if (normalized === "textEmbedding") return "embed";
+  if (normalized === "visualEmbedding") return "visual-embedding";
+  if (normalized === "vector") return "vector-upsert-text";
   if (normalized === "ready") return "finalize";
   return null;
 }
