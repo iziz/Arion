@@ -1,6 +1,6 @@
 import { logJson } from "../observability";
 import { listJobs } from "../store";
-import type { JobRecord } from "../../shared/types";
+import type { JobRecord, JobStageCheckpoint, RuntimeStageRecord } from "../../shared/types";
 import { updateJob } from "./jobState";
 import { enqueueQueuedAssetJobs } from "./redisJobQueue";
 import { cleanupStaleRuntimeProcesses } from "./runtimeProcessCleanup";
@@ -32,9 +32,17 @@ export async function recoverDurableWorkerJobs() {
   }
 
   let reset = 0;
-  for (const job of activeJobs.filter((item) => item.status === "running")) {
-    await resetRunningJob(job);
-    reset += 1;
+  let normalized = 0;
+  for (const job of activeJobs) {
+    if (job.status === "running") {
+      await resetInterruptedJob(job);
+      reset += 1;
+      continue;
+    }
+    if (hasInterruptedRuntimeState(job)) {
+      await normalizeQueuedInterruptedJob(job);
+      normalized += 1;
+    }
   }
 
   const dispatch = await enqueueQueuedAssetJobs();
@@ -42,6 +50,7 @@ export async function recoverDurableWorkerJobs() {
     logJson("warn", "jobs.durable.recovered", "Recovered durable worker jobs after worker restart", {
       active: activeJobs.length,
       reset,
+      normalized,
       redisQueued: dispatch.queued,
       redisEnqueued: dispatch.enqueued,
       redisFailed: dispatch.failed
@@ -49,14 +58,18 @@ export async function recoverDurableWorkerJobs() {
   }
 }
 
-async function resetRunningJob(job: JobRecord) {
+async function resetInterruptedJob(job: JobRecord) {
   const resumeFromStage = findResumeStage(job, indexingCheckpointOrder) ?? job.stage;
+  const now = new Date().toISOString();
+  const message = `Interrupted by durable worker recovery; stage will rerun from checkpoint: ${resumeFromStage}.`;
   await updateJob(
     job.id,
     {
       status: "queued",
       stage: resumeFromStage,
       progress: job.progress,
+      runtimeStages: closeRunningRuntimeStages(job.runtimeStages, now, message),
+      stageCheckpoints: closeRunningStageCheckpoints(job.stageCheckpoints, now, message),
       parameters: {
         ...(job.parameters ?? {}),
         resumeFromStage
@@ -67,4 +80,68 @@ async function resetRunningJob(job: JobRecord) {
     `Durable worker recovered running job after worker restart; Redis execution will resume from checkpoint stage: ${resumeFromStage}.`,
     "warn"
   );
+}
+
+async function normalizeQueuedInterruptedJob(job: JobRecord) {
+  const resumeFromStage = findResumeStage(job, indexingCheckpointOrder) ?? job.stage;
+  const now = new Date().toISOString();
+  const message = `Stale queued job had interrupted runtime state; stage will rerun from checkpoint: ${resumeFromStage}.`;
+  await updateJob(
+    job.id,
+    {
+      stage: resumeFromStage,
+      progress: job.progress,
+      runtimeStages: closeRunningRuntimeStages(job.runtimeStages, now, message),
+      stageCheckpoints: closeRunningStageCheckpoints(job.stageCheckpoints, now, message),
+      parameters: {
+        ...(job.parameters ?? {}),
+        resumeFromStage
+      },
+      error: null,
+      completedAt: null
+    },
+    `Durable worker normalized stale queued job after worker restart; Redis execution will resume from checkpoint stage: ${resumeFromStage}.`,
+    "warn"
+  );
+}
+
+export function hasInterruptedRuntimeState(job: JobRecord) {
+  return (
+    Object.values(job.runtimeStages ?? {}).some((stage) => stage.status === "running") ||
+    Object.values(job.stageCheckpoints ?? {}).some((checkpoint) => checkpoint.status === "running")
+  );
+}
+
+export function closeRunningRuntimeStages(runtimeStages: JobRecord["runtimeStages"], now: string, message: string) {
+  return mapRecord(runtimeStages, (stage): RuntimeStageRecord =>
+    stage.status === "running"
+      ? {
+          ...stage,
+          status: "failed",
+          message,
+          error: message,
+          updatedAt: now,
+          completedAt: now
+        }
+      : stage
+  );
+}
+
+export function closeRunningStageCheckpoints(stageCheckpoints: JobRecord["stageCheckpoints"], now: string, message: string) {
+  return mapRecord(stageCheckpoints, (checkpoint): JobStageCheckpoint =>
+    checkpoint.status === "running"
+      ? {
+          ...checkpoint,
+          status: "failed",
+          message,
+          error: message,
+          updatedAt: now,
+          completedAt: now
+        }
+      : checkpoint
+  );
+}
+
+function mapRecord<T>(record: Record<string, T> | undefined, mapValue: (value: T) => T) {
+  return Object.fromEntries(Object.entries(record ?? {}).map(([key, value]) => [key, mapValue(value)]));
 }

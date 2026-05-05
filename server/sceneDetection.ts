@@ -44,11 +44,9 @@ async function detectSceneBoundariesWithPySceneDetect(filePath: string, duration
             detector: process.env.SCENE_DETECTOR || "adaptive",
             threshold: process.env.SCENE_CONTENT_THRESHOLD || "27.0",
             adaptiveThreshold: process.env.SCENE_ADAPTIVE_THRESHOLD || "3.0",
-            minSceneLen: process.env.SCENE_MIN_LEN_FRAMES || "15",
-            timeoutMs: Number(process.env.SCENE_TIMEOUT_MS || 0) || undefined
+            minSceneLen: process.env.SCENE_MIN_LEN_FRAMES || "15"
           },
           {
-            timeoutMs: Number(process.env.SCENE_TIMEOUT_MS || 0) || undefined,
             metricKey: "model.vision.scene_detection.service"
           }
         )
@@ -82,45 +80,35 @@ async function detectSceneBoundariesWithPySceneDetect(filePath: string, duration
 
 async function detectSceneBoundariesWithPySceneDetectDirect(filePath: string) {
   const stdout = await new Promise<string>((resolve, reject) => {
-      const child = spawn(
-        pythonBin,
-        [
-          sceneScript,
-          filePath,
-          "--detector",
-          process.env.SCENE_DETECTOR || "adaptive",
-          "--threshold",
-          process.env.SCENE_CONTENT_THRESHOLD || "27.0",
-          "--adaptive-threshold",
-          process.env.SCENE_ADAPTIVE_THRESHOLD || "3.0",
-          "--min-scene-len",
-          process.env.SCENE_MIN_LEN_FRAMES || "15"
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] }
-      );
-      const timeoutMs = Number(process.env.SCENE_TIMEOUT_MS || 0);
-      const timer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              child.kill("SIGTERM");
-              reject(new Error(`PySceneDetect exceeded safety limit after ${timeoutMs}ms`));
-            }, timeoutMs)
-          : null;
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-      child.on("error", (error) => {
-        if (timer) clearTimeout(timer);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        if (timer) clearTimeout(timer);
-        const output = Buffer.concat(stdoutChunks).toString("utf8");
-        if (code === 0) resolve(output);
-        else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `PySceneDetect exited with code ${code}`));
-      });
+    const child = spawn(
+      pythonBin,
+      [
+        sceneScript,
+        filePath,
+        "--detector",
+        process.env.SCENE_DETECTOR || "adaptive",
+        "--threshold",
+        process.env.SCENE_CONTENT_THRESHOLD || "27.0",
+        "--adaptive-threshold",
+        process.env.SCENE_ADAPTIVE_THRESHOLD || "3.0",
+        "--min-scene-len",
+        process.env.SCENE_MIN_LEN_FRAMES || "15"
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", (error) => {
+      reject(error);
     });
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdoutChunks).toString("utf8");
+      if (code === 0) resolve(output);
+      else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `PySceneDetect exited with code ${code}`));
+    });
+  });
   return JSON.parse(stdout) as {
     available?: boolean;
     detector?: string;
@@ -131,13 +119,11 @@ async function detectSceneBoundariesWithPySceneDetectDirect(filePath: string) {
 async function detectSceneBoundariesWithFfmpeg(filePath: string, duration: number | null): Promise<SceneBoundary[]> {
   const threshold = process.env.SCENE_THRESHOLD || "0.3";
   try {
-    const timeoutMs = Number(process.env.SCENE_TIMEOUT_MS || 0);
     const { stderr } = await execFileAsync(
       "ffmpeg",
       ["-hide_banner", "-i", filePath, "-vf", `select='gt(scene,${threshold})',showinfo`, "-an", "-f", "null", "-"],
       {
-        maxBuffer: 1024 * 1024 * 8,
-        ...(timeoutMs > 0 ? { timeout: timeoutMs } : {})
+        maxBuffer: 1024 * 1024 * 8
       }
     );
     return normalizeBoundaries(parseShowInfo(stderr), duration);
@@ -169,8 +155,7 @@ export function createShotWindows(boundaries: SceneBoundary[], duration: number 
         boundaryDetector: boundary?.detector ?? null
       };
     })
-    .filter((window) => window.end - window.start >= 0.75)
-    .slice(0, 80);
+    .filter((window) => window.end - window.start >= 0.75);
 }
 
 function parseShowInfo(stderr: string): SceneBoundary[] {

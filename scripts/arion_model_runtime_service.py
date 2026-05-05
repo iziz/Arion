@@ -7,9 +7,11 @@ HTTP instead of spawning model scripts directly.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
-import subprocess
+import signal
 import sys
 import time
 from pathlib import Path
@@ -39,7 +41,7 @@ def health() -> dict[str, Any]:
 @app.post("/v1/model-doctor")
 async def model_doctor(request: Request) -> JSONResponse:
     body = await request.json()
-    return run_script_response(request, ["model_doctor.py"], body, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, ["model_doctor.py"], body)
 
 
 @app.post("/v1/whisper")
@@ -56,7 +58,7 @@ async def whisper(request: Request) -> JSONResponse:
     language = normalize_auto(body.get("language"))
     if language:
         args.extend(["--language", language])
-    return run_script_response(request, args, body, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body)
 
 
 @app.post("/v1/whisperx")
@@ -74,7 +76,7 @@ async def whisperx(request: Request) -> JSONResponse:
     segments_json = normalize_auto(body.get("segmentsJsonPath"))
     if segments_json:
         args.extend(["--segments-json", segments_json])
-    return run_script_response(request, args, body, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body)
 
 
 @app.post("/v1/paddleocr")
@@ -92,7 +94,7 @@ async def paddleocr(request: Request) -> JSONResponse:
         "--workers",
         str(body.get("workers") or os.environ.get("PADDLEOCR_WORKERS") or 2),
     ]
-    return run_script_response(request, args, body, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body)
 
 
 @app.post("/v1/embed-text")
@@ -109,7 +111,7 @@ async def embed_text(request: Request) -> JSONResponse:
         kind,
     ]
     stdin_payload = {"texts": body.get("texts") or []}
-    return run_script_response(request, args, body, stdin_payload=stdin_payload, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
 
 
 @app.post("/v1/embed-visual")
@@ -128,7 +130,7 @@ async def embed_visual(request: Request) -> JSONResponse:
         mode,
     ]
     stdin_payload = {"images": body.get("items") or []} if mode == "image" else {"texts": body.get("items") or []}
-    return run_script_response(request, args, body, stdin_payload=stdin_payload, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
 
 
 @app.post("/v1/detect-scenes")
@@ -146,7 +148,7 @@ async def detect_scenes(request: Request) -> JSONResponse:
         "--min-scene-len",
         str(body.get("minSceneLen") or os.environ.get("SCENE_MIN_LEN_FRAMES") or "15"),
     ]
-    return run_script_response(request, args, body, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body)
 
 
 @app.post("/v1/detect-objects")
@@ -165,12 +167,11 @@ async def detect_objects(request: Request) -> JSONResponse:
     ]
     if bool(body.get("allowHeuristicFallback")):
         args.append("--allow-heuristic-fallback")
-    return run_script_response(
+    return await run_script_response(
         request,
         args,
         body,
         stdin_payload={"images": body.get("images") or []},
-        timeout_ms=optional_positive_int(body.get("timeoutMs")),
     )
 
 
@@ -189,12 +190,11 @@ async def track_objects(request: Request) -> JSONResponse:
         "--vid-stride",
         str(body.get("vidStride") or os.environ.get("VISION_TRACKER_VID_STRIDE") or "3"),
     ]
-    return run_script_response(
+    return await run_script_response(
         request,
         args,
         body,
         stdin_payload={"segments": body.get("segments") or []},
-        timeout_ms=optional_positive_int(body.get("timeoutMs")),
     )
 
 
@@ -208,21 +208,20 @@ async def soccernet_action_spotting(request: Request) -> JSONResponse:
         str(body.get("model") or os.environ.get("SOCCERNET_ACTION_SPOTTING_MODEL") or "external"),
     ]
     stdin_payload = {"duration": body.get("duration"), "segments": body.get("segments") or []}
-    return run_script_response(request, args, body, stdin_payload=stdin_payload, timeout_ms=optional_positive_int(body.get("timeoutMs")))
+    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
 
 
-def run_script_response(
+async def run_script_response(
     request: Request,
     args: list[str],
     body: dict[str, Any],
     *,
     stdin_payload: dict[str, Any] | None = None,
-    timeout_ms: int | None = None,
 ) -> JSONResponse:
     request_id = request.headers.get("x-request-id") or ""
     started = time.perf_counter()
     try:
-        result = run_script(args, stdin_payload=stdin_payload, timeout_ms=timeout_ms, request_id=request_id)
+        result = await run_script(args, stdin_payload=stdin_payload, request_id=request_id)
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     result["durationMs"] = round((time.perf_counter() - started) * 1000, 2)
@@ -230,11 +229,10 @@ def run_script_response(
     return JSONResponse(result)
 
 
-def run_script(
+async def run_script(
     args: list[str],
     *,
     stdin_payload: dict[str, Any] | None = None,
-    timeout_ms: int | None = None,
     request_id: str = "",
 ) -> dict[str, Any]:
     script = SCRIPT_DIR / args[0]
@@ -249,31 +247,46 @@ def run_script(
     }
     env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
     input_text = json.dumps(stdin_payload, ensure_ascii=False) if stdin_payload is not None else None
+    input_bytes = input_text.encode("utf-8") if input_text is not None else None
+    process: asyncio.subprocess.Process | None = None
     try:
-        completed = subprocess.run(
-            command,
-            input=input_text,
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=ROOT_DIR,
             env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=(timeout_ms / 1000) if timeout_ms and timeout_ms > 0 else None,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(f"{args[0]} exceeded safety limit after {timeout_ms}ms") from error
+        stdout_bytes, stderr_bytes = await process.communicate(input=input_bytes)
+    except asyncio.CancelledError:
+        if process is not None:
+            await terminate_process_group(process)
+        raise
 
-    progress_events = parse_progress_events(completed.stderr)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"{args[0]} exited with code {completed.returncode}"
+    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+
+    progress_events = parse_progress_events(stderr)
+    if process.returncode != 0:
+        detail = stderr.strip() or stdout.strip() or f"{args[0]} exited with code {process.returncode}"
         raise RuntimeError(detail)
 
     return {
         "ok": True,
-        "result": parse_json_output(completed.stdout),
+        "result": parse_json_output(stdout),
         "progressEvents": progress_events,
-        "stderr": trim_stderr(completed.stderr),
+        "stderr": trim_stderr(stderr),
     }
+
+
+async def terminate_process_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    await process.wait()
 
 
 def parse_json_output(stdout: str) -> Any:
@@ -326,16 +339,6 @@ def normalize_auto(value: Any) -> str | None:
     return text
 
 
-def optional_positive_int(value: Any) -> int | None:
-    if value is None or str(value).strip() == "":
-        return None
-    try:
-        parsed = int(float(str(value)))
-    except ValueError:
-        return None
-    return parsed if parsed > 0 else None
-
-
 def load_dotenv() -> None:
     env_path = ROOT_DIR / ".env"
     if not env_path.exists():
@@ -360,4 +363,4 @@ if __name__ == "__main__":
 
     host = os.environ.get("PYTHON_RUNTIME_SERVICE_HOST", "127.0.0.1")
     port = int(os.environ.get("PYTHON_RUNTIME_SERVICE_PORT", "8792"))
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, lifespan="off")

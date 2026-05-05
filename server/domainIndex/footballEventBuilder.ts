@@ -93,7 +93,7 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
     receiverPresent,
     asrConfidence: asset.intelligence.asr.confidence,
     visualLabelCount: evidenceVisual.length,
-    motionScore: asset.intelligence.visual.motionScore,
+    frameChangeScore: asset.intelligence.visual.motionScore,
     visionConfidence: visual ? Math.max(visual.pitch.confidence, visual.fieldZone.confidence, visual.objects.players.confidence, visual.objects.ball.confidence, visual.tracking?.continuity ?? 0, classifier?.confidence ?? 0) : 0
   });
   const caption = buildFootballCaption(eventType, passType, fieldZone, receiverPresent, confidence);
@@ -188,7 +188,7 @@ function calculateFootballConfidence(options: {
   receiverPresent: boolean;
   asrConfidence: number;
   visualLabelCount: number;
-  motionScore: number;
+  frameChangeScore: number;
   visionConfidence: number;
 }) {
   let confidence = 0.28;
@@ -197,8 +197,8 @@ function calculateFootballConfidence(options: {
   confidence += options.fieldZone === "unknown" ? 0 : options.explicitZone ? 0.16 : 0.08;
   confidence += options.receiverPresent ? 0.08 : 0;
   confidence += Math.min(0.12, Math.max(0, options.asrConfidence) * 0.12);
-  confidence += Math.min(0.04, options.visualLabelCount * 0.01);
-  confidence += Math.min(0.04, Math.max(0, options.motionScore) * 0.04);
+  confidence += Math.min(0.015, options.visualLabelCount * 0.003);
+  confidence += Math.min(0.01, Math.max(0, options.frameChangeScore) * 0.01);
   confidence += Math.min(0.08, Math.max(0, options.visionConfidence) * 0.1);
   return Number(Math.min(0.86, confidence).toFixed(2));
 }

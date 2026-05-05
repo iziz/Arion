@@ -50,7 +50,7 @@ export function buildAmericanFootballEvent(asset: AssetRecord, segment: Timeline
     playerIdentityPresent: Boolean(quarterbackIdentity),
     asrConfidence: asset.intelligence.asr.confidence,
     visualLabelCount: evidenceVisual.length,
-    motionScore: asset.intelligence.visual.motionScore,
+    frameChangeScore: asset.intelligence.visual.motionScore,
     classifierConfidence: classifier?.confidence ?? 0
   });
   const labels = unique([
@@ -118,7 +118,7 @@ function calculateAmericanFootballConfidence(options: {
   playerIdentityPresent: boolean;
   asrConfidence: number;
   visualLabelCount: number;
-  motionScore: number;
+  frameChangeScore: number;
   classifierConfidence: number;
 }) {
   let confidence = 0.3;
@@ -126,8 +126,8 @@ function calculateAmericanFootballConfidence(options: {
   confidence += options.pressurePresent ? 0.1 : 0;
   confidence += options.playerIdentityPresent ? 0.08 : 0;
   confidence += Math.min(0.12, Math.max(0, options.asrConfidence) * 0.12);
-  confidence += Math.min(0.05, options.visualLabelCount * 0.012);
-  confidence += Math.min(0.04, Math.max(0, options.motionScore) * 0.04);
+  confidence += Math.min(0.015, options.visualLabelCount * 0.003);
+  confidence += Math.min(0.01, Math.max(0, options.frameChangeScore) * 0.01);
   confidence += Math.min(0.09, Math.max(0, options.classifierConfidence) * 0.12);
   return Number(Math.min(0.86, confidence).toFixed(2));
 }

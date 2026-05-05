@@ -25,6 +25,7 @@ import { createQueuedAssetJob, updateAsset, updateJob } from "../services/jobSta
 import {
   completeJobStageCheckpoint,
   failActiveJobStageCheckpoint,
+  normalizeCheckpointStage,
   shouldRunJobStage,
   startJobStageCheckpoint,
   type JobStageOrder
@@ -32,7 +33,8 @@ import {
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/mediaLifecycle";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
-import type { AssetRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
+import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
+import type { AssetRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
 
 export { analyzeAndEmit } from "./analysisWorkflow";
 export { enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
@@ -123,6 +125,7 @@ const indexingCheckpointOrder = [
 
 export async function runIndexingJob(jobId: string, assetId: string, filePath: string, options: RunIndexingJobOptions = {}) {
   try {
+    await ensureRetryRebuildScope(jobId, options.retryStage);
     await runCheckpointedIndexingStage(jobId, "probe", 38, "Probe and sampling complete", options.retryStage, () => assetHasProbeMetadata(assetId), async () => {
       await updateJob(jobId, { status: "running", stage: "probe", progress: 12 }, "Started media probing");
       await updateAsset(assetId, { status: "probing", progress: 12 });
@@ -159,12 +162,14 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       if (!runtimeInput) throw new Error("Asset not found before local model runtime.");
       const runtimeIndex = await requireIndex(runtimeInput.indexId);
       const runtimePolicy = resolveCapabilityPolicy(runtimeIndex);
+      const runtimeJob = await getJob(jobId);
+      const runtimeRetryStage = getEffectiveRetryStage(runtimeJob, options.retryStage);
       const intelligence = await traceAsync(
         "stage.local_model_runtime",
         { jobId, assetId },
         () =>
           runLocalModelRuntime(filePath, runtimeInput, (event) => updateRuntimeStage(jobId, event, { keepJobStage: true }), {
-            forceStages: getForcedRuntimeStages(options.retryStage),
+            forceStages: getForcedRuntimeStages(runtimeRetryStage, runtimeJob, runtimeInput),
             whisperXDiarization: runtimePolicy.whisperXDiarization,
             onPartial: (_stage, partial) => mergeLocalRuntimePartial(assetId, partial)
           }),
@@ -533,7 +538,13 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
     }, async () => requireAsset(assetId));
     await updateJob(
       jobId,
-      { status: "succeeded", stage: "complete", progress: 100, parameters: { ...(await getJob(jobId))?.parameters, resumeFromStage: null }, completedAt: new Date().toISOString() },
+      {
+        status: "succeeded",
+        stage: "complete",
+        progress: 100,
+        parameters: { ...(await getJob(jobId))?.parameters, retryStage: null, resumeFromStage: null, rebuildFromStage: null },
+        completedAt: new Date().toISOString()
+      },
       `Indexed ${indexedAsset.timeline.length} timeline segments`
     );
     await emitForAsset("asset.indexing.succeeded", "Indexing succeeded", assetId, jobId, {
@@ -606,15 +617,7 @@ export function normalizeWorkflowStage(value: unknown) {
 
 async function updateRuntimeStage(
   jobId: string,
-  event: {
-    stage: string;
-    status: "running" | "succeeded" | "failed";
-    message: string;
-    error?: string;
-    progress?: number;
-    log?: boolean;
-    heartbeat?: boolean;
-  },
+  event: RuntimeStageEvent,
   options: { keepJobStage?: boolean } = {}
 ) {
   const previous = runtimeStageUpdateQueues.get(jobId) ?? Promise.resolve();
@@ -630,89 +633,64 @@ async function updateRuntimeStage(
 
 async function updateRuntimeStageNow(
   jobId: string,
-  event: {
-    stage: string;
-    status: "running" | "succeeded" | "failed";
-    message: string;
-    error?: string;
-    progress?: number;
-    log?: boolean;
-    heartbeat?: boolean;
-  },
+  event: RuntimeStageEvent,
   options: { keepJobStage?: boolean } = {}
 ) {
-  const stage = event.status === "running" ? `runtime-${event.stage}` : `runtime-${event.stage}-${event.status}`;
-  const level = event.status === "failed" ? "warn" : "info";
   const currentJob = await getJob(jobId);
-  const previousStage = currentJob?.runtimeStages?.[event.stage];
-  const eventProgress = getNormalizedRuntimeProgress(event.progress);
-  const preservePreviousMessage =
-    !event.error &&
-    previousStage?.message &&
-    (event.heartbeat || (event.status === "running" && eventProgress !== null && eventProgress < previousStage.progress));
-  const message = event.error ? `${event.message}: ${event.error}` : preservePreviousMessage ? previousStage.message : event.message;
-  const stageProgress = getRuntimeStageProgress(event, previousStage?.progress);
-  const jobProgress = Math.max(currentJob?.progress ?? 0, getRuntimeJobProgress(event.stage, stageProgress));
-  const now = new Date().toISOString();
-  const runtimeStages = {
-    ...(currentJob?.runtimeStages ?? {}),
-    [event.stage]: {
-      stage: event.stage,
-      status: event.status,
-      message,
-      progress: stageProgress,
-      error: event.error ?? null,
-      startedAt: previousStage?.startedAt ?? now,
-      updatedAt: now,
-      completedAt: event.status === "running" ? previousStage?.completedAt ?? null : now
-    }
-  };
-  const logMessage = event.log === false || event.heartbeat ? undefined : `[runtime:${event.stage}:${event.status}] ${message}`;
-  const nextJobStage = options.keepJobStage ? "local-model-runtime" : stage;
-  const updated = await updateJob(jobId, { stage: nextJobStage, progress: jobProgress, runtimeStages }, logMessage, level);
+  const { patch, logMessage, level } = buildRuntimeStageJobUpdate(currentJob, event, new Date().toISOString(), options);
+  const updated = await updateJob(jobId, patch, logMessage, level);
   if (updated?.assetId) {
     await updateAsset(updated.assetId, {
       status: event.stage === "asr" || event.stage === "diarization" ? "transcribing" : "scanning",
-      progress: jobProgress
+      progress: patch.progress ?? updated.progress
     });
   }
 }
 
-function getRuntimeStageProgress(event: { status: "running" | "succeeded" | "failed"; progress?: number }, previousProgress = 0) {
-  if (event.status === "succeeded" || event.status === "failed") return 100;
-  const progress = getNormalizedRuntimeProgress(event.progress);
-  if (progress !== null) return Math.max(previousProgress, progress);
-  return Math.max(0, Math.min(100, Math.round(previousProgress)));
-}
-
-function getNormalizedRuntimeProgress(value: unknown) {
-  const progress = Number(value);
-  if (!Number.isFinite(progress)) return null;
-  return Math.max(0, Math.min(100, Math.round(progress)));
-}
-
-function getRuntimeJobProgress(stage: string, stageProgress: number) {
-  const ranges: Record<string, [number, number]> = {
-    audio: [40, 44],
-    "audio-probe": [44, 46],
-    visual: [44, 48],
-    asr: [48, 52],
-    diarization: [52, 54],
-    ocr: [54, 58]
-  };
-  const [start, end] = ranges[stage] ?? [48, 52];
-  const normalized = Math.max(0, Math.min(100, stageProgress)) / 100;
-  return Math.round(start + (end - start) * normalized);
-}
-
-function getForcedRuntimeStages(retryStage: string | null | undefined) {
+export function getForcedRuntimeStages(retryStage: string | null | undefined, job?: JobRecord | null, asset?: AssetRecord | null) {
   if (!retryStage) return [];
-  if (retryStage === "asr") return ["asr", "diarization"];
-  if (retryStage === "speakers") return ["diarization"];
-  if (retryStage === "ocr") return ["ocr"];
-  if (retryStage === "visual") return ["visual"];
-  if (retryStage === "audio" || retryStage === "vad") return ["audio", "audio-probe", "asr", "diarization"];
-  return [];
+  const requested =
+    retryStage === "asr"
+      ? ["asr", "diarization"]
+      : retryStage === "speakers"
+        ? ["diarization"]
+        : retryStage === "ocr"
+          ? ["ocr"]
+          : retryStage === "visual"
+            ? ["visual"]
+            : retryStage === "audio" || retryStage === "vad"
+              ? ["audio", "audio-probe", "asr", "diarization"]
+              : [];
+  const recoveryResume = Boolean(normalizeCheckpointStage(job?.parameters?.resumeFromStage));
+  return requested.filter((stage) => {
+    if (job?.runtimeStages?.[stage]?.status === "succeeded") return false;
+    if (recoveryResume && assetHasRuntimeStageData(asset, stage)) return false;
+    return true;
+  });
+}
+
+function assetHasRuntimeStageData(asset: AssetRecord | null | undefined, stage: string) {
+  if (!asset) return false;
+  if (stage === "audio" || stage === "audio-probe") {
+    return Boolean(asset.intelligence.audio?.extractedPath);
+  }
+  if (stage === "asr") {
+    const asr = asset.intelligence.asr;
+    return Boolean(asr.transcript.trim() || asr.segments.length > 0 || asset.intelligence.modelTrace.some((trace) => trace === "asr-source:whisper" || trace.startsWith("asr-empty:")));
+  }
+  if (stage === "diarization") {
+    const diarization = asset.intelligence.diarization;
+    return diarization.provider !== "none" && diarization.segments.length > 0;
+  }
+  if (stage === "ocr") {
+    const ocr = asset.intelligence.ocr;
+    return Boolean(ocr.tokens.length > 0 || ocr.frames.length > 0 || asset.intelligence.modelTrace.some((trace) => trace.startsWith("paddleocr:") || trace === "ocr-empty"));
+  }
+  if (stage === "visual") {
+    const visual = asset.intelligence.visual;
+    return Boolean(visual.available || visual.labels.length > 0 || visual.dominantColor !== "#000000" || visual.brightness > 0 || visual.motionScore > 0);
+  }
+  return false;
 }
 
 async function mergeLocalRuntimePartial(assetId: string, partial: LocalRuntimePartial) {
@@ -779,7 +757,8 @@ async function runCheckpointedIndexingStage<T>(
   reuse?: () => Promise<T>
 ) {
   const job = await getJob(jobId);
-  const mappedRetryStage = mapRetryStageToCheckpoint(retryStage);
+  const effectiveRetryStage = getEffectiveRetryStage(job, retryStage);
+  const mappedRetryStage = mapRetryStageToCheckpoint(effectiveRetryStage);
   const shouldRun = shouldRunJobStage(job, stage, indexingCheckpointOrder, mappedRetryStage);
   if (!shouldRun && (await canReuse())) {
     await updateJob(jobId, { stage, progress }, `Resuming after completed checkpoint: ${stage}`);
@@ -789,7 +768,54 @@ async function runCheckpointedIndexingStage<T>(
   await startJobStageCheckpoint(jobId, stage, progress, message);
   const result = await action();
   await completeJobStageCheckpoint(jobId, stage, progress, message);
+  await clearCompletedCheckpointParameters(jobId, stage, mappedRetryStage);
   return result;
+}
+
+async function ensureRetryRebuildScope(jobId: string, fallbackRetryStage: string | null | undefined) {
+  const job = await getJob(jobId);
+  if (!job) return;
+  const retryStage = getEffectiveRetryStage(job, fallbackRetryStage);
+  const rebuildFromStage = mapRetryStageToCheckpoint(retryStage);
+  if (!retryStage || !rebuildFromStage) return;
+  const parameters = { ...(job.parameters ?? {}) };
+  let changed = false;
+  if (!Object.prototype.hasOwnProperty.call(parameters, "retryStage")) {
+    parameters.retryStage = retryStage;
+    changed = true;
+  }
+  if (!normalizeCheckpointStage(parameters.rebuildFromStage)) {
+    parameters.rebuildFromStage = rebuildFromStage;
+    changed = true;
+  }
+  if (changed) await updateJob(jobId, { parameters });
+}
+
+function getEffectiveRetryStage(job: JobRecord | null | undefined, fallbackRetryStage: string | null | undefined) {
+  if (Object.prototype.hasOwnProperty.call(job?.parameters ?? {}, "retryStage")) {
+    return normalizeWorkflowStage(job?.parameters?.retryStage);
+  }
+  return normalizeWorkflowStage(fallbackRetryStage);
+}
+
+async function clearCompletedCheckpointParameters(jobId: string, stage: string, mappedRetryStage: string | null) {
+  const job = await getJob(jobId);
+  if (!job?.parameters) return;
+  const nextParameters = { ...job.parameters };
+  let changed = false;
+  if (mappedRetryStage === stage && typeof nextParameters.retryStage !== "undefined" && nextParameters.retryStage !== null) {
+    nextParameters.retryStage = null;
+    changed = true;
+  }
+  if (stage === "finalize") {
+    if (nextParameters.resumeFromStage !== null || nextParameters.rebuildFromStage !== null || nextParameters.retryStage !== null) {
+      nextParameters.resumeFromStage = null;
+      nextParameters.rebuildFromStage = null;
+      nextParameters.retryStage = null;
+      changed = true;
+    }
+  }
+  if (changed) await updateJob(jobId, { parameters: nextParameters });
 }
 
 async function requireAsset(assetId: string) {

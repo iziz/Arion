@@ -64,6 +64,7 @@ export function isSupportedAssetJob(job: JobRecord) {
 
 export function getRetryStage(job: JobRecord) {
   const parameterStage = normalizeWorkflowStage(job.parameters?.retryStage);
+  if (Object.prototype.hasOwnProperty.call(job.parameters ?? {}, "retryStage")) return parameterStage;
   if (parameterStage) return parameterStage;
 
   const logPrefix = "Retry requested from workflow card:";

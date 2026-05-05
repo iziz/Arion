@@ -4,7 +4,7 @@ import { getPublicMediaRoot } from "./localObjectStorage";
 import { extractAudioAndVad, type AudioRuntimeResult } from "./modelRuntime/audioRuntime";
 import { toPublicMediaPath } from "./modelRuntime/mediaPath";
 import { runPaddleOcr } from "./modelRuntime/ocrRuntime";
-import { applyDiarizationToAsrSegments, runSpeechRuntime } from "./modelRuntime/speechRuntime";
+import { applyDiarizationToAsrSegments, runSpeechRuntime, runWhisperXDiarizationForAsset } from "./modelRuntime/speechRuntime";
 import { inspectAudioPresence, inspectVisualFrames } from "./modelRuntime/visualSampler";
 import { runRuntimeStage, type RuntimeStageReporter } from "./modelRuntime/stageReporter";
 import { logJson, recordLatency, traceAsync } from "./observability";
@@ -68,7 +68,7 @@ export async function runLocalModelRuntime(
     return result;
   };
   const runSpeechTask = async () => {
-    if (hasCachedAsr(asset) && !forceStages.has("asr") && !forceStages.has("diarization")) {
+    if (hasCachedAsr(asset) && !forceStages.has("asr")) {
       await reportStage?.({
         stage: "asr",
         status: "succeeded",
@@ -76,6 +76,27 @@ export async function runLocalModelRuntime(
         progress: 100,
         log: false
       });
+      if (forceStages.has("diarization")) {
+        const diarization =
+          options.whisperXDiarization === "disabled"
+            ? disabledLocalDiarizationResult()
+            : await runRuntimeStage(
+                reportStage,
+                "diarization",
+                "Running WhisperX diarization",
+                () =>
+                  traceAsync(
+                    "model.diarization.whisperx",
+                    { assetId: asset.id, cachedAsr: true, model: process.env.WHISPERX_MODEL || process.env.WHISPER_MODEL || "large-v3" },
+                    () => runWhisperXDiarizationForAsset(asset),
+                    "model.diarization.whisperx"
+                  ),
+                (result) => (result.provider !== "none" && result.segments.length > 0 ? null : (result.error ?? "WhisperX returned no speaker result"))
+              );
+        const speechResult = cachedSpeechResultWithDiarization(asset, diarization);
+        await publishRuntimePartial(options, "asr", buildSpeechIntelligence(speechResult.whisper, speechResult.diarization));
+        return speechResult;
+      }
       if (hasCachedDiarization(asset)) {
         await reportStage?.({
           stage: "diarization",
@@ -85,14 +106,16 @@ export async function runLocalModelRuntime(
           log: false
         });
       }
-      const speechIntelligence = {
-        asr: asset.intelligence.asr,
-        diarization: asset.intelligence.diarization
-      };
+      const speechIntelligence = { asr: asset.intelligence.asr, diarization: asset.intelligence.diarization };
       await publishRuntimePartial(options, "asr", speechIntelligence);
       return cachedSpeechResult(asset);
     }
-    const result = await runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage, { diarizationMode: options.whisperXDiarization });
+    const result = await runSpeechRuntime(asrInput, asset, languageHints.whisperLanguage, reportStage, {
+      diarizationMode: options.whisperXDiarization,
+      onWhisper: async (whisper) => {
+        await publishRuntimePartial(options, "asr", { asr: buildAsrIntelligence(whisper) });
+      }
+    });
     const speechIntelligence = buildSpeechIntelligence(result.whisper, result.diarization);
     await publishRuntimePartial(options, "asr", speechIntelligence);
     return result;
@@ -294,6 +317,13 @@ function hasCachedDiarization(asset: AssetRecord) {
 }
 
 function cachedSpeechResult(asset: AssetRecord): Awaited<ReturnType<typeof runSpeechRuntime>> {
+  return cachedSpeechResultWithDiarization(asset, asset.intelligence.diarization);
+}
+
+function cachedSpeechResultWithDiarization(
+  asset: AssetRecord,
+  diarization: LocalIntelligence["diarization"]
+): Awaited<ReturnType<typeof runSpeechRuntime>> {
   return {
     whisper: {
       available: true,
@@ -304,12 +334,21 @@ function cachedSpeechResult(asset: AssetRecord): Awaited<ReturnType<typeof runSp
       segments: asset.intelligence.asr.segments
     },
     diarization: {
-      available: hasCachedDiarization(asset),
-      provider: asset.intelligence.diarization.provider,
-      speakers: asset.intelligence.diarization.speakers,
-      segments: asset.intelligence.diarization.segments,
-      error: asset.intelligence.diarization.error
+      available: diarization.provider !== "none" && diarization.segments.length > 0,
+      provider: diarization.provider,
+      speakers: diarization.speakers,
+      segments: diarization.segments,
+      error: diarization.error
     }
+  };
+}
+
+function disabledLocalDiarizationResult(): LocalIntelligence["diarization"] {
+  return {
+    provider: "none",
+    speakers: [],
+    segments: [],
+    error: "WhisperX diarization disabled by capability policy."
   };
 }
 
@@ -394,20 +433,27 @@ function buildSpeechIntelligence(
   whisper: Awaited<ReturnType<typeof runSpeechRuntime>>["whisper"],
   diarization: Awaited<ReturnType<typeof runSpeechRuntime>>["diarization"]
 ): Pick<LocalIntelligence, "asr" | "diarization"> {
-  const transcript = whisper.available && whisper.transcript.trim() ? whisper.transcript.trim() : "";
   return {
-    asr: {
-      transcript,
-      language: whisper.language || (/[가-힣]/.test(transcript) ? "ko" : "en"),
-      confidence: transcript ? whisper.confidence : 0,
-      segments: applyDiarizationToAsrSegments(whisper.segments, diarization.segments)
-    },
+    asr: buildAsrIntelligence(whisper, diarization.segments),
     diarization: {
       provider: diarization.available ? diarization.provider : "none",
       speakers: diarization.speakers,
       segments: diarization.segments,
       error: diarization.error ?? null
     }
+  };
+}
+
+function buildAsrIntelligence(
+  whisper: Awaited<ReturnType<typeof runSpeechRuntime>>["whisper"],
+  diarizationSegments: LocalIntelligence["diarization"]["segments"] = []
+): LocalIntelligence["asr"] {
+  const transcript = whisper.available && whisper.transcript.trim() ? whisper.transcript.trim() : "";
+  return {
+    transcript,
+    language: whisper.language || (/[가-힣]/.test(transcript) ? "ko" : "en"),
+    confidence: transcript ? whisper.confidence : 0,
+    segments: applyDiarizationToAsrSegments(whisper.segments, diarizationSegments)
   };
 }
 

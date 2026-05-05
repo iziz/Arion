@@ -16,6 +16,7 @@ export type JobType = "asset.index" | "asset.reindex" | "asset.domain-vlm.refine
 export type JobParameters = {
   retryStage?: string | null;
   resumeFromStage?: string | null;
+  rebuildFromStage?: string | null;
 };
 
 export type StorageProvider = "local-s3" | "local-r2";

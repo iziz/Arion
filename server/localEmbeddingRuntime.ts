@@ -124,11 +124,9 @@ async function runSentenceTransformers(texts: string[], kind: EmbeddingKind): Pr
         {
           texts,
           kind,
-          model: embeddingModel,
-          timeoutMs: Number(process.env.EMBEDDING_TIMEOUT_MS || 0) || undefined
+          model: embeddingModel
         },
         {
-          timeoutMs: Number(process.env.EMBEDDING_TIMEOUT_MS || 0) || undefined,
           metricKey: `model.embedding.text.${kind}.service`
         }
       );
@@ -153,24 +151,14 @@ async function runPythonEmbeddingProcess(texts: string[], kind: EmbeddingKind) {
     const child = spawn(pythonBin, [embedScript, "--model", embeddingModel, "--kind", kind], {
       stdio: ["pipe", "pipe", "pipe"]
     });
-    const timeoutMs = Number(process.env.EMBEDDING_TIMEOUT_MS || 0);
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            child.kill("SIGTERM");
-            reject(new Error(`Embedding process exceeded safety limit after ${timeoutMs}ms`));
-          }, timeoutMs)
-        : null;
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
-      if (timer) clearTimeout(timer);
       reject(error);
     });
     child.on("close", (code) => {
-      if (timer) clearTimeout(timer);
       const output = Buffer.concat(stdout).toString("utf8");
       if (code === 0) {
         resolve(output);

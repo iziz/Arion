@@ -22,11 +22,9 @@ export async function spotSoccerNetActions(filePath: string, timeline: TimelineS
           mediaPath: filePath,
           model: soccerNetActionModel,
           duration,
-          segments,
-          timeoutMs: Number(process.env.SOCCERNET_ACTION_SPOTTING_TIMEOUT_MS || 0) || undefined
+          segments
         },
         {
-          timeoutMs: Number(process.env.SOCCERNET_ACTION_SPOTTING_TIMEOUT_MS || 0) || undefined,
           metricKey: "model.vision.soccernet_action.service"
         }
       );
@@ -36,24 +34,14 @@ export async function spotSoccerNetActions(filePath: string, timeline: TimelineS
         env: process.env,
         stdio: ["pipe", "pipe", "pipe"]
       });
-      const timeoutMs = Number(process.env.SOCCERNET_ACTION_SPOTTING_TIMEOUT_MS || 0);
-      const timer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              child.kill("SIGTERM");
-              reject(new Error(`SoccerNet action spotting exceeded safety limit after ${timeoutMs}ms`));
-            }, timeoutMs)
-          : null;
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
       child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
       child.on("error", (error) => {
-        if (timer) clearTimeout(timer);
         reject(error);
       });
       child.on("close", (code) => {
-        if (timer) clearTimeout(timer);
         const output = Buffer.concat(stdoutChunks).toString("utf8");
         if (code === 0) resolve(output);
         else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `SoccerNet action spotting exited with code ${code}`));

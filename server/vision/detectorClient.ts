@@ -37,11 +37,9 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
           model: detectorModel,
           rfDetrModel,
           confidence: detectorConfidence,
-          allowHeuristicFallback: allowHeuristicDetectorFallback,
-          timeoutMs: Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0) || undefined
+          allowHeuristicFallback: allowHeuristicDetectorFallback
         },
         {
-          timeoutMs: Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0) || undefined,
           metricKey: "model.vision.detector.service"
         }
       );
@@ -62,24 +60,14 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
       const child = spawn(pythonBin, args, {
         stdio: ["pipe", "pipe", "pipe"]
       });
-      const timeoutMs = Number(process.env.VISION_DETECTOR_TIMEOUT_MS || 0);
-      const timer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              child.kill("SIGTERM");
-              reject(new Error(`Vision detector exceeded safety limit after ${timeoutMs}ms`));
-            }, timeoutMs)
-          : null;
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
       child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
       child.on("error", (error) => {
-        if (timer) clearTimeout(timer);
         reject(error);
       });
       child.on("close", (code) => {
-        if (timer) clearTimeout(timer);
         const output = Buffer.concat(stdoutChunks).toString("utf8");
         if (code === 0) resolve(output);
         else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `Vision detector exited with code ${code}`));

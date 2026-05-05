@@ -97,7 +97,7 @@ function confidenceFromSources(sources: TimelineSegment["sources"]) {
   let confidence = 0.18;
   if (sources.includes("metadata")) confidence += 0.08;
   if (sources.includes("shot")) confidence += 0.14;
-  if (sources.includes("visual")) confidence += 0.12;
+  if (sources.includes("visual")) confidence += 0.04;
   if (sources.includes("paddleocr")) confidence += 0.18;
   if (sources.includes("whisper")) confidence += 0.28;
   if (sources.includes("domain")) confidence += 0.08;

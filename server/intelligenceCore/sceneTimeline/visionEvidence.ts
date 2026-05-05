@@ -1,7 +1,6 @@
 import type { AssetRecord, TimelineSegment, VisionEvidence } from "../../../shared/types";
 import { domainSearchText } from "../../domainIndex";
 import { isDetectedObjectStatus, isTrustedDomainSegment, isTrustedVisionEvidence, isTrustedVisionFieldZone } from "../../evidenceTrust";
-import { normalizeSearchValue } from "../textUtils";
 
 export function buildVisionEvidence(asset: AssetRecord, start: number, end: number): VisionEvidence {
   const visual = asset.intelligence.visual;
@@ -12,31 +11,12 @@ export function buildVisionEvidence(asset: AssetRecord, start: number, end: numb
   const { red, green, blue } = hexToRgb(visual.dominantColor);
   const greenDominance = green + red + blue > 0 ? Number((green / Math.max(1, red + green + blue)).toFixed(3)) : 0;
   const pitchPresent = labels.includes("green-dominant") || greenDominance >= 0.36;
-  const motion = asset.intelligence.visual.motionScore;
-  const confidenceBase = Math.min(0.82, 0.28 + (pitchPresent ? 0.24 : 0) + Math.min(0.22, motion * 0.8));
+  const frameChange = asset.intelligence.visual.motionScore;
+  const confidenceBase = Math.min(0.48, 0.12 + (pitchPresent ? 0.18 : 0) + Math.min(0.08, frameChange * 0.25));
   const frameAt = Number(((start + end) / 2).toFixed(2));
-  const playersLikely = pitchPresent && (labels.includes("active-motion") || labels.includes("stable-shot"));
-  const ballLikely = pitchPresent && motion >= 0.08;
-  const zone = estimateVisualFieldZone(asset, pitchPresent, motion);
-  const zoneConfidence = zone === "unknown" ? 0 : Number(Math.min(0.54, confidenceBase - 0.05).toFixed(2));
-  const candidates: VisionEvidence["eventCandidates"] = [];
-  if (pitchPresent && motion >= 0.1) {
-    candidates.push({
-      type: "pass_receive",
-      confidence: Number(Math.min(0.62, confidenceBase + 0.08).toFixed(2)),
-      reason: "Green pitch and motion cues suggest an in-play football action candidate."
-    });
-  }
-  if (pitchPresent && hasShotCue(asset)) {
-    candidates.push({
-      type: "shot",
-      confidence: Number(Math.min(0.6, confidenceBase + 0.04).toFixed(2)),
-      reason: "Pitch cue appears with shot/goal language in nearby ASR/OCR context."
-    });
-  }
 
   return {
-    generatedBy: "vision-evidence-v0-color-motion",
+    generatedBy: "vision-evidence-v0-coarse-profile",
     trust: "heuristic",
     frameAt,
     pitch: {
@@ -46,38 +26,38 @@ export function buildVisionEvidence(asset: AssetRecord, start: number, end: numb
     },
     objects: {
       players: {
-        countEstimate: playersLikely ? Math.max(2, Math.round(6 + motion * 10)) : 0,
-        confidence: playersLikely ? Number(Math.min(0.58, confidenceBase).toFixed(2)) : 0,
-        status: playersLikely ? "estimated" : "not_detected"
+        countEstimate: 0,
+        confidence: 0,
+        status: "not_configured"
       },
       ball: {
-        present: ballLikely,
-        confidence: ballLikely ? Number(Math.min(0.42, 0.18 + motion * 0.9).toFixed(2)) : 0,
-        status: ballLikely ? "estimated" : "not_detected"
+        present: false,
+        confidence: 0,
+        status: "not_configured"
       }
     },
     fieldZone: {
-      zone,
-      confidence: zoneConfidence,
-      method: zone === "unknown" ? "none" : "color_motion_heuristic"
+      zone: "unknown",
+      confidence: 0,
+      method: "none"
     },
     fieldCalibration: {
-      status: zone === "unknown" ? "not_configured" : "estimated",
-      method: zone === "unknown" ? "none" : "text_context",
-      zone,
-      zoneConfidence,
+      status: "not_configured",
+      method: "none",
+      zone: "unknown",
+      zoneConfidence: 0,
       attackingDirection: "unknown",
       attackingDirectionConfidence: 0,
-      evidence: zone === "unknown" ? ["No pitch-zone cue was available."] : ["Zone estimated from text, color, and motion context."],
+      evidence: ["Coarse visual profile is not calibrated field evidence."],
       limitations: [
-        "No pitch homography is configured.",
-        "Zone is not derived from calibrated field coordinates."
+        "No detector, tracker, or pitch homography is configured for this evidence.",
+        "Zone is not inferred from color-only visual profile data."
       ]
     },
-    eventCandidates: candidates,
+    eventCandidates: [],
     limitations: [
-      "Vision evidence v0 uses color and motion heuristics, not object bounding boxes.",
-      "Player identity, ball trajectory, and calibrated pitch coordinates require detector/tracker stages."
+      "Coarse visual profile uses color and frame-change heuristics, not object bounding boxes.",
+      "Player, ball, event, and calibrated field evidence require detector, tracker, VLM, or homography stages."
     ]
   };
 }
@@ -147,28 +127,6 @@ export function segmentSearchText(segment: TimelineSegment) {
     : "";
   if (!text) return [segment.transcript, domainText, visionText].filter(Boolean).join(" ");
   return [text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, visionText].filter(Boolean).join(" ");
-}
-
-function estimateVisualFieldZone(asset: AssetRecord, pitchPresent: boolean, motion: number): VisionEvidence["fieldZone"]["zone"] {
-  if (!pitchPresent) return "unknown";
-  const text = normalizeSearchValue(
-    [
-      asset.title,
-      asset.description,
-      asset.intelligence.asr.transcript,
-      asset.intelligence.ocr.tokens.join(" ")
-    ].join(" ")
-  );
-  if (/(penalty|box|박스|페널티|goal|keeper|골|슈팅|shot|finish)/i.test(text)) return "penalty_area";
-  if (/(through ball|스루|침투|attack|attacking|chance|찬스)/i.test(text)) return "final_third";
-  if (motion >= 0.14) return "middle_third";
-  return "unknown";
-}
-
-function hasShotCue(asset: AssetRecord) {
-  return /(shot|shoot|finish|goal|슈팅|슛|골|마무리)/i.test(
-    [asset.title, asset.description, asset.intelligence.asr.transcript, asset.intelligence.ocr.tokens.join(" ")].join(" ")
-  );
 }
 
 function hexToRgb(value: string) {

@@ -1,3 +1,5 @@
+import http from "node:http";
+import https from "node:https";
 import type { AnalysisResult, AssetRecord, ClipResult, TimelineSegment, VerificationCheck } from "../shared/types";
 
 export type AnalysisGenerationInput = {
@@ -77,10 +79,9 @@ class HttpAnalysisGenerator implements AnalysisGenerator {
   ) {}
 
   async generate(input: AnalysisGenerationInput): Promise<AnalysisGenerationOutput> {
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+    let parsed: Partial<AnalysisGenerationOutput>;
+    try {
+      parsed = await postJson<Partial<AnalysisGenerationOutput>>(this.url, {
         model: this.model,
         task: "grounded_video_analysis",
         question: input.question,
@@ -94,9 +95,8 @@ class HttpAnalysisGenerator implements AnalysisGenerator {
         signals: input.signals,
         patterns: input.patterns,
         verification: input.verification
-      })
-    });
-    if (!response.ok) {
+      });
+    } catch {
       const fallback = await new LocalAnalysisGenerator("http-error").generate(input);
       return {
         ...fallback,
@@ -107,7 +107,6 @@ class HttpAnalysisGenerator implements AnalysisGenerator {
         }
       };
     }
-    const parsed = (await response.json()) as Partial<AnalysisGenerationOutput>;
     const fallbackReport = buildLocalReport(input);
     return {
       answer: typeof parsed.answer === "string" && parsed.answer.trim() ? parsed.answer : fallbackReport.sections[0]?.body ?? "No generated answer was returned.",
@@ -120,6 +119,46 @@ class HttpAnalysisGenerator implements AnalysisGenerator {
       }
     };
   }
+}
+
+function postJson<T>(url: string, payload: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const parsed = new URL(url);
+    const client = parsed.protocol === "https:" ? https : http;
+    const request = client.request(
+      parsed,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body).toString()
+        }
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let text = "";
+        response.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        response.on("error", reject);
+        response.on("end", () => {
+          if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+            reject(new Error(`HTTP ${response.statusCode ?? 0}: ${text.slice(0, 240)}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(text) as T);
+          } catch {
+            reject(new Error(`Non-JSON response: ${text.slice(0, 240)}`));
+          }
+        });
+      }
+    );
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
 }
 
 function buildLocalReport(input: AnalysisGenerationInput): AnalysisResult["report"] {

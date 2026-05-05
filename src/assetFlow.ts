@@ -67,7 +67,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const diarizationRuntimeStatus = getRuntimeStageStatus(job, "diarization");
   const ocrRuntimeStatus = getRuntimeStageStatus(job, "ocr");
   const visualRuntimeStatus = getRuntimeStageStatus(job, "visual");
-  const hasRunningRuntimeStage = Object.values(job?.runtimeStages ?? {}).some((stage) => stage.status === "running");
+  const hasRunningRuntimeStage = job?.status === "running" && Object.values(job.runtimeStages ?? {}).some((stage) => stage.status === "running");
   const localRuntimeInProgress = hasActiveJob && (activeJobStage === "local-model-runtime" || activeJobStage.startsWith("runtime-") || hasRunningRuntimeStage);
   const assetIndexingInProgress = hasActiveJob && (job?.type === "asset.index" || job?.type === "asset.reindex");
   const domainVlmRunning = hasActiveJob && job?.type === "asset.domain-vlm.refine";
@@ -214,10 +214,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     {
       id: "asr",
       label: asrModel ? `Faster-Whisper ${asrModel} ASR` : "Faster-Whisper ASR",
-      detail: hasAsr
-        ? `${asset.intelligence.asr.segments.length} segments · ${Math.round(asset.intelligence.asr.confidence * 100)}% confidence`
-        : asrRuntimeRunning
-          ? "Running transcription"
+      detail: asrRuntimeRunning
+        ? "Running transcription"
+        : hasAsr
+          ? `${asset.intelligence.asr.segments.length} segments · ${Math.round(asset.intelligence.asr.confidence * 100)}% confidence`
           : asrRuntimeWaitingForMerge
             ? asrRuntimeStatus === "failed"
               ? "Whisper ASR failed; waiting for local runtime merge"
@@ -237,10 +237,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? asrRuntimeWaitingForMerge
           ? "waiting"
           : "error"
-        : asrDone
-          ? "done"
-          : asrRuntimeRunning
+        : asrRuntimeRunning
             ? "active"
+          : asrDone
+            ? "done"
             : asrRuntimeWaitingForMerge || localRuntimeInProgress
               ? "waiting"
               : asrRuntimeStatus === "succeeded"
@@ -251,10 +251,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     {
       id: "speakers",
       label: "WhisperX diarization",
-      detail: hasDiarization
-        ? `${asset.intelligence.diarization?.speakers.length ?? 0} speakers`
-        : job?.stage === "diarization" || diarizationRuntimeRunning
-          ? "Running speaker diarization"
+      detail: (job?.status === "running" && job.stage === "diarization") || diarizationRuntimeRunning
+        ? "Running speaker diarization"
+        : hasDiarization
+          ? `${asset.intelligence.diarization?.speakers.length ?? 0} speakers`
           : diarizationRuntimeWaitingForMerge
             ? diarizationRuntimeStatus === "failed"
               ? "Speaker diarization failed; waiting for local runtime merge"
@@ -272,14 +272,14 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
                 : isIndexed
                   ? skipped("optional WhisperX diarization produced no speaker segments")
                   : "Optional: configure WHISPERX_HF_TOKEN",
-      state: diarizationDone
-        ? "done"
-        : diarizationRuntimeStatus === "failed" && !diarizationError
+      state: diarizationRuntimeStatus === "failed" && !diarizationError
           ? diarizationRuntimeWaitingForMerge
             ? "waiting"
             : "error"
-          : job?.stage === "diarization" || diarizationRuntimeRunning
+          : (job?.status === "running" && job.stage === "diarization") || diarizationRuntimeRunning
             ? "active"
+          : diarizationDone
+            ? "done"
             : diarizationRuntimeWaitingForMerge || localRuntimeInProgress
               ? "waiting"
               : diarizationRuntimeStatus === "succeeded"
@@ -301,10 +301,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     {
       id: "ocr",
       label: "PaddleOCR",
-      detail: hasOcr
-        ? `${asset.intelligence.ocr.tokens.length} tokens · ${Math.round(asset.intelligence.ocr.confidence * 100)}% confidence`
-        : ocrRuntimeRunning
-          ? "Running PaddleOCR"
+      detail: ocrRuntimeRunning
+        ? "Running PaddleOCR"
+        : hasOcr
+          ? `${asset.intelligence.ocr.tokens.length} tokens · ${Math.round(asset.intelligence.ocr.confidence * 100)}% confidence`
           : ocrRuntimeWaitingForMerge
             ? ocrRuntimeStatus === "failed"
               ? "PaddleOCR failed; waiting for local runtime merge"
@@ -324,10 +324,10 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
         ? ocrRuntimeWaitingForMerge
           ? "waiting"
           : "error"
-        : ocrDone
-          ? "done"
-          : ocrRuntimeRunning
+        : ocrRuntimeRunning
             ? "active"
+          : ocrDone
+            ? "done"
             : ocrRuntimeWaitingForMerge || localRuntimeInProgress
               ? "waiting"
               : ocrRuntimeStatus === "succeeded"
@@ -338,9 +338,9 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     },
     {
       id: "visual",
-      label: "Visual profile sampler",
+      label: "Coarse visual profile",
       detail: hasVisual
-        ? `Low-res frame profile · ${asset.intelligence.visual.dominantColor}`
+        ? `Coarse frame profile · ${asset.intelligence.visual.dominantColor}`
         : visualRuntimeRunning
           ? "Sampling visual frames"
           : visualRuntimeWaitingForMerge
@@ -764,15 +764,16 @@ function getFlowStepServerProgress(step: Omit<FlowStep, "progress" | "retryStage
 
 function getRuntimeStageStatus(job: JobRecord | null, stage: string): "running" | "succeeded" | "failed" | null {
   if (!job) return null;
+  const canReportRunning = job.status === "running";
   const structuredStatus = job.runtimeStages?.[stage]?.status;
-  if (structuredStatus) return structuredStatus;
+  if (structuredStatus && (structuredStatus !== "running" || canReportRunning)) return structuredStatus;
   for (let index = job.logs.length - 1; index >= 0; index -= 1) {
     const message = job.logs[index]?.message ?? "";
-    if (message.startsWith(`[runtime:${stage}:running]`)) return "running";
+    if (message.startsWith(`[runtime:${stage}:running]`)) return canReportRunning ? "running" : null;
     if (message.startsWith(`[runtime:${stage}:succeeded]`)) return "succeeded";
     if (message.startsWith(`[runtime:${stage}:failed]`)) return "failed";
   }
-  if (job.stage === `runtime-${stage}`) return "running";
+  if (job.stage === `runtime-${stage}`) return canReportRunning ? "running" : null;
   if (job.stage === `runtime-${stage}-succeeded`) return "succeeded";
   if (job.stage === `runtime-${stage}-failed`) return "failed";
   return null;
@@ -852,7 +853,7 @@ function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, as
     asr: [50, 60],
     speakers: [45, 95],
     ocr: [50, 60],
-    visual: [38, 72],
+    visual: [38, 60],
     scene: [68, 72],
     timeline: [68, 74],
     keyframes: [72, 76],
@@ -922,7 +923,6 @@ function formatDomainGroups(index: IndexRecord | null) {
 function compactTraceFailure(trace: string) {
   const detail = trace.replace(/^[^:]+:/, "").trim();
   if (!detail) return "Model execution failed";
-  if (detail.includes("Python script timed out")) return "Model runtime exceeded the previous safety timeout";
   if (detail.includes("WHISPERX_HF_TOKEN")) return "WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN";
   if (detail.includes("HF_TOKEN") || detail.includes("HF Hub")) return "Whisper failed while accessing Hugging Face model files";
   if (detail.includes("ModuleNotFoundError")) return detail.split("\n")[0];

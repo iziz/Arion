@@ -28,7 +28,21 @@ export async function enqueueJobExecution(job: JobRecord, options: { recordFailu
     return { enqueued: false, reason: `Unsupported Redis queue job type: ${job.type}` };
   }
   try {
-    await getAssetJobQueue().add("asset-job", { jobId: job.id }, { ...defaultJobOptions, jobId: job.id });
+    const queue = getAssetJobQueue();
+    const existingJob = await queue.getJob(job.id);
+    if (existingJob) {
+      const state = await existingJob.getState();
+      if (shouldReplaceExistingRedisJob(state)) {
+        await existingJob.remove();
+        logJson("warn", "jobs.redis.requeue_terminal", "Removed terminal Redis job before requeueing persistent queued job", {
+          jobId: job.id,
+          redisState: state
+        });
+      } else {
+        return { enqueued: true, reason: `Redis job already exists in ${state} state.` };
+      }
+    }
+    await queue.add("asset-job", { jobId: job.id }, { ...defaultJobOptions, jobId: job.id });
     return { enqueued: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to enqueue Redis job";
@@ -38,6 +52,10 @@ export async function enqueueJobExecution(job: JobRecord, options: { recordFailu
     }
     return { enqueued: false, reason: message };
   }
+}
+
+export function shouldReplaceExistingRedisJob(state: string) {
+  return state === "completed" || state === "failed";
 }
 
 export async function enqueueQueuedAssetJobs() {

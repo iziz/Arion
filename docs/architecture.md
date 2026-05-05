@@ -1363,7 +1363,6 @@ Selected environment variables used by the implementation:
 | `PYTHON_RUNTIME_MODE` | `service` routes model work through HTTP runtime services; `direct` runs scripts from Node for local development checks. |
 | `PYTHON_RUNTIME_SERVICE_URL` | Default combined Python runtime service URL, default `http://127.0.0.1:8792`. |
 | `PYTHON_RUNTIME_SERVICE_HOST` / `PYTHON_RUNTIME_SERVICE_PORT` | Host and port used by `scripts/arion_model_runtime_service.py`. |
-| `PYTHON_RUNTIME_SERVICE_TIMEOUT_MS` | Default HTTP timeout for Python runtime service calls when a stage-specific timeout is not provided. |
 | `PYTHON_RUNTIME_SERVICE_ATTEMPTS` | Number of transient runtime-service call attempts, default `1`. |
 | `ASR_RUNTIME_SERVICE_URL` | Optional ASR service override for Whisper and WhisperX. |
 | `OCR_RUNTIME_SERVICE_URL` | Optional OCR service override for PaddleOCR. |

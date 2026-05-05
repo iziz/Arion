@@ -77,19 +77,22 @@ export async function failJobStageCheckpoint(jobId: string, stage: string, messa
 
 export function shouldRunJobStage(job: JobRecord | null, stage: string, order: JobStageOrder, retryStage?: string | null) {
   if (!job) return true;
-  const forcedStage = normalizeCheckpointStage(retryStage ?? job.parameters?.retryStage ?? job.parameters?.resumeFromStage);
+  const forcedStage =
+    normalizeCheckpointStage(job.parameters?.resumeFromStage) ??
+    normalizeCheckpointStage(job.parameters?.rebuildFromStage) ??
+    normalizeCheckpointStage(retryStage);
   if (forcedStage) return isAtOrAfterStage(stage, forcedStage, order);
   const checkpoint = job.stageCheckpoints?.[stage];
   return checkpoint?.status !== "succeeded" && checkpoint?.status !== "skipped";
 }
 
 export function findResumeStage(job: JobRecord, order: JobStageOrder) {
-  const explicit = normalizeCheckpointStage(job.parameters?.resumeFromStage);
-  if (explicit) return explicit;
-  const failed = order.find((stage) => job.stageCheckpoints?.[stage]?.status === "failed");
-  if (failed) return failed;
   const running = order.find((stage) => job.stageCheckpoints?.[stage]?.status === "running");
   if (running) return running;
+  const failed = order.find((stage) => job.stageCheckpoints?.[stage]?.status === "failed");
+  if (failed) return failed;
+  const explicit = normalizeCheckpointStage(job.parameters?.resumeFromStage);
+  if (explicit) return explicit;
   return normalizeCheckpointStage(job.stage);
 }
 

@@ -1,3 +1,5 @@
+import http from "node:http";
+import https from "node:https";
 import { getContext, logJson, recordLatency } from "../observability";
 import type { PythonProgressEvent } from "./pythonProgress";
 
@@ -14,9 +16,13 @@ type PythonRuntimeEnvelope<T> = {
 };
 
 type PythonRuntimeServiceOptions = {
-  timeoutMs?: number;
   metricKey?: string;
   onProgress?: (event: PythonProgressEvent) => void | Promise<void>;
+};
+
+type PythonRuntimeHttpResponse = {
+  statusCode: number;
+  text: string;
 };
 
 export class PythonRuntimeServiceError extends Error {
@@ -76,14 +82,13 @@ export async function callPythonRuntimeService<T>(
   options: PythonRuntimeServiceOptions = {}
 ): Promise<T> {
   const url = `${getPythonRuntimeServiceUrl(kind)}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
-  const timeoutMs = options.timeoutMs ?? parsePositiveInteger(process.env.PYTHON_RUNTIME_SERVICE_TIMEOUT_MS, 0);
   const attempts = Math.max(1, parsePositiveInteger(process.env.PYTHON_RUNTIME_SERVICE_ATTEMPTS, 1));
   const metricKey = options.metricKey ?? `python_runtime.service.${endpoint.replace(/^\/+/, "").replace(/[^a-z0-9_.-]+/gi, "_")}`;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await callPythonRuntimeServiceOnce<T>(kind, endpoint, url, payload, timeoutMs, metricKey, options);
+      return await callPythonRuntimeServiceOnce<T>(kind, endpoint, url, payload, metricKey, options);
     } catch (error) {
       lastError = error;
       if (attempt >= attempts) break;
@@ -108,30 +113,23 @@ async function callPythonRuntimeServiceOnce<T>(
   endpoint: string,
   url: string,
   payload: Record<string, unknown>,
-  timeoutMs: number,
   metricKey: string,
   options: PythonRuntimeServiceOptions
 ) {
-  const controller = timeoutMs > 0 ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const startedAt = performance.now();
   const current = getContext();
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(current.requestId ? { "x-request-id": current.requestId } : {}),
-        ...(current.jobId ? { "x-arion-job-id": current.jobId } : {}),
-        ...(current.assetId ? { "x-arion-asset-id": current.assetId } : {})
-      },
-      body: JSON.stringify(payload),
-      signal: controller?.signal
-    });
-    const text = await response.text();
+    const body = JSON.stringify(payload);
+    const response = await postJson(url, {
+      "content-type": "application/json",
+      ...(current.requestId ? { "x-request-id": current.requestId } : {}),
+      ...(current.jobId ? { "x-arion-job-id": current.jobId } : {}),
+      ...(current.assetId ? { "x-arion-asset-id": current.assetId } : {})
+    }, body);
+    const text = response.text;
     const envelope = parseEnvelope<T>(endpoint, text);
-    if (!response.ok || envelope.ok === false) {
-      throw new PythonRuntimeServiceError(endpoint, envelope.error ?? formatDetail(envelope.detail) ?? `Python runtime service returned HTTP ${response.status}`);
+    if (response.statusCode < 200 || response.statusCode >= 300 || envelope.ok === false) {
+      throw new PythonRuntimeServiceError(endpoint, envelope.error ?? formatDetail(envelope.detail) ?? `Python runtime service returned HTTP ${response.statusCode}`);
     }
     for (const event of envelope.progressEvents ?? []) await options.onProgress?.(event);
     if (typeof envelope.result === "undefined") throw new PythonRuntimeServiceError(endpoint, "Python runtime service response did not include a result.");
@@ -157,9 +155,37 @@ async function callPythonRuntimeServiceOnce<T>(
       durationMs: Number(durationMs.toFixed(2))
     });
     throw error instanceof PythonRuntimeServiceError ? error : new PythonRuntimeServiceError(endpoint, message);
-  } finally {
-    if (timeout) clearTimeout(timeout);
   }
+}
+
+function postJson(url: string, headers: Record<string, string>, body: string): Promise<PythonRuntimeHttpResponse> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === "https:" ? https : http;
+    const request = client.request(
+      parsed,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          "content-length": Buffer.byteLength(body).toString()
+        }
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let text = "";
+        response.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        response.on("end", () => {
+          resolve({ statusCode: response.statusCode ?? 0, text });
+        });
+      }
+    );
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
 }
 
 function parseEnvelope<T>(endpoint: string, text: string): PythonRuntimeEnvelope<T> {

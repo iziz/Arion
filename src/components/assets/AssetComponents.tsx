@@ -233,8 +233,8 @@ export function AssetFlow({
   const stageGroups = [
     {
       label: "1. Source preparation",
-      detail: "Validate the media file, probe metadata, then extract speech/music regions.",
-      steps: flow.filter((step) => step.id === "input" || step.id === "probe" || step.id === "audio" || step.id === "vad")
+      detail: "Validate the media file, probe metadata, then sample coarse audio and visual signals.",
+      steps: flow.filter((step) => step.id === "input" || step.id === "probe" || step.id === "audio" || step.id === "vad" || step.id === "visual")
     },
     {
       label: "2. Speech and text extraction",
@@ -244,7 +244,7 @@ export function AssetFlow({
     {
       label: "3. Scene and vision evidence",
       detail: "Build scene windows, keyframes, VLM scene evidence, detector evidence, and tracker evidence.",
-      steps: flow.filter((step) => step.id === "visual" || step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "videoVlm" || step.id === "detector" || step.id === "tracker")
+      steps: flow.filter((step) => step.id === "scene" || step.id === "timeline" || step.id === "keyframes" || step.id === "videoVlm" || step.id === "detector" || step.id === "tracker")
     },
     {
       label: "4. Domain evidence",
@@ -934,35 +934,49 @@ function AsrResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: Fl
 
 function SpeakerResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const diarization = asset.intelligence.diarization;
+  const currentRunActive = step.state === "active";
+  const speakerCount = currentRunActive ? null : (diarization?.speakers.length ?? 0);
+  const segmentCount = currentRunActive ? null : (diarization?.segments.length ?? 0);
+  const currentRunError = currentRunActive ? null : diarization?.error;
   return (
     <WorkflowNodeDetails
       produced={[
-        { label: "Provider", value: diarization?.provider ?? "none", tone: diarization?.provider ? "good" : "warning" },
-        { label: "Speakers", value: (diarization?.speakers.length ?? 0).toString(), tone: (diarization?.speakers.length ?? 0) > 0 ? "good" : "warning" },
-        { label: "Segments", value: (diarization?.segments.length ?? 0).toString(), tone: (diarization?.segments.length ?? 0) > 0 ? "good" : "warning" }
+        { label: "Provider", value: currentRunActive ? "current run pending" : (diarization?.provider ?? "none"), tone: currentRunActive ? "neutral" : diarization?.provider ? "good" : "warning" },
+        { label: "Speakers", value: speakerCount === null ? "pending" : speakerCount.toString(), tone: speakerCount === null ? "neutral" : speakerCount > 0 ? "good" : "warning" },
+        { label: "Segments", value: segmentCount === null ? "pending" : segmentCount.toString(), tone: segmentCount === null ? "neutral" : segmentCount > 0 ? "good" : "warning" }
       ]}
       usedBy={["speaker-aware review", "quote attribution", "analysis context"]}
       quality={[
         { label: "Optional stage", value: "not required for base search", tone: "neutral" },
-        { label: "Status", value: diarization?.error ? "skipped or failed" : (diarization?.segments.length ?? 0) > 0 ? "ready" : "no segments", tone: diarization?.error ? "warning" : (diarization?.segments.length ?? 0) > 0 ? "good" : "neutral" }
+        {
+          label: "Status",
+          value: currentRunActive ? "running" : currentRunError ? "skipped or failed" : (diarization?.segments.length ?? 0) > 0 ? "ready" : "no segments",
+          tone: currentRunActive ? "neutral" : currentRunError ? "warning" : (diarization?.segments.length ?? 0) > 0 ? "good" : "neutral"
+        }
       ]}
       inspect={
         <div className="segment-list compact-list">
-          {(diarization?.segments ?? []).map((segment) => (
-            <button
-              key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}
-              type="button"
-              className="time-chip"
-              aria-label={`Play ${segment.speaker} from ${formatDuration(segment.start)}`}
-              onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.speaker} segment` })}
-            >
-              {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
-            </button>
-          ))}
-          {(diarization?.segments.length ?? 0) === 0 && <span>No speaker diarization segments are stored.</span>}
+          {currentRunActive ? (
+            <span>Current speaker diarization run is still in progress.</span>
+          ) : (
+            <>
+              {(diarization?.segments ?? []).map((segment) => (
+                <button
+                  key={`${segment.speaker}-${segment.start}-${segment.end}-${segment.text}`}
+                  type="button"
+                  className="time-chip"
+                  aria-label={`Play ${segment.speaker} from ${formatDuration(segment.start)}`}
+                  onClick={() => openAssetMoment(asset, onOpenMoment, { at: segment.start, end: segment.end, label: `${segment.speaker} segment` })}
+                >
+                  {segment.speaker} · {formatDuration(segment.start)}-{formatDuration(segment.end)} · {segment.text}
+                </button>
+              ))}
+              {(diarization?.segments.length ?? 0) === 0 && <span>No speaker diarization segments are stored.</span>}
+            </>
+          )}
         </div>
       }
-      rawDetails={rawStepDetails(step, [diarization?.error ? `diarization-error:${diarization.error}` : ""])}
+      rawDetails={rawStepDetails(step, [currentRunError ? `diarization-error:${currentRunError}` : ""])}
     />
   );
 }
@@ -1045,6 +1059,7 @@ function isScoreboardLikeToken(token: string) {
 }
 
 function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+  if (step.id === "visual") return <VisualProfileResult asset={asset} step={step} />;
   const usableKeyframes = asset.keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId).length;
   const visualTrace = asset.intelligence.modelTrace.find((trace) => trace.startsWith("visual-embedding:") || trace.startsWith("visual-embedding-unavailable:"));
   const visualVectorState = visualTrace?.startsWith("visual-embedding:") ? `${usableKeyframes} ready` : visualTrace ? "unavailable" : usableKeyframes === 0 ? "no keyframes" : "pending";
@@ -1054,7 +1069,7 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
   const domainEvents = asset.timeline.reduce((sum, segment) => sum + (segment.domain?.events.length ?? 0), 0);
   const visualAssessable = asset.intelligence.visual.available !== false && (usableKeyframes > 0 || asset.intelligence.visual.labels.length > 0 || asset.intelligence.visual.dominantColor !== "#000000");
   const blankCandidate = visualAssessable && asset.intelligence.visual.brightness < 0.04;
-  const lowMotionCandidate = visualAssessable && asset.intelligence.visual.motionScore < 0.01;
+  const lowFrameChangeCandidate = visualAssessable && asset.intelligence.visual.motionScore < 0.01;
   return (
     <WorkflowNodeDetails
       produced={[
@@ -1069,7 +1084,7 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
       quality={[
         { label: "Sampler", value: asset.intelligence.visual.available === false ? "unavailable" : "available", tone: asset.intelligence.visual.available === false ? "warning" : "good" },
         { label: "Blank candidates", value: !visualAssessable ? "not assessed" : blankCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : blankCandidate ? "warning" : "good" },
-        { label: "Low-motion candidates", value: !visualAssessable ? "not assessed" : lowMotionCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : lowMotionCandidate ? "warning" : "good" },
+        { label: "Low frame-change candidates", value: !visualAssessable ? "not assessed" : lowFrameChangeCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : lowFrameChangeCandidate ? "warning" : "good" },
         { label: "Detector readiness", value: detectorTrace?.startsWith("vision-detector:") ? "done" : "pending/optional", tone: detectorTrace?.startsWith("vision-detector:") ? "good" : "neutral" }
       ]}
       inspect={
@@ -1093,7 +1108,7 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             <VisualUsageCard
               title="Domain confidence support"
               value={`${visionSegments} vision segments · ${domainEvents} events`}
-              detail="Motion, visual labels, player/ball evidence, and field cues support sports event confidence."
+              detail="Detector, tracker, VLM, and low-weight coarse profile cues support sports event confidence."
             />
           </div>
           <details className="workflow-raw-details">
@@ -1102,7 +1117,7 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
               <span><b>Sampler</b>{asset.intelligence.visual.available === false ? "unavailable" : "available"}</span>
               <span><b>Dominant color</b>{asset.intelligence.visual.dominantColor}</span>
               <span><b>Brightness</b>{asset.intelligence.visual.brightness.toFixed(2)}</span>
-              <span><b>Motion</b>{asset.intelligence.visual.motionScore.toFixed(2)}</span>
+              <span><b>Frame change</b>{asset.intelligence.visual.motionScore.toFixed(2)}</span>
             </div>
           </details>
           <div className="workflow-keyframe-grid">
@@ -1125,6 +1140,44 @@ function VisualResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
         </div>
       }
       rawDetails={rawStepDetails(step, [asset.intelligence.visual.error ? `visual-error:${asset.intelligence.visual.error}` : ""])}
+    />
+  );
+}
+
+function VisualProfileResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+  const visual = asset.intelligence.visual;
+  const visualAssessable = visual.available !== false && (visual.labels.length > 0 || visual.dominantColor !== "#000000");
+  const blankCandidate = visualAssessable && visual.brightness < 0.04;
+  const lowFrameChangeCandidate = visualAssessable && visual.motionScore < 0.01;
+  return (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Profile", value: visual.available === false ? "unavailable" : visualAssessable ? "stored" : "pending", tone: visual.available === false ? "warning" : visualAssessable ? "good" : "neutral" },
+        { label: "Labels", value: visual.labels.length.toString(), tone: visual.labels.length > 0 ? "good" : "neutral" },
+        { label: "Average color", value: visual.dominantColor, tone: visual.dominantColor !== "#000000" ? "good" : "neutral" },
+        { label: "Frame change", value: visual.motionScore.toFixed(2), tone: visualAssessable ? "neutral" : "warning" }
+      ]}
+      usedBy={["media sanity checks", "coarse timeline tags", "low-confidence visual hints"]}
+      quality={[
+        { label: "Sampler", value: visual.available === false ? "unavailable" : "available", tone: visual.available === false ? "warning" : "good" },
+        { label: "Blank candidates", value: !visualAssessable ? "not assessed" : blankCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : blankCandidate ? "warning" : "good" },
+        { label: "Low frame-change candidates", value: !visualAssessable ? "not assessed" : lowFrameChangeCandidate ? "possible" : "not flagged", tone: !visualAssessable ? "neutral" : lowFrameChangeCandidate ? "warning" : "good" },
+        { label: "Evidence tier", value: "heuristic", tone: "neutral" }
+      ]}
+      inspect={
+        <div className="workflow-result-stack">
+          <div className="workflow-technical-strip" aria-label="Raw coarse visual profile summary">
+            <span><b>Sampler</b>{visual.available === false ? "unavailable" : "available"}</span>
+            <span><b>Average color</b>{visual.dominantColor}</span>
+            <span><b>Brightness</b>{visual.brightness.toFixed(2)}</span>
+            <span><b>Frame change</b>{visual.motionScore.toFixed(2)}</span>
+          </div>
+          <p className="workflow-muted-note">
+            Coarse visual profile is not detector, tracker, VLM, or calibrated field evidence.
+          </p>
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [visual.error ? `visual-error:${visual.error}` : ""])}
     />
   );
 }

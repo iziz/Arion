@@ -19,7 +19,7 @@ export type ProcessTableEntry = {
 
 export function runPythonScriptOnExit(
   args: string[],
-  options: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: number; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void }
+  options: { env?: NodeJS.ProcessEnv; maxBuffer?: number; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void }
 ): Promise<PythonScriptResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonBin, args, {
@@ -32,12 +32,10 @@ export function runPythonScriptOnExit(
     let stderr = "";
     let settled = false;
     const maxBuffer = options.maxBuffer ?? 1024 * 1024 * 4;
-    let timer: NodeJS.Timeout | null = null;
 
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
       if (child.pid) activePythonPids.delete(child.pid);
       fn();
     };
@@ -57,14 +55,6 @@ export function runPythonScriptOnExit(
         finish(() => reject(new Error(`Python script output exceeded ${maxBuffer} bytes: ${pythonBin} ${args.join(" ")}`)));
       }
     };
-
-    if (options.timeout && options.timeout > 0) {
-      timer = setTimeout(() => {
-        if (child.pid) void terminateProcessTree(child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-        finish(() => reject(new Error(`Python script exceeded safety limit after ${options.timeout}ms: ${pythonBin} ${args.join(" ")}`)));
-      }, options.timeout);
-    }
 
     child.stdout.on("data", (chunk) => append("stdout", chunk));
     child.stderr.on("data", (chunk) => append("stderr", chunk));

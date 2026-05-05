@@ -10,15 +10,8 @@ export function fuseTimelineBasis(
 ): TimelineBasis[] {
   const safeDuration = Math.max(duration, 1);
   if (shotWindows.length === 0 && whisperSegments.length === 0) return [];
-  const maxSegments = positiveIntegerOrDefault(process.env.TIMELINE_MAX_SEGMENTS, 120);
   if (shotWindows.length === 0) {
-    return limitWindowsWithCoverage(
-      whisperSegments.map((segment) => ({
-        start: segment.start,
-        end: segment.end
-      })),
-      maxSegments
-    ).map((segment, index) => ({
+    return whisperSegments.map((segment, index) => ({
       start: segment.start,
       end: segment.end,
       text: overlappingWhisperText(asset, segment.start, segment.end),
@@ -44,7 +37,7 @@ export function fuseTimelineBasis(
       .filter((window) => window.end - window.start >= 0.35),
     minWindow
   );
-  const splitWindows = limitWindowsWithCoverage(windows.flatMap((window) => splitLongWindow(window, maxWindow)), maxSegments);
+  const splitWindows = windows.flatMap((window) => splitLongWindow(window, maxWindow));
   return splitWindows.map((window, index) => {
     const shot = bestOverlappingShotWindow(shotWindows, window.start, window.end);
     return {
@@ -101,13 +94,23 @@ function sortedUniquePoints(points: number[], duration: number) {
 
 function mergeShortWindows(windows: Array<{ start: number; end: number }>, minWindow: number) {
   const merged: Array<{ start: number; end: number }> = [];
+  let pending: { start: number; end: number } | null = null;
   for (const window of windows) {
-    const previous = merged.at(-1);
-    if (previous && window.end - window.start < minWindow) {
-      previous.end = window.end;
-    } else {
+    const length = window.end - window.start;
+    if (length >= minWindow && !pending) {
       merged.push({ ...window });
+      continue;
     }
+    pending = pending ? { start: pending.start, end: window.end } : { ...window };
+    if (pending.end - pending.start >= minWindow) {
+      merged.push(pending);
+      pending = null;
+    }
+  }
+  if (pending) {
+    const previous = merged.at(-1);
+    if (previous) previous.end = pending.end;
+    else merged.push(pending);
   }
   return merged.filter((window) => window.end - window.start >= 0.5);
 }
@@ -121,25 +124,6 @@ function splitLongWindow(window: { start: number; end: number }, maxWindow: numb
     start: window.start + size * index,
     end: index === count - 1 ? window.end : window.start + size * (index + 1)
   }));
-}
-
-function limitWindowsWithCoverage(windows: Array<{ start: number; end: number }>, maxSegments: number) {
-  if (windows.length <= maxSegments) return windows;
-  return Array.from({ length: maxSegments }, (_item, index) => {
-    const startIndex = Math.floor((index * windows.length) / maxSegments);
-    const endIndex = Math.floor(((index + 1) * windows.length) / maxSegments);
-    const group = windows.slice(startIndex, Math.max(startIndex + 1, endIndex));
-    return {
-      start: group[0].start,
-      end: group.at(-1)?.end ?? group[0].end
-    };
-  });
-}
-
-function positiveIntegerOrDefault(value: unknown, fallback: number) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 1) return fallback;
-  return Math.floor(numeric);
 }
 
 function bestOverlappingShotWindow(shotWindows: ShotWindow[], start: number, end: number) {

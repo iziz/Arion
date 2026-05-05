@@ -1,9 +1,9 @@
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import type { AssetRecord, DomainVlmQuality, IndexRecord, TimelineSegment, VideoVlmEvidence } from "../shared/types";
 import { getPublicMediaRoot } from "./localObjectStorage";
 import { markVlmQuality, mergeVlmResponse, type VlmSportsEventResponse } from "./vlm/domainMapper";
-
-const DEFAULT_TIMEOUT_MS = 90000;
 
 export type VlmRefinementResult = {
   timeline: TimelineSegment[];
@@ -58,12 +58,10 @@ export type VideoVlmProgressEvent = {
 };
 
 export type VlmRefinementOptions = {
-  timeoutMs?: number;
   onProgress?: (event: VlmRefinementProgressEvent) => void | Promise<void>;
 };
 
 export type VideoVlmAnalysisOptions = {
-  timeoutMs?: number;
   onProgress?: (event: VideoVlmProgressEvent) => void | Promise<void>;
 };
 
@@ -104,9 +102,7 @@ export async function checkVlmWorkerHealth() {
   const url = getVlmWorkerUrl();
   if (!url) return { enabled: false, ok: false, model: getVlmWorkerModelName(), error: "VLM_WORKER_URL is not configured." };
   try {
-    const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return { enabled: true, ok: false, model: getVlmWorkerModelName(), error: `HTTP ${response.status}` };
-    const body = (await response.json()) as { model?: string; backend?: string };
+    const body = await getJson<{ model?: string; backend?: string }>(`${url}/health`);
     return { enabled: true, ok: true, model: body.model ?? getVlmWorkerModelName(), backend: body.backend ?? "unknown" };
   } catch (error) {
     return { enabled: true, ok: false, model: getVlmWorkerModelName(), error: error instanceof Error ? error.message : "VLM worker health check failed." };
@@ -136,7 +132,6 @@ export async function analyzeTimelineWithVlm(
   }
 
   const eligibleSegments = timeline.filter(shouldAnalyzeSegment).length;
-  const timeoutMs = Math.max(5000, Number(options.timeoutMs ?? process.env.VLM_WORKER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS));
   const totalSegments = eligibleSegments;
   const errors: string[] = [];
   let describedSegments = 0;
@@ -166,7 +161,7 @@ export async function analyzeTimelineWithVlm(
       progress: getProgress(Math.max(0, attemptedSegments - 1), totalSegments)
     });
     try {
-      const response = await callVlmAnalyzeEndpoint(url, asset, segment, timeoutMs);
+      const response = await callVlmAnalyzeEndpoint(url, asset, segment);
       if (isUsableVideoVlmResponse(response)) {
         describedSegments += 1;
         analyzed.push(markVideoVlmEvidence(segment, response, "described", "Video VLM scene description stored.", null, model));
@@ -257,7 +252,6 @@ export async function refineSportsDomainTimelineWithVlm(
   }
 
   const eligibleSegments = timeline.filter(shouldRefineSegment).length;
-  const timeoutMs = Math.max(5000, Number(options.timeoutMs ?? process.env.VLM_WORKER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS));
   const totalSegments = eligibleSegments;
   const errors: string[] = [];
   let refinedSegments = 0;
@@ -276,7 +270,7 @@ export async function refineSportsDomainTimelineWithVlm(
     attemptedSegments += 1;
     try {
       const domain = getVlmDomain(index, segment);
-      const response = await callVlmStructureEndpoint(url, asset, index, segment, timeoutMs, domain);
+      const response = await callVlmStructureEndpoint(url, asset, index, segment, domain);
       const next = mergeVlmResponse(asset, segment, response, domain, model);
       if (next !== segment) {
         refinedSegments += 1;
@@ -362,72 +356,104 @@ function getVlmDomain(index: IndexRecord, segment?: TimelineSegment) {
   return "sports.football";
 }
 
-async function callVlmAnalyzeEndpoint(url: string, asset: AssetRecord, segment: TimelineSegment, timeoutMs: number) {
-  const response = await fetch(`${url}/analyze/video-segment`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    signal: AbortSignal.timeout(timeoutMs),
-    body: JSON.stringify({
-      model: getVlmWorkerModelName(),
-      imagePath: resolveMediaPath(segment.thumbnailPath ?? segment.sceneData?.image.framePath ?? segment.sceneData?.image.thumbnailPath ?? null),
-      asset: {
-        id: asset.id,
-        title: asset.title,
-        description: asset.description,
-        tags: asset.tags,
-        indexId: asset.indexId
-      },
-      segment: {
-        id: segment.id,
-        start: segment.start,
-        end: segment.end,
-        label: segment.label,
-        transcript: segment.transcript,
-        tags: segment.tags,
-        sceneData: segment.sceneData
-      }
-    })
+async function callVlmAnalyzeEndpoint(url: string, asset: AssetRecord, segment: TimelineSegment) {
+  return postJson<VlmVideoSegmentResponse>(`${url}/analyze/video-segment`, {
+    model: getVlmWorkerModelName(),
+    imagePath: resolveMediaPath(segment.thumbnailPath ?? segment.sceneData?.image.framePath ?? segment.sceneData?.image.thumbnailPath ?? null),
+    asset: {
+      id: asset.id,
+      title: asset.title,
+      description: asset.description,
+      tags: asset.tags,
+      indexId: asset.indexId
+    },
+    segment: {
+      id: segment.id,
+      start: segment.start,
+      end: segment.end,
+      label: segment.label,
+      transcript: segment.transcript,
+      tags: segment.tags,
+      sceneData: segment.sceneData
+    }
   });
-  if (!response.ok) throw new Error(`VLM worker HTTP ${response.status}`);
-  return (await response.json()) as VlmVideoSegmentResponse;
 }
 
-async function callVlmStructureEndpoint(url: string, asset: AssetRecord, index: IndexRecord, segment: TimelineSegment, timeoutMs: number, domain: string) {
-  const response = await fetch(`${url}/structure/sports-event`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    signal: AbortSignal.timeout(timeoutMs),
-    body: JSON.stringify({
-      domain,
-      ontologyVersion: "sports-domain-v1",
-      model: getVlmWorkerModelName(),
-      imagePath: resolveMediaPath(segment.thumbnailPath ?? segment.sceneData?.image.framePath ?? segment.sceneData?.image.thumbnailPath ?? null),
-      asset: {
-        id: asset.id,
-        title: asset.title,
-        description: asset.description,
-        tags: asset.tags,
-        indexId: asset.indexId
-      },
-      index: {
-        id: index.id,
-        name: index.name,
-        domainIndexing: index.domainIndexing
-      },
-      segment: {
-        id: segment.id,
-        start: segment.start,
-        end: segment.end,
-        label: segment.label,
-        transcript: segment.transcript,
-        tags: segment.tags,
-        sceneData: segment.sceneData,
-        existingDomain: segment.domain
-      }
-    })
+async function callVlmStructureEndpoint(url: string, asset: AssetRecord, index: IndexRecord, segment: TimelineSegment, domain: string) {
+  return postJson<VlmSportsEventResponse>(`${url}/structure/sports-event`, {
+    domain,
+    ontologyVersion: "sports-domain-v1",
+    model: getVlmWorkerModelName(),
+    imagePath: resolveMediaPath(segment.thumbnailPath ?? segment.sceneData?.image.framePath ?? segment.sceneData?.image.thumbnailPath ?? null),
+    asset: {
+      id: asset.id,
+      title: asset.title,
+      description: asset.description,
+      tags: asset.tags,
+      indexId: asset.indexId
+    },
+    index: {
+      id: index.id,
+      name: index.name,
+      domainIndexing: index.domainIndexing
+    },
+    segment: {
+      id: segment.id,
+      start: segment.start,
+      end: segment.end,
+      label: segment.label,
+      transcript: segment.transcript,
+      tags: segment.tags,
+      sceneData: segment.sceneData,
+      existingDomain: segment.domain
+    }
   });
-  if (!response.ok) throw new Error(`VLM worker HTTP ${response.status}`);
-  return (await response.json()) as VlmSportsEventResponse;
+}
+
+function postJson<T>(url: string, payload: unknown): Promise<T> {
+  return requestJson<T>(url, "POST", JSON.stringify(payload));
+}
+
+function getJson<T>(url: string): Promise<T> {
+  return requestJson<T>(url, "GET");
+}
+
+function requestJson<T>(url: string, method: "GET" | "POST", body?: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === "https:" ? https : http;
+    const request = client.request(
+      parsed,
+      {
+        method,
+        headers: {
+          ...(body ? { "content-type": "application/json", "content-length": Buffer.byteLength(body).toString() } : {})
+        }
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let text = "";
+        response.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        response.on("error", reject);
+        response.on("end", () => {
+          if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+            reject(new Error(`VLM worker HTTP ${response.statusCode ?? 0}: ${text.slice(0, 240)}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(text) as T);
+          } catch {
+            reject(new Error(`VLM worker returned non-JSON response: ${text.slice(0, 240)}`));
+          }
+        });
+      }
+    );
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
 }
 
 function markVideoVlmEvidence(

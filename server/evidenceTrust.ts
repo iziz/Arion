@@ -13,7 +13,7 @@ export function inferVisionTrust(vision: VisionEvidence | null | undefined): Evi
   if (vision.tracking?.status === "tracked" || vision.objects.players.status === "detected" || vision.objects.ball.status === "detected") {
     return "detected";
   }
-  if (vision.generatedBy.includes("color-motion") || vision.fieldZone.method === "color_motion_heuristic") return "heuristic";
+  if (vision.generatedBy.includes("color-motion") || vision.generatedBy.includes("coarse-profile") || vision.fieldZone.method === "color_motion_heuristic") return "heuristic";
   return "inferred";
 }
 

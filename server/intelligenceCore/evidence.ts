@@ -55,7 +55,7 @@ export function scoreSources(sources: TimelineSegment["sources"]) {
   if (sources.includes("whisper")) score += 0.75;
   if (sources.includes("paddleocr")) score += 0.65;
   if (sources.includes("shot")) score += 0.45;
-  if (sources.includes("visual")) score += 0.25;
+  if (sources.includes("visual")) score += 0.08;
   if (sources.includes("metadata")) score += 0.1;
   return score;
 }

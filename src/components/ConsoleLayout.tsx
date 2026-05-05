@@ -182,7 +182,7 @@ function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
     { label: "ASR", value: `${Math.round(asset.intelligence.asr.confidence * 100)}%` },
     { label: "OCR", value: `${asset.intelligence.ocr.tokens.length} tokens` },
     { label: "Color", value: asset.intelligence.visual.dominantColor },
-    { label: "Motion", value: asset.intelligence.visual.motionScore.toString() }
+    { label: "Frame change", value: asset.intelligence.visual.motionScore.toString() }
   ];
 }
 

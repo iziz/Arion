@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import platform
@@ -27,6 +28,7 @@ DEVICE_MAP = os.environ.get("QWEN_VLM_DEVICE_MAP", DEFAULT_DEVICE_MAP)
 TORCH_DTYPE = os.environ.get("QWEN_VLM_TORCH_DTYPE", "float32" if DEVICE_MAP == "cpu" else "auto")
 MAX_NEW_TOKENS = int(os.environ.get("QWEN_VLM_MAX_NEW_TOKENS", "384"))
 MODEL_LOAD_LOCK = threading.Lock()
+MODEL_GENERATION_LOCK = threading.Lock()
 
 
 class StructureRequest(BaseModel):
@@ -66,7 +68,7 @@ async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
     if request.domain not in ("sports.football", "sports.american_football"):
         return _empty_response("Unsupported domain.")
 
-    output_text = _generate_text(request)
+    output_text = await asyncio.to_thread(_generate_text_locked, request)
     parsed = _parse_json(output_text)
     if not parsed:
         return _empty_response("Model did not return parseable JSON.", raw=output_text)
@@ -77,7 +79,7 @@ async def structure_sports_event(request: StructureRequest) -> dict[str, Any]:
 
 @app.post("/analyze/video-segment")
 async def analyze_video_segment(request: VideoSegmentRequest) -> dict[str, Any]:
-    output_text = _generate_video_text(request)
+    output_text = await asyncio.to_thread(_generate_video_text_locked, request)
     parsed = _parse_json(output_text)
     if not parsed:
         return _empty_video_response("Model did not return parseable JSON.", raw=output_text)
@@ -145,6 +147,16 @@ def _generate_text(request: StructureRequest) -> str:
 
 def _generate_video_text(request: VideoSegmentRequest) -> str:
     return _generate_from_messages(_build_video_messages(request), _image_path(request))
+
+
+def _generate_text_locked(request: StructureRequest) -> str:
+    with MODEL_GENERATION_LOCK:
+        return _generate_text(request)
+
+
+def _generate_video_text_locked(request: VideoSegmentRequest) -> str:
+    with MODEL_GENERATION_LOCK:
+        return _generate_video_text(request)
 
 
 def _generate_from_messages(messages: list[dict[str, Any]], image_path: str | None) -> str:
@@ -521,4 +533,4 @@ if __name__ == "__main__":
 
     host = os.environ.get("QWEN_VLM_HOST", "127.0.0.1")
     port = int(os.environ.get("QWEN_VLM_PORT", "8791"))
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, lifespan="off")
