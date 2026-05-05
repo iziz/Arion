@@ -33,11 +33,11 @@ export default function App() {
     metrics,
     dbStatus,
     observability,
-    sportsKnowledge,
+    knowledgeSnapshot,
     setIndexes,
     setAssets,
     setJobs,
-    setSportsKnowledge,
+    setKnowledgeSnapshot,
     knowledgeVectorStore,
     selectedIndexId,
     setSelectedIndexId,
@@ -87,7 +87,7 @@ export default function App() {
     buildAssetMomentUrl
   } = useSearchController({ indexes, assets, selectedIndexId, selectedAssetId, setMessage });
   const { deleteKnowledgePlayer } = useKnowledgeActions({
-    setSportsKnowledge,
+    setKnowledgeSnapshot,
     setMessage
   });
   const visibleAssets = assets.filter((asset) => !selectedIndex || asset.indexId === selectedIndex.id);
@@ -452,7 +452,7 @@ export default function App() {
       runningJobCount={runningJobCount}
       refresh={refresh}
       metrics={metrics}
-      sportsKnowledge={sportsKnowledge}
+      knowledgeSnapshot={knowledgeSnapshot}
       knowledgeVectorStore={knowledgeVectorStore}
       searchResults={searchResults}
       setDialogMode={setDialogMode}

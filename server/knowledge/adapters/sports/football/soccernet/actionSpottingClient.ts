@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import type { TimelineSegment } from "../../shared/types";
-import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRuntime/pythonRuntimeService";
+import type { TimelineSegment } from "../../../../../../shared/types";
+import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../../../../../modelRuntime/pythonRuntimeService";
 import { isSoccerNetActionSpottingConfigured, soccerNetActionModel, soccerNetActionScript, soccerNetPythonBin } from "./runtimeConfig";
 import type { SoccerNetActionSpottingResult } from "./types";
 

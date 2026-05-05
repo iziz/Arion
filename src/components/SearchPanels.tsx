@@ -1,6 +1,6 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AskOperation, AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, SportsKnowledgeAnswer } from "../../shared/types";
+import type { AskOperation, AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import {
@@ -17,7 +17,7 @@ export type SearchConversationTurn = {
   query: string;
   answer: string;
   route: "structured_answer" | "moment_retrieval" | "empty" | "error";
-  sportsAnswer: SportsKnowledgeAnswer | null;
+  knowledgeAnswer: StructuredKnowledgeAnswer | null;
   results: SearchResult[];
   plan: DomainQueryPlan | null;
   operation: AskOperation | null;
@@ -207,15 +207,15 @@ export function ResultTrustSummary({ total, visible, trustFilters }: { total: nu
   );
 }
 
-export function SportsAnswerCard({ answer }: { answer: SportsKnowledgeAnswer }) {
+export function KnowledgeAnswerCard({ answer }: { answer: StructuredKnowledgeAnswer }) {
   return (
-    <section className={`sports-answer-card ${answer.status}`}>
+    <section className={`knowledge-answer-card ${answer.status}`}>
       <div>
         <span>Knowledge answer</span>
         <strong>{answer.answer}</strong>
         {answer.fallback && <p>{answer.fallback}</p>}
       </div>
-      <div className="sports-answer-meta">
+      <div className="knowledge-answer-meta">
         {answer.subject.player && <span>Player {answer.subject.player}</span>}
         {answer.subject.competition && <span>Competition {answer.subject.competition}</span>}
         {answer.subject.season && <span>Season {answer.subject.season}</span>}
@@ -223,7 +223,7 @@ export function SportsAnswerCard({ answer }: { answer: SportsKnowledgeAnswer }) 
         <span>Confidence {Math.round(answer.confidence * 100)}%</span>
       </div>
       {answer.evidence.length > 0 && (
-        <div className="sports-answer-evidence">
+        <div className="knowledge-answer-evidence">
           {answer.evidence.slice(0, 3).map((item) => (
             <span key={`${item.provider}-${item.season}-${item.team}-${item.sourceText}`}>
               <b>{item.provider}</b>
@@ -232,7 +232,7 @@ export function SportsAnswerCard({ answer }: { answer: SportsKnowledgeAnswer }) 
           ))}
         </div>
       )}
-      {answer.warnings.length > 0 && <p className="sports-answer-warning">{answer.warnings.slice(0, 3).join(" ")}</p>}
+      {answer.warnings.length > 0 && <p className="knowledge-answer-warning">{answer.warnings.slice(0, 3).join(" ")}</p>}
     </section>
   );
 }
@@ -411,8 +411,8 @@ export function SearchConversation({
                   {turn.plan.rewrittenQuery} · confidence {Math.round(turn.plan.confidence * 100)}%
                 </em>
               )}
-              {turn.sportsAnswer?.fallback && <em>{turn.sportsAnswer.fallback}</em>}
-              {turn.sportsAnswer && <SportsAnswerCard answer={turn.sportsAnswer} />}
+              {turn.knowledgeAnswer?.fallback && <em>{turn.knowledgeAnswer.fallback}</em>}
+              {turn.knowledgeAnswer && <KnowledgeAnswerCard answer={turn.knowledgeAnswer} />}
               <SearchWorkflowTrace
                 operation={turn.operation}
                 queryPlan={turn.plan}

@@ -1,4 +1,4 @@
-import type { AssetRecord, JobRecord, KnowledgeVectorStoreStatus, MetricsSummary, SportsKnowledgeSnapshot } from "../shared/types";
+import type { AssetRecord, JobRecord, KnowledgeVectorStoreStatus, MetricsSummary, KnowledgeSnapshot } from "../shared/types";
 import { isKnownKnowledgeSourceId, sourceSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
 
 export type DatabaseStatus = {
@@ -62,7 +62,7 @@ export type FootballDataImportResult = {
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 };
 
 export type StatbunkerImportResult = {
@@ -73,7 +73,7 @@ export type StatbunkerImportResult = {
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 };
 
 export type NflverseImportResult = {
@@ -84,7 +84,7 @@ export type NflverseImportResult = {
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 };
 
 export type { KnowledgeVectorStoreStatus };
@@ -237,7 +237,7 @@ export function isObservabilitySnapshot(value: unknown): value is ObservabilityS
   );
 }
 
-export function isSportsKnowledgeSnapshot(value: unknown): value is SportsKnowledgeSnapshot {
+export function isKnowledgeSnapshot(value: unknown): value is KnowledgeSnapshot {
   return isRecord(value) && Array.isArray(value.competitions) && Array.isArray(value.teams) && Array.isArray(value.players);
 }
 

@@ -7,7 +7,7 @@ import type {
   KnowledgeSourceId,
   OrchestrationPlan,
   SearchResult,
-  SportsKnowledgeAnswer
+  StructuredKnowledgeAnswer
 } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
 import { api } from "../api";
@@ -44,7 +44,7 @@ export function useSearchController({
   const trustFilters: SearchTrustFilters = TRUST_PRESETS.balanced;
   const [queryPlan, setQueryPlan] = useState<DomainQueryPlan | null>(null);
   const [orchestrationPlan, setOrchestrationPlan] = useState<OrchestrationPlan | null>(null);
-  const [sportsAnswer, setSportsAnswer] = useState<SportsKnowledgeAnswer | null>(null);
+  const [knowledgeAnswer, setKnowledgeAnswer] = useState<StructuredKnowledgeAnswer | null>(null);
   const [askResponse, setAskResponse] = useState<AskResponse | null>(null);
   const [searchConversation, setSearchConversation] = useState<SearchConversationTurn[]>([]);
   const [searchHistoryReady, setSearchHistoryReady] = useState(false);
@@ -139,7 +139,7 @@ export function useSearchController({
     let latestResponse: AskResponse | null = null;
     setSearching(true);
     setMessage("");
-    setSportsAnswer(null);
+    setKnowledgeAnswer(null);
     setAskResponse(null);
     setQueryPlan(null);
     setOrchestrationPlan(null);
@@ -149,7 +149,7 @@ export function useSearchController({
       query: submittedQuery || "Filtered search",
       answer: "Searching indexed moments.",
       route: "moment_retrieval",
-      sportsAnswer: null,
+      knowledgeAnswer: null,
       results: [],
       plan: null,
       operation: null,
@@ -176,13 +176,13 @@ export function useSearchController({
       setAskResponse(completed);
       setQueryPlan(completed.queryPlan);
       setOrchestrationPlan(completed.orchestrationPlan);
-      setSportsAnswer(completed.sportsAnswer?.applicable ? completed.sportsAnswer : null);
-      if (completed.route === "structured_answer" && completed.sportsAnswer) {
+      setKnowledgeAnswer(completed.knowledgeAnswer?.applicable ? completed.knowledgeAnswer : null);
+      if (completed.route === "structured_answer" && completed.knowledgeAnswer) {
         setSearchResults([]);
         upsertSearchTurn(
-          buildSearchTurnFromResponse(turnId, submittedQuery, completed, completed.answer ?? completed.sportsAnswer.answer, {
+          buildSearchTurnFromResponse(turnId, submittedQuery, completed, completed.answer ?? completed.knowledgeAnswer.answer, {
             route: "structured_answer",
-            sportsAnswer: completed.sportsAnswer,
+            knowledgeAnswer: completed.knowledgeAnswer,
             results: []
           })
         );
@@ -197,7 +197,7 @@ export function useSearchController({
           completed.answer ?? (completed.queryPlan ? buildSearchAssistantAnswer(completed.results, completed.queryPlan) : "The ask operation completed without a readable answer."),
           {
             route: completed.results.length > 0 ? "moment_retrieval" : completed.route === "error" ? "error" : "empty",
-            sportsAnswer: null,
+            knowledgeAnswer: null,
             results: completed.results
           }
         )
@@ -210,7 +210,7 @@ export function useSearchController({
         query: submittedQuery || "Filtered search",
         answer: errorMessage,
         route: "error",
-        sportsAnswer: null,
+        knowledgeAnswer: null,
         results: [],
         plan: latestResponse?.queryPlan ?? null,
         operation: latestResponse?.operation ?? null,
@@ -279,7 +279,7 @@ export function useSearchController({
   function clearSearchHistory() {
     setSearchConversation([]);
     setSearchResults([]);
-    setSportsAnswer(null);
+    setKnowledgeAnswer(null);
     setAskResponse(null);
     setQueryPlan(null);
     setOrchestrationPlan(null);
@@ -312,7 +312,7 @@ export function useSearchController({
     searchKnowledgeContext,
     queryPlan,
     orchestrationPlan,
-    sportsAnswer,
+    knowledgeAnswer,
     askResponse,
     searchConversation,
     searchResults,
@@ -360,7 +360,7 @@ function buildSearchTurnFromResponse(
   submittedQuery: string,
   response: AskResponse,
   answer: string,
-  overrides: Partial<Pick<SearchConversationTurn, "route" | "sportsAnswer" | "results">> = {}
+  overrides: Partial<Pick<SearchConversationTurn, "route" | "knowledgeAnswer" | "results">> = {}
 ): SearchConversationTurn {
   const results = overrides.results ?? response.results;
   return {
@@ -368,7 +368,7 @@ function buildSearchTurnFromResponse(
     query: submittedQuery || "Filtered search",
     answer,
     route: overrides.route ?? conversationRouteFor(response),
-    sportsAnswer: overrides.sportsAnswer ?? (response.sportsAnswer?.applicable ? response.sportsAnswer : null),
+    knowledgeAnswer: overrides.knowledgeAnswer ?? (response.knowledgeAnswer?.applicable ? response.knowledgeAnswer : null),
     results,
     plan: response.queryPlan,
     operation: response.operation,

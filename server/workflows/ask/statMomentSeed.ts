@@ -1,4 +1,4 @@
-import type { DomainQueryPlan, DomainSearchFilters, IndexRecord, KnowledgeSourceId, SportsKnowledgeAnswer } from "../../../shared/types";
+import type { DomainQueryPlan, DomainSearchFilters, IndexRecord, KnowledgeSourceId, StructuredKnowledgeAnswer } from "../../../shared/types";
 import { isMomentSearchQuery } from "../../queryPlanner";
 
 export function applyScopeDomainDefaults(
@@ -19,39 +19,39 @@ export function applyScopeDomainDefaults(
   return explicitFilters;
 }
 
-export function shouldContinueWithMomentRetrieval(queryPlan: DomainQueryPlan, sportsAnswer: SportsKnowledgeAnswer) {
+export function shouldContinueWithMomentRetrieval(queryPlan: DomainQueryPlan, knowledgeAnswer: StructuredKnowledgeAnswer) {
   return Boolean(
     queryPlan.route === "knowledge_evidence" &&
       queryPlan.responseMode === "structured_answer" &&
       queryPlan.knowledgeMode === "direct_answer" &&
-      sportsAnswer.applicable &&
-      sportsAnswer.route === "stat_qa" &&
-      sportsAnswer.status === "answered" &&
-      sportsAnswer.subject.player &&
+      knowledgeAnswer.applicable &&
+      knowledgeAnswer.route === "stat_qa" &&
+      knowledgeAnswer.status === "answered" &&
+      knowledgeAnswer.subject.player &&
       isMomentSearchQuery(queryPlan.originalQuery)
   );
 }
 
-export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, sportsAnswer: SportsKnowledgeAnswer): DomainQueryPlan {
-  const player = sportsAnswer.subject.player;
+export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, knowledgeAnswer: StructuredKnowledgeAnswer): DomainQueryPlan {
+  const player = knowledgeAnswer.subject.player;
   if (!player) return queryPlan;
   const domainFilters = compactFilters({
     ...queryPlan.domainFilters,
-    competition: sportsAnswer.subject.competition ?? queryPlan.domainFilters.competition,
-    season: sportsAnswer.subject.season ?? queryPlan.domainFilters.season,
+    competition: knowledgeAnswer.subject.competition ?? queryPlan.domainFilters.competition,
+    season: knowledgeAnswer.subject.season ?? queryPlan.domainFilters.season,
     player,
     eventType: undefined,
     passType: undefined,
     fieldZone: undefined,
     role: undefined
   });
-  const metricText = sportsAnswer.subject.metric ? `${sportsAnswer.subject.metric} leader` : "statistics leader";
+  const metricText = knowledgeAnswer.subject.metric ? `${knowledgeAnswer.subject.metric} leader` : "statistics leader";
   const semanticQuery = [
     player,
     metricText,
     queryPlan.originalQuery,
     queryPlan.semanticQuery,
-    sportsAnswer.evidence.map((item) => item.sourceText).join(" ")
+    knowledgeAnswer.evidence.map((item) => item.sourceText).join(" ")
   ]
     .filter(Boolean)
     .join(" ");
@@ -73,7 +73,7 @@ export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, sportsAnsw
       fieldZone: null,
       role: null
     },
-    confidence: Number(Math.max(queryPlan.confidence, Math.min(0.9, sportsAnswer.confidence)).toFixed(2)),
+    confidence: Number(Math.max(queryPlan.confidence, Math.min(0.9, knowledgeAnswer.confidence)).toFixed(2)),
     warnings: [
       ...queryPlan.warnings,
       `Related knowledge resolved the ranking subject to ${player}; video retrieval is still limited to indexed evidence.`

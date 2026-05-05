@@ -1,6 +1,6 @@
 import type { AssetRecord, DomainQueryPlan, DomainSearchFilters, KnowledgeEvidence, PlayerIdentity } from "../shared/types";
 import { trustedDomainEvents } from "./evidenceTrust";
-import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayers } from "./sportsKnowledge";
+import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayers } from "./knowledge/registry";
 import { isPlayerInventoryQuery } from "./queryPlanner";
 
 export type GroundedQuery = {
@@ -29,7 +29,7 @@ export function groundQueryWithKnowledge(queryPlan: DomainQueryPlan, assets: Ass
 }
 
 function groundFacts(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
-  const snapshot = getSportsKnowledgeSnapshot();
+  const snapshot = getKnowledgeSnapshot();
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;
   const query = normalize(queryPlan.originalQuery);
@@ -66,7 +66,7 @@ export function knowledgeEvidenceForNames(evidence: KnowledgeEvidence[], names: 
 }
 
 function groundCompetition(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
-  const competition = queryPlan.domainFilters.competition ?? matchCompetition(queryPlan.originalQuery)?.value;
+  const competition = queryPlan.domainFilters.competition ?? matchKnowledgeCompetition(queryPlan.originalQuery)?.value;
   if (!competition) return [];
   return [
     {
@@ -83,7 +83,7 @@ function groundCompetition(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
 }
 
 function groundPlayers(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
-  const snapshot = getSportsKnowledgeSnapshot();
+  const snapshot = getKnowledgeSnapshot();
   const requestedPlayer = queryPlan.domainFilters.player ?? matchKnowledgePlayers(queryPlan.originalQuery)[0]?.value.canonical;
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;
@@ -132,7 +132,7 @@ function groundPlayers(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
 }
 
 function groundMatchActivities(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
-  const snapshot = getSportsKnowledgeSnapshot();
+  const snapshot = getKnowledgeSnapshot();
   const requestedPlayer = queryPlan.domainFilters.player;
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;

@@ -1,25 +1,25 @@
 import type { Express } from "express";
 import { importFootballDataKnowledge } from "../footballDataClient";
 import { importFootballDataUkKnowledge } from "../footballDataUkImport";
+import { buildKnowledgeDocuments, knowledgeVectorHitToEvidence } from "../knowledge/documents";
+import { deleteKnowledgePlayer, getKnowledgeSnapshot, upsertKnowledgePlayer } from "../knowledge/registry";
 import { embedQueryText } from "../localEmbeddingRuntime";
 import { getKnowledgeVectorStatus, rebuildKnowledgeVectorStore, searchKnowledgeVectors } from "../localKnowledgeVectorStore";
 import { importNflverseKnowledge } from "../nflverseImport";
-import { deleteSportsKnowledgePlayer, getSportsKnowledgeSnapshot, upsertSportsKnowledgePlayer } from "../sportsKnowledge";
-import { buildSportsKnowledgeDocuments, knowledgeVectorHitToEvidence } from "../sportsKnowledgeDocuments";
 import { importStatbunkerKnowledge } from "../statbunkerImport";
 import { importStatsBombOpenDataKnowledge } from "../statsbombOpenDataImport";
 
 export function registerKnowledgeRoutes(app: Express) {
-  app.get("/api/knowledge/sports", async (_req, res) => {
-    res.json(getSportsKnowledgeSnapshot());
+  app.get(["/api/knowledge", "/api/knowledge/sports"], async (_req, res) => {
+    res.json(getKnowledgeSnapshot());
   });
 
-  app.get("/api/knowledge/sports/vector-store", async (_req, res) => {
+  app.get(["/api/knowledge/vector-store", "/api/knowledge/sports/vector-store"], async (_req, res) => {
     res.json(await getKnowledgeVectorStatus());
   });
 
-  app.post("/api/knowledge/sports/vector-store/rebuild", async (req, res) => {
-    const documents = buildSportsKnowledgeDocuments(undefined, {
+  app.post(["/api/knowledge/vector-store/rebuild", "/api/knowledge/sports/vector-store/rebuild"], async (req, res) => {
+    const documents = buildKnowledgeDocuments(undefined, {
       maxPlayers: req.body.all ? undefined : optionalNumber(req.body.maxPlayers, 5000),
       maxFacts: req.body.all ? undefined : optionalNumber(req.body.maxFacts, 5000),
       maxActivities: req.body.all ? undefined : optionalNumber(req.body.maxActivities, 5000)
@@ -30,7 +30,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json({ ...result, documents: documents.length });
   });
 
-  app.get("/api/knowledge/sports/vector-search", async (req, res) => {
+  app.get(["/api/knowledge/vector-search", "/api/knowledge/sports/vector-search"], async (req, res) => {
     const query = String(req.query.q ?? req.query.query ?? "").trim();
     if (!query) {
       res.status(400).json({ error: "Query is required" });
@@ -45,7 +45,7 @@ export function registerKnowledgeRoutes(app: Express) {
     });
   });
 
-  app.post("/api/knowledge/sports/import/football-data", async (req, res) => {
+  app.post(["/api/knowledge/import/football-data", "/api/knowledge/sports/import/football-data"], async (req, res) => {
     const competitionCode = String(req.body.competitionCode ?? "PL");
     const season = req.body.season ? Number(req.body.season) : undefined;
     const includeMatches = Boolean(req.body.includeMatches);
@@ -54,7 +54,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json(result);
   });
 
-  app.post("/api/knowledge/sports/import/statbunker", async (req, res) => {
+  app.post(["/api/knowledge/import/statbunker", "/api/knowledge/sports/import/statbunker"], async (req, res) => {
     const result = await importStatbunkerKnowledge({
       source: req.body.source === "statbunker" ? "statbunker" : "kaggle",
       dataset: String(req.body.dataset ?? ""),
@@ -66,7 +66,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json(result);
   });
 
-  app.post("/api/knowledge/sports/import/football-data-uk", async (req, res) => {
+  app.post(["/api/knowledge/import/football-data-uk", "/api/knowledge/sports/import/football-data-uk"], async (req, res) => {
     const seasons = String(req.body.seasons ?? "")
       .split(",")
       .map((item) => item.trim())
@@ -82,7 +82,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json(result);
   });
 
-  app.post("/api/knowledge/sports/import/statsbomb", async (req, res) => {
+  app.post(["/api/knowledge/import/statsbomb", "/api/knowledge/sports/import/statsbomb"], async (req, res) => {
     const competitions = String(req.body.competitions ?? "")
       .split(",")
       .map((item) => item.trim())
@@ -101,7 +101,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json(result);
   });
 
-  app.post("/api/knowledge/sports/import/nflverse", async (req, res) => {
+  app.post(["/api/knowledge/import/nflverse", "/api/knowledge/sports/import/nflverse"], async (req, res) => {
     const seasons = String(req.body.seasons ?? "")
       .split(",")
       .map((item) => Number(item.trim()))
@@ -113,7 +113,7 @@ export function registerKnowledgeRoutes(app: Express) {
     res.json(result);
   });
 
-  app.post("/api/knowledge/sports/players", async (req, res) => {
+  app.post(["/api/knowledge/players", "/api/knowledge/sports/players"], async (req, res) => {
     const canonical = String(req.body.canonical ?? "").trim();
     if (!canonical) {
       res.status(400).json({ error: "Player canonical name is required" });
@@ -131,7 +131,7 @@ export function registerKnowledgeRoutes(app: Express) {
     const league = String(req.body.league ?? "");
     const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
     res.status(201).json(
-      upsertSportsKnowledgePlayer({
+      upsertKnowledgePlayer({
         id: String(req.body.id ?? "").trim() || undefined,
         canonical,
         aliases,
@@ -146,7 +146,7 @@ export function registerKnowledgeRoutes(app: Express) {
     );
   });
 
-  app.put("/api/knowledge/sports/players/:id", async (req, res) => {
+  app.put(["/api/knowledge/players/:id", "/api/knowledge/sports/players/:id"], async (req, res) => {
     const id = String(req.params.id).trim();
     const canonical = String(req.body.canonical ?? "").trim();
     if (!id) {
@@ -169,7 +169,7 @@ export function registerKnowledgeRoutes(app: Express) {
     const league = String(req.body.league ?? "");
     const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
     res.json(
-      upsertSportsKnowledgePlayer({
+      upsertKnowledgePlayer({
         id,
         canonical,
         aliases,
@@ -184,13 +184,13 @@ export function registerKnowledgeRoutes(app: Express) {
     );
   });
 
-  app.delete("/api/knowledge/sports/players/:id", async (req, res) => {
+  app.delete(["/api/knowledge/players/:id", "/api/knowledge/sports/players/:id"], async (req, res) => {
     const id = String(req.params.id).trim();
     if (!id) {
       res.status(400).json({ error: "Player id is required" });
       return;
     }
-    res.json(deleteSportsKnowledgePlayer(id));
+    res.json(deleteKnowledgePlayer(id));
   });
 }
 

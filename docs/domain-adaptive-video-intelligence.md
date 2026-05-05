@@ -17,7 +17,7 @@ Arion implements this as an application-layer orchestration system rather than a
 | --- | --- |
 | Marengo-style retrieval | Local text/visual embeddings plus vector stores in `server/localVectorStore.ts` and `server/localVisualVectorStore.ts` |
 | Pegasus-style generation | Local grounded analysis generator in `server/analysisGenerator.ts` and pattern aggregation in `server/intelligence.ts` |
-| Domain knowledge layer | Sports knowledge store in `server/sportsKnowledge.ts` plus imported provider data |
+| Domain knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
 | Query orchestrator | `/api/ask` pipeline in `server/index.ts` and decision plan in `server/orchestrator.ts` |
 | Domain event indexing | `server/domainIndex.ts` football and American-football event structures |
 | Optional visual grounding | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` |
@@ -82,7 +82,7 @@ The VLM worker accepts both supported sports domains. The TypeScript client send
 ### Haaland Through Ball Search
 
 1. Parse query into `player=Erling Haaland`, `event=pass_receive`, `pass=through_ball`, `zone=final_third`.
-2. Resolve Haaland through sports knowledge.
+2. Resolve Haaland through the selected related-knowledge adapter.
 3. Retrieve vector/domain candidates from football-indexed assets.
 4. Keep strong player/event candidates even when competition or season scope is missing.
 5. Return moments with verification checks for player, event, pass type, field zone, competition, and season.
@@ -109,7 +109,7 @@ The VLM worker accepts both supported sports domains. The TypeScript client send
 - Field zone and pocket state remain heuristic until sport-specific calibration/tracking is added.
 - Multi-camera game synchronization is not implemented.
 - Large-scale ingestion needs distributed job queues and durable task state beyond the local queue.
-- Provider sports knowledge should be versioned by weekly roster snapshots and transfer windows.
+- Provider knowledge should be versioned by weekly roster snapshots and transfer windows.
 
 ## MVP Execution Order
 

@@ -19,7 +19,7 @@ import {
   upsertAssetVectors
 } from "../server/postgresStore";
 import type { VisualVectorRecord } from "../server/localVisualEmbeddingRuntime";
-import type { SportsKnowledgeVectorRecord } from "../server/sportsKnowledgeDocuments";
+import type { KnowledgeVectorRecord } from "../server/knowledge/documents";
 import type {
   AssetRecord,
   BillingRecord,
@@ -116,7 +116,7 @@ if (visualVectors.length > 0) {
   migrationStats.visualVectors = visualVectors.length;
 }
 
-const knowledgeVectors = await readOptionalJson<SportsKnowledgeVectorRecord[]>(
+const knowledgeVectors = await readOptionalJson<KnowledgeVectorRecord[]>(
   path.join(dataDir, "knowledge-vector-store.json"),
   []
 );

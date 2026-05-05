@@ -1,6 +1,6 @@
 import "../server/env";
 import { rebuildKnowledgeVectorStore } from "../server/localKnowledgeVectorStore";
-import { buildSportsKnowledgeDocuments } from "../server/sportsKnowledgeDocuments";
+import { buildKnowledgeDocuments } from "../server/knowledge/documents";
 
 const args = new Map(
   process.argv
@@ -17,7 +17,7 @@ const maxFacts = all ? undefined : numberArg("maxFacts", 5000);
 const maxActivities = all ? undefined : numberArg("maxActivities", 5000);
 const batchSize = numberArg("batchSize", 128);
 
-const documents = buildSportsKnowledgeDocuments(undefined, {
+const documents = buildKnowledgeDocuments(undefined, {
   maxPlayers,
   maxFacts,
   maxActivities

@@ -1,6 +1,10 @@
 import { buildOrchestrationPlan } from "../../orchestrator";
 import { planDomainQueryWithOpenAi } from "../../openaiQueryPlanner";
-import { answerSportsKnowledgeQuestion } from "../../sportsKnowledgeQa";
+import {
+  answerStructuredKnowledgeQuestion,
+  disabledStructuredKnowledgeAnswer,
+  isDirectKnowledgeAnswerPlan
+} from "../../knowledge/answer";
 import { listAssets, listIndexes } from "../../store";
 import { buildAskAnalysisAnswer, buildAskVideoAnswer } from "./answerBuilder";
 import { completeAskOperation, failAskOperation, updateAskOperation } from "./operationStore";
@@ -50,21 +54,21 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
     });
 
     const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && isDirectKnowledgeAnswerPlan(queryPlan);
-    const sportsAnswer = shouldRunKnowledgeAnswer
+    const knowledgeAnswer = shouldRunKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
           label: "Knowledge answer",
           owner: "knowledge",
           input: queryPlan.rewrittenQuery
         }, async () => {
-          const answer = answerSportsKnowledgeQuestion(queryPlan);
+          const answer = answerStructuredKnowledgeQuestion(queryPlan);
           return {
             value: answer,
             output: answer.applicable ? `${answer.status} · ${answer.subject.metric ?? "no metric"} · ${Math.round(answer.confidence * 100)}%` : "not applicable",
             status: answer.applicable && answer.status !== "answered" ? "fallback" : "succeeded"
           };
         })
-      : disabledSportsKnowledgeAnswer(
+      : disabledStructuredKnowledgeAnswer(
           queryPlan,
           request.useKnowledgeLayer
             ? "Knowledge direct answer is skipped for this retrieval workflow."
@@ -83,10 +87,10 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       });
     }
 
-    const statSeeded = shouldContinueWithMomentRetrieval(queryPlan, sportsAnswer);
+    const statSeeded = shouldContinueWithMomentRetrieval(queryPlan, knowledgeAnswer);
     const continueWithRetrieval = statSeeded;
     if (statSeeded) {
-      queryPlan = buildStatSeededMomentPlan(queryPlan, sportsAnswer);
+      queryPlan = buildStatSeededMomentPlan(queryPlan, knowledgeAnswer);
     }
 
     const orchestrationPlan = await runAskStep(entry, {
@@ -102,7 +106,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       };
     });
 
-    if (isDirectKnowledgeAnswerPlan(queryPlan) && sportsAnswer.applicable && sportsAnswer.route === "stat_qa" && !continueWithRetrieval) {
+    if (isDirectKnowledgeAnswerPlan(queryPlan) && knowledgeAnswer.applicable && knowledgeAnswer.route === "stat_qa" && !continueWithRetrieval) {
       skipAskStep(entry, {
         id: "retrieve",
         label: "Moment retrieval",
@@ -113,12 +117,12 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       completeAskOperation(entry, {
         operation: entry.operation,
         route: "structured_answer",
-        answer: sportsAnswer.answer,
+        answer: knowledgeAnswer.answer,
         queryPlan,
         orchestrationPlan,
-        sportsAnswer,
+        knowledgeAnswer,
         results: [],
-        warnings: [...queryPlan.warnings, ...sportsAnswer.warnings]
+        warnings: [...queryPlan.warnings, ...knowledgeAnswer.warnings]
       });
       return;
     }
@@ -160,9 +164,9 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       answer,
       queryPlan,
       orchestrationPlan,
-      sportsAnswer: sportsAnswer.applicable ? sportsAnswer : null,
+      knowledgeAnswer: knowledgeAnswer.applicable ? knowledgeAnswer : null,
       results,
-      warnings: [...queryPlan.warnings, ...(sportsAnswer.applicable ? sportsAnswer.warnings : [])]
+      warnings: [...queryPlan.warnings, ...(knowledgeAnswer.applicable ? knowledgeAnswer.warnings : [])]
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Ask operation failed";
@@ -174,32 +178,4 @@ function analysisOutputForMode(responseMode: Parameters<typeof buildAskAnalysisA
   if (responseMode === "summary") return "Generated a local video summary from retrieved evidence.";
   if (responseMode === "analysis") return "Generated a local pattern analysis from retrieved moments.";
   return "Generated a local grounded answer from retrieved moments.";
-}
-
-function isDirectKnowledgeAnswerPlan(queryPlan: Parameters<typeof answerSportsKnowledgeQuestion>[0]) {
-  return queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.knowledgeMode === "direct_answer";
-}
-
-function disabledSportsKnowledgeAnswer(
-  queryPlan: Parameters<typeof answerSportsKnowledgeQuestion>[0],
-  answer: string,
-  warning: string
-): ReturnType<typeof answerSportsKnowledgeQuestion> {
-  return {
-    applicable: false,
-    route: "unsupported",
-    answer,
-    confidence: 0,
-    subject: {
-      player: queryPlan.intent.player,
-      competition: queryPlan.domainFilters.competition ?? null,
-      season: queryPlan.domainFilters.season ?? null,
-      metric: queryPlan.intent.metric ?? null
-    },
-    value: null,
-    status: "unsupported",
-    evidence: [],
-    fallback: null,
-    warnings: [warning]
-  };
 }

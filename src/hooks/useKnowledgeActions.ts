@@ -1,12 +1,12 @@
 import type { Dispatch, FormEvent, SetStateAction } from "react";
-import type { SportsKnowledgeSnapshot } from "../../shared/types";
+import type { KnowledgeSnapshot } from "../../shared/types";
 import { api } from "../api";
 
 export function useKnowledgeActions({
-  setSportsKnowledge,
+  setKnowledgeSnapshot,
   setMessage
 }: {
-  setSportsKnowledge: Dispatch<SetStateAction<SportsKnowledgeSnapshot | null>>;
+  setKnowledgeSnapshot: Dispatch<SetStateAction<KnowledgeSnapshot | null>>;
   setMessage: (message: string) => void;
 }) {
   async function registerKnowledgePlayer(event: FormEvent<HTMLFormElement>) {
@@ -26,16 +26,16 @@ export function useKnowledgeActions({
       shirtNumber: data.get("shirtNumber")
     };
     const snapshot = id
-      ? await api.put<SportsKnowledgeSnapshot>(`/api/knowledge/sports/players/${id}`, payload)
-      : await api.post<SportsKnowledgeSnapshot>("/api/knowledge/sports/players", payload);
-    setSportsKnowledge(snapshot);
+      ? await api.put<KnowledgeSnapshot>(`/api/knowledge/players/${id}`, payload)
+      : await api.post<KnowledgeSnapshot>("/api/knowledge/players", payload);
+    setKnowledgeSnapshot(snapshot);
     form.reset();
     setMessage(id ? "Knowledge player updated." : "Knowledge registry updated.");
   }
 
   async function deleteKnowledgePlayer(id: string) {
-    const snapshot = await api.delete<SportsKnowledgeSnapshot>(`/api/knowledge/sports/players/${id}`);
-    setSportsKnowledge(snapshot);
+    const snapshot = await api.delete<KnowledgeSnapshot>(`/api/knowledge/players/${id}`);
+    setKnowledgeSnapshot(snapshot);
     setMessage("Knowledge player deleted.");
   }
 

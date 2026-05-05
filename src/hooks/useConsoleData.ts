@@ -6,7 +6,7 @@ import type {
   JobRecord,
   KnowledgeVectorStoreStatus,
   MetricsSummary,
-  SportsKnowledgeSnapshot
+  KnowledgeSnapshot
 } from "../../shared/types";
 import {
   api,
@@ -17,7 +17,7 @@ import {
   isKnowledgeVectorStoreStatus,
   isMetricsSummary,
   isObservabilitySnapshot,
-  isSportsKnowledgeSnapshot,
+  isKnowledgeSnapshot,
   type DatabaseStatus,
   type ObservabilitySnapshot
 } from "../api";
@@ -31,7 +31,7 @@ export function useConsoleData() {
   const [metrics, setMetrics] = useState<MetricsSummary>(emptyMetrics);
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
-  const [sportsKnowledge, setSportsKnowledge] = useState<SportsKnowledgeSnapshot | null>(null);
+  const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<KnowledgeSnapshot | null>(null);
   const [knowledgeVectorStore, setKnowledgeVectorStore] = useState<KnowledgeVectorStoreStatus | null>(null);
   const [selectedIndexId, setSelectedIndexId] = useState("");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -73,23 +73,23 @@ export function useConsoleData() {
       if (nextJobs) setJobs(nextJobs);
       if (nextEvents) setEvents(nextEvents);
 
-      const [metricsResult, dbStatusResult, observabilityResult, sportsKnowledgeResult, knowledgeVectorStoreResult] = await Promise.allSettled([
+      const [metricsResult, dbStatusResult, observabilityResult, knowledgeSnapshotResult, knowledgeVectorStoreResult] = await Promise.allSettled([
         api.get<MetricsSummary>("/api/metrics"),
         api.get<DatabaseStatus>("/api/db/status"),
         api.get<ObservabilitySnapshot>("/api/observability"),
-        api.get<SportsKnowledgeSnapshot>("/api/knowledge/sports"),
-        api.get<KnowledgeVectorStoreStatus>("/api/knowledge/sports/vector-store")
+        api.get<KnowledgeSnapshot>("/api/knowledge"),
+        api.get<KnowledgeVectorStoreStatus>("/api/knowledge/vector-store")
       ]);
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
-      const nextSportsKnowledge = getGuardedResult(sportsKnowledgeResult, "related knowledge", isSportsKnowledgeSnapshot, failures);
+      const nextKnowledgeSnapshot = getGuardedResult(knowledgeSnapshotResult, "related knowledge", isKnowledgeSnapshot, failures);
       const nextKnowledgeVectorStore = getGuardedResult(knowledgeVectorStoreResult, "knowledge vector store", isKnowledgeVectorStoreStatus, failures);
 
       if (nextMetrics) setMetrics(nextMetrics);
       if (nextDbStatus) setDbStatus(nextDbStatus);
       if (nextObservability) setObservability(nextObservability);
-      if (nextSportsKnowledge) setSportsKnowledge(nextSportsKnowledge);
+      if (nextKnowledgeSnapshot) setKnowledgeSnapshot(nextKnowledgeSnapshot);
       if (nextKnowledgeVectorStore) setKnowledgeVectorStore(nextKnowledgeVectorStore);
 
       if (failures.length > 0) {
@@ -159,8 +159,8 @@ export function useConsoleData() {
     metrics,
     dbStatus,
     observability,
-    sportsKnowledge,
-    setSportsKnowledge,
+    knowledgeSnapshot,
+    setKnowledgeSnapshot,
     knowledgeVectorStore,
     selectedIndexId,
     setSelectedIndexId,

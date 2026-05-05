@@ -88,7 +88,7 @@ export function failAskOperation(entry: AskOperationEntry, message: string) {
     answer: message,
     queryPlan: null,
     orchestrationPlan: null,
-    sportsAnswer: null,
+    knowledgeAnswer: null,
     results: [],
     warnings: [message]
   };
@@ -112,7 +112,7 @@ export function toAskResponse(entry: AskOperationEntry): AskResponse {
     answer: null,
     queryPlan: null,
     orchestrationPlan: null,
-    sportsAnswer: null,
+    knowledgeAnswer: null,
     results: [],
     warnings: []
   };

@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
 import { getObjectPath } from "../server/localObjectStorage";
 import { rebuildKnowledgeVectorStore } from "../server/localKnowledgeVectorStore";
-import { buildSportsKnowledgeDocuments } from "../server/sportsKnowledgeDocuments";
+import { buildKnowledgeDocuments } from "../server/knowledge/documents";
 import { getAsset, getJob, listAssets, listJobs } from "../server/store";
 import { createJob, updateAsset } from "../server/services/jobState";
 import { runIndexingJob } from "../server/workflows/indexingWorkflow";
@@ -83,7 +83,7 @@ if (!skipAssets) {
 }
 
 if (!skipKnowledge) {
-  const documents = buildSportsKnowledgeDocuments(undefined);
+  const documents = buildKnowledgeDocuments(undefined);
   summary.knowledge.documents = documents.length;
   console.error(`[indexes-rebuild] knowledge vector rebuild started (${documents.length} documents)`);
   let lastLogged = 0;

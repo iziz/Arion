@@ -820,7 +820,7 @@
   min-height: auto;
 }
 
-.sports-answer-card {
+.knowledge-answer-card {
   display: grid;
   gap: 12px;
   border: 1px solid rgba(43, 139, 112, 0.24);
@@ -829,31 +829,31 @@
   padding: 14px;
 }
 
-.sports-answer-card.missing_stat {
+.knowledge-answer-card.missing_stat {
   border-color: rgba(139, 101, 31, 0.26);
   background: #fff8e7;
 }
 
-.sports-answer-card > div:first-child {
+.knowledge-answer-card > div:first-child {
   display: grid;
   gap: 5px;
 }
 
-.sports-answer-card span {
+.knowledge-answer-card span {
   color: #2b8b70;
   font-size: 11px;
   font-weight: 950;
   text-transform: uppercase;
 }
 
-.sports-answer-card strong {
+.knowledge-answer-card strong {
   color: #25352f;
   font-size: 17px;
   font-weight: 950;
   line-height: 1.35;
 }
 
-.sports-answer-card p {
+.knowledge-answer-card p {
   margin: 0;
   color: #5f736c;
   font-size: 13px;
@@ -861,15 +861,15 @@
   line-height: 1.45;
 }
 
-.sports-answer-meta,
-.sports-answer-evidence {
+.knowledge-answer-meta,
+.knowledge-answer-evidence {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.sports-answer-meta span,
-.sports-answer-evidence span {
+.knowledge-answer-meta span,
+.knowledge-answer-evidence span {
   display: inline-flex;
   gap: 6px;
   align-items: center;
@@ -880,18 +880,18 @@
   text-transform: none;
 }
 
-.sports-answer-evidence span {
+.knowledge-answer-evidence span {
   max-width: 100%;
   border-radius: 10px;
   line-height: 1.35;
 }
 
-.sports-answer-evidence b {
+.knowledge-answer-evidence b {
   color: #2b8b70;
   text-transform: uppercase;
 }
 
-.sports-answer-warning {
+.knowledge-answer-warning {
   color: #8b651f !important;
 }
 

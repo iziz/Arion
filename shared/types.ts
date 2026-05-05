@@ -31,8 +31,7 @@ export type WebhookEventType =
   | "analysis.completed";
 
 export type KnowledgeSourceId = string;
-export type SportsKnowledgeSourceId = "sports.football" | "sports.american_football";
-export type SportsDomainGroup = SportsKnowledgeSourceId;
+export type KnowledgeDomainGroup = "sports.football" | "sports.american_football";
 
 export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "inferred" | "heuristic" | "unavailable";
 export type CapabilityMode = "disabled" | "optional" | "required";
@@ -626,7 +625,7 @@ export type DomainQueryPlan = {
   };
 };
 
-export type SportsKnowledgeAnswer = {
+export type StructuredKnowledgeAnswer = {
   applicable: boolean;
   route: "stat_qa" | "unsupported";
   answer: string;
@@ -698,7 +697,7 @@ export type AskResponse = {
   answer: string | null;
   queryPlan: DomainQueryPlan | null;
   orchestrationPlan: OrchestrationPlan | null;
-  sportsAnswer: SportsKnowledgeAnswer | null;
+  knowledgeAnswer: StructuredKnowledgeAnswer | null;
   results: SearchResult[];
   warnings: string[];
 };
@@ -821,7 +820,7 @@ export type ClipDetailResult = {
   domainEvents: DomainEvent[];
 };
 
-export type SportsKnowledgeSnapshot = {
+export type KnowledgeSnapshot = {
   domains?: Array<{
     id: KnowledgeSourceId;
     label: string;

@@ -1,7 +1,7 @@
-import type { SportsKnowledgeVectorRecord } from "./sportsKnowledgeDocuments";
+import type { KnowledgeVectorRecord } from "./knowledge/documents";
 import { cosineSimilarity, normalizeSearchValue } from "./intelligenceCore/textUtils";
 
-export function scoreKnowledgeVectorRecord(record: SportsKnowledgeVectorRecord, queryVector: number[], terms: string[], queryText: string) {
+export function scoreKnowledgeVectorRecord(record: KnowledgeVectorRecord, queryVector: number[], terms: string[], queryText: string) {
   const vectorScore = cosineSimilarity(queryVector, record.vector);
   const haystack = normalizeSearchValue([record.entityName, record.competition, record.season, record.team, record.text].filter(Boolean).join(" "));
   const termHits = terms.filter((term) => haystack.includes(normalizeSearchValue(term))).length;

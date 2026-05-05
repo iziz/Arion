@@ -25,7 +25,7 @@ import type {
   KnowledgeVectorStoreStatus,
   MetricsSummary,
   SearchResult,
-  SportsKnowledgeSnapshot
+  KnowledgeSnapshot
 } from "../../shared/types";
 import { KNOWLEDGE_SOURCES } from "../../shared/knowledgeSources";
 import type { DatabaseStatus, ObservabilitySnapshot } from "../api";
@@ -41,7 +41,7 @@ import {
   ClipDetailDrawer,
   EmptyState,
   getAssetProgressLine,
-  SportsKnowledgePanel,
+  KnowledgePanel,
   TabButton,
   Timeline,
   VideoStatusSummary,
@@ -69,7 +69,7 @@ export type ConsoleLayoutProps = {
   runningJobCount: number;
   refresh: () => Promise<void>;
   metrics: MetricsSummary;
-  sportsKnowledge: SportsKnowledgeSnapshot | null;
+  knowledgeSnapshot: KnowledgeSnapshot | null;
   knowledgeVectorStore: KnowledgeVectorStoreStatus | null;
   searchResults: SearchResult[];
   setDialogMode: Dispatch<SetStateAction<DialogMode>>;
@@ -191,7 +191,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     runningJobCount,
     refresh,
     metrics,
-    sportsKnowledge,
+    knowledgeSnapshot,
     knowledgeVectorStore,
     searchResults,
     setDialogMode,
@@ -243,7 +243,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   } = props;
   const [searchVideoPreview, setSearchVideoPreview] = useState<SearchVideoPreview | null>(null);
   const [searchTargetOpen, setSearchTargetOpen] = useState(false);
-  const knowledgeDomains = sportsKnowledge?.domains ?? defaultKnowledgeDomains();
+  const knowledgeDomains = knowledgeSnapshot?.domains ?? defaultKnowledgeDomains();
   const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? KNOWLEDGE_SOURCES[0]?.id ?? "";
   const observabilityView = observability ? buildObservabilityView(observability) : null;
   const failedJobCount = jobs.filter((job) => job.status === "failed").length;
@@ -387,7 +387,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "knowledge"}
           icon={<Layers3 size={17} />}
           label="지식"
-          meta={`${sportsKnowledge?.players.length ?? 0} records`}
+          meta={`${knowledgeSnapshot?.players.length ?? 0} records`}
           onClick={() => setActiveTab("knowledge")}
         />
         {activeTab === "knowledge" && (
@@ -551,8 +551,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <h2 className="section-stack-title">{sectionTechStacks.knowledge}</h2>
           </div>
         </div>
-        <SportsKnowledgePanel
-          sportsKnowledge={sportsKnowledge}
+        <KnowledgePanel
+          knowledgeSnapshot={knowledgeSnapshot}
           selectedDomain={effectiveKnowledgeDomain}
           knowledgeVectorStore={knowledgeVectorStore}
           onDelete={deleteKnowledgePlayer}
@@ -884,7 +884,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   );
 }
 
-function defaultKnowledgeDomains(): NonNullable<SportsKnowledgeSnapshot["domains"]> {
+function defaultKnowledgeDomains(): NonNullable<KnowledgeSnapshot["domains"]> {
   return [
     { id: "sports.football", label: "Football", sport: "football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 },
     { id: "sports.american_football", label: "American football", sport: "american_football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 }

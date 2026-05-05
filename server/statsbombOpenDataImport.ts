@@ -1,10 +1,10 @@
-import type { SportsKnowledgeSnapshot } from "../shared/types";
+import type { KnowledgeSnapshot } from "../shared/types";
 import {
   mergeSportsKnowledge,
   type SportsKnowledgeFact,
   type SportsKnowledgeMatchActivity,
   type SportsKnowledgePlayer
-} from "./sportsKnowledge";
+} from "./knowledge/adapters/sports/store";
 
 const statsbombBaseUrl = "https://raw.githubusercontent.com/statsbomb/open-data/master/data";
 
@@ -91,7 +91,7 @@ export async function importStatsBombOpenDataKnowledge(options: ImportOptions = 
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 }> {
   const warnings: string[] = [];
   const competitionRows = await fetchJson<CompetitionRow[]>(`${statsbombBaseUrl}/competitions.json`);

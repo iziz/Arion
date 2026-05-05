@@ -1,16 +1,16 @@
-import type { DomainQueryPlan, SportsKnowledgeAnswer, SportsKnowledgeSnapshot } from "../shared/types";
-import { isStatLeaderboardQuery } from "./queryPlanner";
-import { getKnowledgePlayer, getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, playerTeamForSeason } from "./sportsKnowledge";
+import type { DomainQueryPlan, StructuredKnowledgeAnswer, KnowledgeSnapshot } from "../../../../shared/types";
+import { isStatLeaderboardQuery } from "../../../queryPlanner";
+import { getKnowledgePlayer, getKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, playerTeamForSeason } from "./store";
 
-type MatchActivity = NonNullable<SportsKnowledgeSnapshot["matchActivities"]>[number];
-type Metric = NonNullable<SportsKnowledgeAnswer["subject"]["metric"]>;
+type MatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
+type Metric = NonNullable<StructuredKnowledgeAnswer["subject"]["metric"]>;
 type MetricRow = {
   activity: MatchActivity;
   value: number;
   providerRank: number;
 };
 
-export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): SportsKnowledgeAnswer {
+export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): StructuredKnowledgeAnswer {
   const metric = queryPlan.intent.metric ?? null;
   const playerMatch = queryPlan.intent.player ? getKnowledgePlayer(queryPlan.intent.player) : matchKnowledgePlayer(queryPlan.originalQuery)?.value ?? null;
   const competition = queryPlan.domainFilters.competition ?? matchCompetition(queryPlan.originalQuery)?.value ?? playerMatch?.league ?? null;
@@ -70,7 +70,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
     };
   }
 
-  const snapshot = getSportsKnowledgeSnapshot();
+  const snapshot = getKnowledgeSnapshot();
   const activities = (snapshot.matchActivities ?? []).filter((activity) => matchesPlayer(activity.player, playerMatch.canonical, playerMatch.aliases));
   const scoped = activities.filter((activity) => matchesScope(activity, competition, season));
   const rows = preferRosterTeam(scoped, playerMatch.canonical, season ?? undefined);
@@ -118,7 +118,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Sport
   };
 }
 
-function emptyAnswer(status: SportsKnowledgeAnswer["status"], answer: string, subject: SportsKnowledgeAnswer["subject"]): SportsKnowledgeAnswer {
+function emptyAnswer(status: StructuredKnowledgeAnswer["status"], answer: string, subject: StructuredKnowledgeAnswer["subject"]): StructuredKnowledgeAnswer {
   return {
     applicable: false,
     route: "unsupported",
@@ -173,7 +173,7 @@ function aggregateMetric(rows: MatchActivity[], metric: Metric) {
 
 function resolveLeaderboardSubject(queryPlan: DomainQueryPlan, metric: Metric, competition: string | null, season: string | null) {
   if (!isStatLeaderboardQuery(queryPlan.originalQuery)) return null;
-  const snapshot = getSportsKnowledgeSnapshot();
+  const snapshot = getKnowledgeSnapshot();
   const scopedActivities = (snapshot.matchActivities ?? []).filter((activity) => matchesScope(activity, competition, season));
   const metricRows = selectBestMetricRows(scopedActivities.filter((activity) => activity.role === "STAT"), metric);
   const leaders = aggregateMetricRowsByPlayer(metricRows);
@@ -301,7 +301,7 @@ function providerRank(provider: MatchActivity["provider"]) {
   return 1;
 }
 
-function evidenceFromActivity(activity: MatchActivity): SportsKnowledgeAnswer["evidence"][number] {
+function evidenceFromActivity(activity: MatchActivity): StructuredKnowledgeAnswer["evidence"][number] {
   return {
     provider: activity.provider,
     season: activity.season,

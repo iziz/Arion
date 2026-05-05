@@ -1,6 +1,6 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { buildRetrievalPlan } from "./queryRetrievalPlan";
-import { matchCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./sportsKnowledge";
+import { matchKnowledgeCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./knowledge/registry";
 
 const ignoredPlayerAliases = new Set(["query", "search", "match", "video", "clip", "clips", "moment", "moments", "speed", "top", "best", "goal", "goals", "save", "saves", "play", "plays"]);
 
@@ -240,7 +240,7 @@ export function parseDomainFilters(value: Record<string, unknown>): DomainSearch
 }
 
 function inferCompetition(query: string) {
-  return matchCompetition(query)?.value;
+  return matchKnowledgeCompetition(query)?.value;
 }
 
 function matchSearchPlayer(query: string) {

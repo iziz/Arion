@@ -1,7 +1,7 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { isMomentSearchQuery, isStatLeaderboardQuery, planDomainQuery } from "./queryPlanner";
 import { buildRetrievalPlan, sanitizeEvidenceTerms } from "./queryRetrievalPlan";
-import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./sportsKnowledge";
+import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./knowledge/registry";
 
 type OpenAiPlan = {
   route?: string;
@@ -112,7 +112,15 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
           {
             role: "system",
             content:
-              "You are a query router for a video intelligence platform with optional related knowledge attached to the selected asset group. Return only JSON. Choose route only by evidence source: asset_evidence for indexed video evidence, knowledge_evidence for a direct answer from selected related knowledge, asset_catalog for asset/group lookup, unsupported when neither indexed assets nor selected related knowledge can answer. Do not encode domain names such as sports in route. Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering a question from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for structured related-knowledge facts, asset_lookup for catalog queries. Choose knowledgeMode by how related knowledge is used: none, grounding, or direct_answer. Extract structured constraints only when supported by the selected related-knowledge context or explicit wording, and do not invent statistics or facts. Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown."
+              [
+                "You are a query router for a video intelligence platform with optional related knowledge attached to the selected asset group. Return only JSON.",
+                "Choose route only by evidence source: asset_evidence for indexed video evidence, knowledge_evidence for a direct answer from selected related knowledge, asset_catalog for asset/group lookup, unsupported when neither indexed assets nor selected related knowledge can answer. Do not encode domain names such as sports in route.",
+                "Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering a question from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for structured related-knowledge facts, asset_lookup for catalog queries.",
+                "Questions asking what appears in the selected video, what a person/object looks like, what someone is wearing, or asking describe/explain/what/which/how about visible video content are asset_evidence + grounded_answer + none. Low confidence or incomplete evidence is not unsupported; retrieval should run and the answer can report evidence gaps.",
+                "Use unsupported only for requests that cannot be answered from indexed asset evidence or selected related knowledge at all, such as external current events, web lookup, weather, or unrelated general knowledge. Invalid combinations include unsupported + grounded_answer, unsupported + summary, and unsupported + analysis.",
+                "Choose knowledgeMode by how related knowledge is used: none, grounding, or direct_answer. Extract structured constraints only when supported by the selected related-knowledge context or explicit wording, and do not invent statistics or facts.",
+                "Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown."
+              ].join(" ")
           },
           {
             role: "user",
@@ -130,7 +138,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 fieldZone: Array.from(allowedFieldZones),
                 role: Array.from(allowedRoles)
               },
-              knownCompetitions: getSportsKnowledgeSnapshot().competitions.map((competition) => competition.value),
+              knownCompetitions: getKnowledgeSnapshot().competitions.map((competition) => competition.value),
               knownPlayers: knownPlayersForPrompt(query),
               explicitFilters,
               query,
@@ -205,7 +213,7 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     (allowedValue(llm.knowledgeMode, allowedKnowledgeModes) as DomainQueryPlan["knowledgeMode"] | undefined) ??
     legacyPlan?.knowledgeMode ??
     base.knowledgeMode;
-  if (route === "unsupported" && isMomentSearchQuery(base.originalQuery) && hasRetrievalPlan(llm)) {
+  if (shouldPreserveAssetEvidencePlan(base, route, responseMode, llm)) {
     route = "asset_evidence";
     responseMode = base.responseMode === "summary" || base.responseMode === "analysis" || base.responseMode === "grounded_answer" ? base.responseMode : "moment_retrieval";
     knowledgeMode = base.knowledgeMode;
@@ -335,6 +343,26 @@ function hasActiveDomainFilters(filters: DomainSearchFilters) {
   return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
 }
 
+function shouldPreserveAssetEvidencePlan(
+  base: DomainQueryPlan,
+  route: DomainQueryPlan["route"],
+  responseMode: DomainQueryPlan["responseMode"],
+  llm: OpenAiPlan
+) {
+  if (route !== "unsupported" || base.route !== "asset_evidence") return false;
+  if (isMomentSearchQuery(base.originalQuery) && hasRetrievalPlan(llm)) return true;
+  return isAssetEvidenceGenerationMode(base.responseMode) && responseMode === base.responseMode && (hasRetrievalPlan(llm) || isAssetGroundedQuestion(base.originalQuery));
+}
+
+function isAssetEvidenceGenerationMode(responseMode: DomainQueryPlan["responseMode"]) {
+  return responseMode === "grounded_answer" || responseMode === "summary" || responseMode === "analysis";
+}
+
+function isAssetGroundedQuestion(query: string) {
+  const normalized = normalizePlannerText(query);
+  return /영상|비디오|장면|화면|남자|여자|사람|인물|옷|의상|복장|스타일|입고|착용/.test(query) || /\b(video|clip|scene|screen|this|man|woman|person|clothing|outfit|style|wearing|worn|visible|looks?)\b/.test(normalized);
+}
+
 function hasRetrievalPlan(plan: OpenAiPlan) {
   return Boolean(
     stringOrUndefined(plan.semanticQuery) ||
@@ -413,7 +441,7 @@ function escapeRegExp(value: string) {
 
 function knownPlayersForPrompt(query: string) {
   const matches = matchKnowledgePlayers(query).map((match) => match.value).filter((player) => queryMentionsKnownPlayer(player, query));
-  const fallback = getSportsKnowledgeSnapshot().players.filter((player) => player.provider === "local").slice(0, 40);
+  const fallback = getKnowledgeSnapshot().players.filter((player) => player.provider === "local").slice(0, 40);
   const byId = new Map([...matches, ...fallback].map((player) => [player.id, player]));
   return Array.from(byId.values()).slice(0, 50).map((player) => ({
     canonical: player.canonical,
@@ -424,7 +452,7 @@ function knownPlayersForPrompt(query: string) {
 
 function resolveCompetition(value: string | null | undefined) {
   if (!value) return undefined;
-  return matchCompetition(value)?.value ?? stringOrUndefined(value);
+  return matchKnowledgeCompetition(value)?.value ?? stringOrUndefined(value);
 }
 
 function allowedValue<T extends string>(value: unknown, allowed: Set<T>) {
@@ -462,7 +490,7 @@ function hasExplicitSeason(query: string) {
 }
 
 function hasExplicitCompetition(query: string) {
-  return Boolean(matchCompetition(query));
+  return Boolean(matchKnowledgeCompetition(query));
 }
 
 function hasExplicitFieldZone(query: string) {

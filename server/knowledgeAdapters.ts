@@ -1,7 +1,7 @@
 import type { IndexRecord, KnowledgeSourceId, TimelineSegment } from "../shared/types";
 import { formatKnowledgeSourceLabel, sourceSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
 import { logJson, traceAsync } from "./observability";
-import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "./soccernet";
+import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "./knowledge/adapters/sports/football/soccernet";
 
 export type KnowledgeActionSpottingResult = {
   available: boolean;

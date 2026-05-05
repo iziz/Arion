@@ -1,5 +1,5 @@
-import type { DomainEvent, TimelineSegment } from "../../shared/types";
-import { isTrustedDomainSegment } from "../evidenceTrust";
+import type { DomainEvent, TimelineSegment } from "../../../../../../shared/types";
+import { isTrustedDomainSegment } from "../../../../../evidenceTrust";
 import type { SoccerNetActionSpot, SoccerNetActionSpottingResult } from "./types";
 
 export function applySoccerNetActionSpots(timeline: TimelineSegment[], result: SoccerNetActionSpottingResult): TimelineSegment[] {

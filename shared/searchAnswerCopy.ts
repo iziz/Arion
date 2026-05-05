@@ -4,8 +4,8 @@ export function buildEmptySearchAnswer(queryPlan: Pick<DomainQueryPlan, "origina
   const korean = isKoreanQuery(queryPlan.originalQuery);
   if (queryPlan.route === "unsupported") {
     return korean
-      ? "이 질문은 현재 video search route로 처리하지 않았습니다. 검색 가능한 영상 장면, 요약, 또는 지원되는 sports 질문으로 다시 입력해 주세요."
-      : "This question was not routed to video search. Ask for a searchable video moment, summary, or supported sports question.";
+      ? "이 질문은 현재 asset evidence 또는 선택된 related knowledge로 처리할 수 없습니다. 검색 가능한 영상 장면, 요약, 설명형 영상 질문, 또는 선택된 지식으로 답할 수 있는 질문으로 다시 입력해 주세요."
+      : "This question cannot be answered from indexed asset evidence or selected related knowledge. Ask for a searchable video moment, summary, grounded video question, or selected-knowledge question.";
   }
   if ("knowledgeMode" in queryPlan && queryPlan.knowledgeMode !== "none") {
     return korean

@@ -1,5 +1,5 @@
 import type { DomainQueryProfile } from "../domainCore/ontology";
-import type { SportsDomainGroup, TimelineSegment } from "../../shared/types";
+import type { KnowledgeDomainGroup, TimelineSegment } from "../../shared/types";
 import { americanFootballRules, footballRules } from "../domainCore/ontology";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { eventTypeFromLabel, fieldZoneFromLabel, matchingTerms, normalizeText, passTypeFromLabel, readableLabel, unique } from "./utils";
@@ -7,7 +7,7 @@ import { eventTypeFromLabel, fieldZoneFromLabel, matchingTerms, normalizeText, p
 export function expandDomainQuery(query: string): DomainQueryProfile {
   const normalized = normalizeText(query);
   const labels: string[] = [];
-  const domains: SportsDomainGroup[] = [];
+  const domains: KnowledgeDomainGroup[] = [];
   const fieldZones: DomainQueryProfile["football"]["fieldZones"] = [];
   const passTypes: DomainQueryProfile["football"]["passTypes"] = [];
   const eventTypes: string[] = [];

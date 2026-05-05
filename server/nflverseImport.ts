@@ -1,10 +1,10 @@
-import type { SportsKnowledgeSnapshot } from "../shared/types";
+import type { KnowledgeSnapshot } from "../shared/types";
 import {
   mergeSportsKnowledge,
   type SportsKnowledgeFact,
   type SportsKnowledgeMatchActivity,
   type SportsKnowledgePlayer
-} from "./sportsKnowledge";
+} from "./knowledge/adapters/sports/store";
 
 const nflverseBaseUrl = "https://github.com/nflverse/nflverse-data/releases/download";
 const currentYear = new Date().getUTCFullYear();
@@ -31,7 +31,7 @@ export async function importNflverseKnowledge(options: ImportOptions = {}): Prom
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 }> {
   const seasons = normalizeSeasons(options.seasons);
   const warnings: string[] = [];

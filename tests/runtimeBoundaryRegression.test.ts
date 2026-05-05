@@ -187,7 +187,7 @@ async function collectRuntimeBoundaryFiles(root: string) {
   const includedRoots = [
     path.resolve(root, "server", "modelRuntime"),
     path.resolve(root, "server", "vision"),
-    path.resolve(root, "server", "soccernet")
+    path.resolve(root, "server", "knowledge", "adapters", "sports", "football", "soccernet")
   ];
   const includedFiles = new Set(
     [

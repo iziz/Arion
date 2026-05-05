@@ -1,10 +1,10 @@
-import type { DomainEvent, SportsDomainGroup } from "../../shared/types";
+import type { DomainEvent, KnowledgeDomainGroup } from "../../shared/types";
 
 export const ONTOLOGY_VERSION = "sports-domain-v1";
 
 export type DomainQueryProfile = {
   expandedText: string;
-  domains: SportsDomainGroup[];
+  domains: KnowledgeDomainGroup[];
   labels: string[];
   football: {
     fieldZones: NonNullable<DomainEvent["football"]>["fieldZone"][];

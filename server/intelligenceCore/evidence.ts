@@ -1,6 +1,6 @@
 import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, SearchMatchReason, TimelineSegment, VerificationCheck } from "../../shared/types";
 import { isTrustedDomainSegment, isTrustedDomainEvent, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "../evidenceTrust";
-import { playerTeamForSeason } from "../sportsKnowledge";
+import { playerTeamForSeason } from "../knowledge/registry";
 import { isObjectEvidenceReady, segmentSearchText } from "./sceneTimeline";
 import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { formatTime, normalizeSearchValue, unique } from "./textUtils";

@@ -1,5 +1,5 @@
-import type { SportsKnowledgeSnapshot } from "../shared/types";
-import { mergeSportsKnowledge, type SportsKnowledgeMatchActivity, type SportsKnowledgePlayer, type SportsLeague } from "./sportsKnowledge";
+import type { KnowledgeSnapshot } from "../shared/types";
+import { mergeSportsKnowledge, type SportsKnowledgeMatchActivity, type SportsKnowledgePlayer, type SportsLeague } from "./knowledge/adapters/sports/store";
 
 const footballDataBaseUrl = "https://api.football-data.org/v4";
 const minRequestIntervalMs = 6500;
@@ -111,7 +111,7 @@ export async function importFootballDataKnowledge(options: ImportOptions = {}): 
   players: number;
   matchActivities: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 }> {
   const competitionCode = normalizeCompetitionCode(options.competitionCode ?? "PL");
   const season = options.season ?? defaultSeasonStartYear();

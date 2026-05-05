@@ -240,6 +240,30 @@ test("OpenAI unsupported route is preserved instead of forced into search", asyn
   assert.equal(plan.semanticQuery, "unsupported request");
 });
 
+test("OpenAI unsupported grounded video answer is normalized to asset evidence", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "unsupported",
+      responseMode: "grounded_answer",
+      knowledgeMode: "none",
+      semanticQuery: "man's clothing style",
+      retrieval: {
+        textQuery: "man's clothing outfit style",
+        visualQuery: "man clothing outfit style",
+        evidenceTerms: ["남자", "옷", "스타일", "man", "clothing", "outfit"]
+      },
+      confidence: 0.18,
+      warnings: ["visual evidence may be limited"]
+    },
+    () => planDomainQueryWithOpenAi("이 남자의 옷스타일은 뭐야?")
+  );
+
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "grounded_answer");
+  assert.equal(plan.knowledgeMode, "none");
+  assert.deepEqual(plan.retrieval?.evidenceTerms, ["남자", "옷", "스타일", "man", "clothing", "outfit"]);
+});
+
 test("OpenAI object moment retrieval is not treated as unsupported when retrieval terms exist", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
@@ -456,6 +480,16 @@ test("empty generic Korean answer does not expose domain-specific guidance", () 
   assert.match(serverAnswer, /검색 범위/);
   assert.doesNotMatch(serverAnswer, /선수|시즌|이벤트|evidence filter/);
   assert.equal(clientFallback, serverAnswer);
+});
+
+test("unsupported Korean answer does not expose domain-specific copy", () => {
+  const serverAnswer = buildAskVideoAnswer([], {
+    ...queryPlanForBirthday(),
+    route: "unsupported"
+  });
+
+  assert.match(serverAnswer, /asset evidence|related knowledge/);
+  assert.doesNotMatch(serverAnswer, /sports|스포츠/);
 });
 
 test("empty related-knowledge Korean answer keeps constraint guidance", () => {

@@ -1,5 +1,5 @@
 export { EmptyState, InfoTile, Metric, TabButton } from "./common/ConsolePrimitives";
-export { SportsKnowledgePanel } from "./knowledge/SportsKnowledgePanel";
+export { KnowledgePanel } from "./knowledge/KnowledgePanel";
 export {
   AssetDetailTabs,
   AssetFlow,

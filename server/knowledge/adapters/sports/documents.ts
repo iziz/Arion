@@ -1,7 +1,7 @@
-import type { KnowledgeEvidence, KnowledgeSourceId, SportsKnowledgeSnapshot } from "../shared/types";
-import { getSportsKnowledgeSnapshot } from "./sportsKnowledge";
+import type { KnowledgeEvidence, KnowledgeSourceId, KnowledgeSnapshot } from "../../../../shared/types";
+import { getKnowledgeSnapshot } from "./store";
 
-export type SportsKnowledgeDocument = {
+export type KnowledgeDocument = {
   id: string;
   domainGroup: KnowledgeSourceId;
   provider: KnowledgeEvidence["source"];
@@ -16,11 +16,11 @@ export type SportsKnowledgeDocument = {
   sourceText: string;
 };
 
-export type SportsKnowledgeVectorRecord = SportsKnowledgeDocument & {
+export type KnowledgeVectorRecord = KnowledgeDocument & {
   vector: number[];
 };
 
-export type SportsKnowledgeVectorHit = SportsKnowledgeVectorRecord & {
+export type KnowledgeVectorHit = KnowledgeVectorRecord & {
   score: number;
 };
 
@@ -30,10 +30,10 @@ export type BuildKnowledgeDocumentOptions = {
   maxFacts?: number;
 };
 
-export function buildSportsKnowledgeDocuments(
-  snapshot: SportsKnowledgeSnapshot = getSportsKnowledgeSnapshot(),
+export function buildKnowledgeDocuments(
+  snapshot: KnowledgeSnapshot = getKnowledgeSnapshot(),
   options: BuildKnowledgeDocumentOptions = {}
-): SportsKnowledgeDocument[] {
+): KnowledgeDocument[] {
   const competitionDocs = snapshot.competitions.map((competition) => {
     const domainGroup = competition.domainGroup ?? domainGroupForLeague(competition.value);
     const sourceText = `Competition ${competition.value} belongs to ${domainGroup}. Aliases: ${competition.aliases.join(", ")}.`;
@@ -136,7 +136,7 @@ export function buildSportsKnowledgeDocuments(
   return dedupeDocuments([...competitionDocs, ...teamDocs, ...playerDocs, ...factDocs, ...activityDocs]);
 }
 
-export function knowledgeVectorHitToEvidence(hit: SportsKnowledgeVectorHit): KnowledgeEvidence {
+export function knowledgeVectorHitToEvidence(hit: KnowledgeVectorHit): KnowledgeEvidence {
   return {
     id: `knowledge-vector:${hit.id}`,
     kind: hit.kind,
@@ -152,7 +152,7 @@ export function knowledgeVectorHitToEvidence(hit: SportsKnowledgeVectorHit): Kno
   };
 }
 
-function dedupeDocuments(documents: SportsKnowledgeDocument[]) {
+function dedupeDocuments(documents: KnowledgeDocument[]) {
   const seen = new Set<string>();
   return documents.filter((document) => {
     if (seen.has(document.id)) return false;
@@ -186,11 +186,11 @@ function unique(items: string[]) {
   return Array.from(new Set(items));
 }
 
-function compareKnowledgePlayers(a: SportsKnowledgeSnapshot["players"][number], b: SportsKnowledgeSnapshot["players"][number]) {
+function compareKnowledgePlayers(a: KnowledgeSnapshot["players"][number], b: KnowledgeSnapshot["players"][number]) {
   return playerPriority(b) - playerPriority(a) || a.canonical.localeCompare(b.canonical);
 }
 
-function playerPriority(player: SportsKnowledgeSnapshot["players"][number]) {
+function playerPriority(player: KnowledgeSnapshot["players"][number]) {
   const seasons = player.activeSeasons.join(" ");
   return [
     player.provider === "local" ? 1000 : 0,

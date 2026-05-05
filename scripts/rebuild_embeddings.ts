@@ -10,8 +10,8 @@ import { upsertAssetVisualVectors } from "../server/localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../server/visionDetectionRuntime";
 import { applyEventClassification } from "../server/eventClassifier";
+import { isKnowledgeActionSpottingConfigured, runKnowledgeActionSpotting } from "../server/knowledgeAdapters";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../server/modelCapabilities";
-import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, spotSoccerNetActions } from "../server/soccernet";
 import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
 import { upsertAssetTracking } from "../server/trackingStore";
 
@@ -89,16 +89,23 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
     : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
   const detectedTimeline = applyEventClassification(applyVisionTracks(trackedV0Timeline, tracks));
   if (index) assertCapabilityAvailable(index, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
-  const soccerNetResult =
-    index?.domainIndexing?.groups.includes("sports.football") &&
+  const knowledgeActionResult =
+    index &&
     isCapabilityEnabled(index, "soccerNetActionSpotting") &&
-    (isSoccerNetActionSpottingConfigured() || isCapabilityRequired(index, "soccerNetActionSpotting"))
-      ? await spotSoccerNetActions(filePath, detectedTimeline, asset.duration)
+    (isKnowledgeActionSpottingConfigured(index) || isCapabilityRequired(index, "soccerNetActionSpotting"))
+      ? await runKnowledgeActionSpotting({
+          filePath,
+          timeline: detectedTimeline,
+          duration: asset.duration,
+          index,
+          jobId: "rebuild-embeddings",
+          assetId: asset.id
+        })
       : null;
-  if (index && soccerNetResult) {
-    assertCapabilityAvailable(index, "soccerNetActionSpotting", soccerNetResult.available, soccerNetResult.error ?? "SoccerNet action spotting unavailable.");
+  if (index && knowledgeActionResult) {
+    assertCapabilityAvailable(index, "soccerNetActionSpotting", knowledgeActionResult.available, knowledgeActionResult.error ?? "Knowledge action spotting unavailable.");
   }
-  const actionTimeline = soccerNetResult ? applySoccerNetActionSpots(detectedTimeline, soccerNetResult) : detectedTimeline;
+  const actionTimeline = knowledgeActionResult ? knowledgeActionResult.timeline : detectedTimeline;
   const domainTimeline = index ? enrichDomainTimeline({ ...asset, timeline: actionTimeline }, index, actionTimeline) : actionTimeline;
   console.error(`[rebuild] ${asset.id} domain timeline ready (${domainTimeline.length} segments)`);
   const timeline = await embedTimelineSegments(domainTimeline);
@@ -107,12 +114,8 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
   const modelTrace = [...asset.intelligence.modelTrace];
   modelTrace.push(detectorTrace, trackerTrace);
   if (!modelTrace.includes(`embedding:${getEmbeddingModelName()}`)) modelTrace.push(`embedding:${getEmbeddingModelName()}`);
-  if (soccerNetResult) {
-    modelTrace.push(
-      soccerNetResult.available
-        ? `soccernet-action:${soccerNetResult.model}:${soccerNetResult.spots.length}`
-        : `soccernet-action-unavailable:${soccerNetResult.error ?? "not configured"}`
-    );
+  if (knowledgeActionResult) {
+    modelTrace.push(knowledgeActionResult.trace);
   }
   let records: Awaited<ReturnType<typeof embedKeyframes>> = [];
   try {

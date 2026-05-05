@@ -4,7 +4,7 @@ import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
 import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
 import { isPlayerInventoryQuery } from "../queryPlanner";
-import { matchKnowledgePlayer, matchKnowledgePlayers } from "../sportsKnowledge";
+import { matchKnowledgePlayer, matchKnowledgePlayers } from "../knowledge/registry";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
 import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { cosineSimilarity, extractKeywords, normalizeSearchValue, unique, vectorize } from "./textUtils";

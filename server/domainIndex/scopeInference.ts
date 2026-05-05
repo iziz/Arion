@@ -1,5 +1,5 @@
 import type { AssetRecord, DomainScope, DomainScopeValue, PlayerIdentity, TimelineSegment } from "../../shared/types";
-import { matchCompetition, matchKnowledgePlayers, matchTeams } from "../sportsKnowledge";
+import { matchKnowledgeCompetition, matchKnowledgePlayers, matchKnowledgeTeams } from "../knowledge/registry";
 import { normalizeLabel, normalizeText, snippets } from "./utils";
 
 export function inferFootballScope(asset: AssetRecord, segment: TimelineSegment): DomainScope {
@@ -76,7 +76,7 @@ function scopeSources(asset: AssetRecord, segment: TimelineSegment): Array<{ sou
 
 function inferCompetitionScopeValue(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue | null {
   for (const source of sources) {
-    const match = matchCompetition(source.text);
+    const match = matchKnowledgeCompetition(source.text);
     if (!match) continue;
     return {
       value: match.value,
@@ -91,7 +91,7 @@ function inferCompetitionScopeValue(sources: Array<{ source: DomainScopeValue["s
 function inferTeamScopeValues(sources: Array<{ source: DomainScopeValue["source"]; text: string; confidence: number }>): DomainScopeValue[] {
   return mergeScopeValues(
     ...sources.map((source) =>
-      matchTeams(source.text).map((match) => ({
+      matchKnowledgeTeams(source.text).map((match) => ({
         value: match.value,
         confidence: Math.max(source.confidence, match.confidence),
         source: "knowledge" as const,

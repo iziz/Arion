@@ -1,5 +1,5 @@
-import type { SportsKnowledgeSnapshot } from "../shared/types";
-import { mergeSportsKnowledge, type SportsKnowledgeFact } from "./sportsKnowledge";
+import type { KnowledgeSnapshot } from "../shared/types";
+import { mergeSportsKnowledge, type SportsKnowledgeFact } from "./knowledge/adapters/sports/store";
 
 const footballDataUkBaseUrl = "https://www.football-data.co.uk/mmz4281";
 
@@ -42,7 +42,7 @@ export async function importFootballDataUkKnowledge(options: ImportOptions = {})
   teams: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 }> {
   const seasons = normalizeSeasons(options.seasons);
   const divisions = normalizeDivisions(options.divisions);

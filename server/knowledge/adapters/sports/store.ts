@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { SportsDomainGroup, SportsKnowledgeSnapshot } from "../shared/types";
+import type { KnowledgeDomainGroup, KnowledgeSnapshot } from "../../../../shared/types";
 
 export type SportsLeague = string;
 
@@ -18,8 +18,8 @@ export type SportsKnowledgePlayer = {
   shirtNumber?: number | null;
 };
 
-export type SportsKnowledgeMatchActivity = NonNullable<SportsKnowledgeSnapshot["matchActivities"]>[number];
-export type SportsKnowledgeFact = NonNullable<SportsKnowledgeSnapshot["facts"]>[number];
+export type SportsKnowledgeMatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
+export type SportsKnowledgeFact = NonNullable<KnowledgeSnapshot["facts"]>[number];
 
 export type KnowledgeMatch<T> = {
   value: T;
@@ -28,8 +28,8 @@ export type KnowledgeMatch<T> = {
   evidence: string[];
 };
 
-type SportsCompetitionRecord = { value: SportsLeague; aliases: string[]; domainGroup?: SportsDomainGroup; sport?: SportsKnowledgePlayer["sport"] };
-type SportsTeamRecord = { value: string; aliases: string[]; domainGroup?: SportsDomainGroup; league?: SportsLeague };
+type SportsCompetitionRecord = { value: SportsLeague; aliases: string[]; domainGroup?: KnowledgeDomainGroup; sport?: SportsKnowledgePlayer["sport"] };
+type SportsTeamRecord = { value: string; aliases: string[]; domainGroup?: KnowledgeDomainGroup; league?: SportsLeague };
 type ExternalSportsKnowledge = {
   competitions?: SportsCompetitionRecord[];
   teams?: SportsTeamRecord[];
@@ -151,7 +151,7 @@ export function getKnowledgePlayer(playerName: string) {
   return getSportsPlayers().find((candidate) => normalize(candidate.canonical) === normalized || candidate.aliases.some((alias) => normalize(alias) === normalized)) ?? null;
 }
 
-export function getSportsKnowledgeSnapshot() {
+export function getKnowledgeSnapshot() {
   const competitions = getSportsCompetitions();
   const teams = getSportsTeams();
   const players = getSportsPlayers();
@@ -167,7 +167,7 @@ export function getSportsKnowledgeSnapshot() {
   };
 }
 
-export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer> & { canonical: string }): SportsKnowledgeSnapshot {
+export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer> & { canonical: string }): KnowledgeSnapshot {
   const external = loadExternalKnowledge();
   const players = external.players ?? [];
   const canonical = input.canonical.trim();
@@ -196,10 +196,10 @@ export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer
     players: [...players.filter((item) => item.id !== id && playerMergeKey(item) !== key), player]
   };
   writeExternalKnowledge(next);
-  return getSportsKnowledgeSnapshot();
+  return getKnowledgeSnapshot();
 }
 
-export function deleteSportsKnowledgePlayer(id: string): SportsKnowledgeSnapshot {
+export function deleteSportsKnowledgePlayer(id: string): KnowledgeSnapshot {
   const external = loadExternalKnowledge();
   const players = [...(external.players ?? []), ...sportsPlayers].filter((player) => player.id === id);
   const deletedPlayerKeys = Array.from(new Set([...(external.deletedPlayerKeys ?? []), ...players.map(playerMergeKey)]));
@@ -211,7 +211,7 @@ export function deleteSportsKnowledgePlayer(id: string): SportsKnowledgeSnapshot
     players: (external.players ?? []).filter((player) => (players.length > 0 ? !deletedPlayerKeys.includes(playerMergeKey(player)) : player.id !== id))
   };
   writeExternalKnowledge(next);
-  return getSportsKnowledgeSnapshot();
+  return getKnowledgeSnapshot();
 }
 
 export function mergeSportsKnowledge(input: {
@@ -222,8 +222,8 @@ export function mergeSportsKnowledge(input: {
   facts?: SportsKnowledgeFact[];
 }, options: {
   replaceProviders?: Array<NonNullable<SportsKnowledgePlayer["provider"]>>;
-  replaceDomainGroups?: SportsDomainGroup[];
-} = {}): SportsKnowledgeSnapshot {
+  replaceDomainGroups?: KnowledgeDomainGroup[];
+} = {}): KnowledgeSnapshot {
   const external = loadExternalKnowledge();
   const replaceProviders = new Set(options.replaceProviders ?? []);
   const replaceDomainGroups = new Set(options.replaceDomainGroups ?? []);
@@ -242,7 +242,7 @@ export function mergeSportsKnowledge(input: {
     deletedPlayerKeys: external.deletedPlayerKeys
   };
   writeExternalKnowledge(next);
-  return getSportsKnowledgeSnapshot();
+  return getKnowledgeSnapshot();
 }
 
 function getSportsCompetitions() {
@@ -284,7 +284,7 @@ function buildKnowledgeDomains({
   players: SportsKnowledgePlayer[];
   matchActivities: SportsKnowledgeMatchActivity[];
   facts: SportsKnowledgeFact[];
-}): SportsKnowledgeSnapshot["domains"] {
+}): KnowledgeSnapshot["domains"] {
   return [
     { id: "sports.football" as const, label: "Football", sport: "football" as const },
     { id: "sports.american_football" as const, label: "American football", sport: "american_football" as const }
@@ -315,19 +315,19 @@ function normalizeTeamRecord(record: SportsTeamRecord): SportsTeamRecord {
   };
 }
 
-function domainGroupForTeam(record: SportsTeamRecord): SportsDomainGroup {
+function domainGroupForTeam(record: SportsTeamRecord): KnowledgeDomainGroup {
   return record.domainGroup ?? (record.league ? domainGroupForLeague(record.league) : "sports.football");
 }
 
-function domainGroupForLeague(league: string): SportsDomainGroup {
+function domainGroupForLeague(league: string): KnowledgeDomainGroup {
   return league === "NFL" ? "sports.american_football" : "sports.football";
 }
 
-function domainGroupForSport(sport: SportsKnowledgePlayer["sport"]): SportsDomainGroup {
+function domainGroupForSport(sport: SportsKnowledgePlayer["sport"]): KnowledgeDomainGroup {
   return sport === "american_football" ? "sports.american_football" : "sports.football";
 }
 
-function sportForDomain(domainGroup: SportsDomainGroup): SportsKnowledgePlayer["sport"] {
+function sportForDomain(domainGroup: KnowledgeDomainGroup): SportsKnowledgePlayer["sport"] {
   return domainGroup === "sports.american_football" ? "american_football" : "football";
 }
 
@@ -350,9 +350,9 @@ function factMergeKey(fact: SportsKnowledgeFact) {
 
 function shouldReplaceProviderRecord(
   provider: SportsKnowledgePlayer["provider"] | SportsKnowledgeMatchActivity["provider"] | SportsKnowledgeFact["provider"] | undefined,
-  domainGroup: SportsDomainGroup,
+  domainGroup: KnowledgeDomainGroup,
   replaceProviders: Set<NonNullable<SportsKnowledgePlayer["provider"]>>,
-  replaceDomainGroups: Set<SportsDomainGroup>
+  replaceDomainGroups: Set<KnowledgeDomainGroup>
 ) {
   if (!provider || !replaceProviders.has(provider)) return false;
   return replaceDomainGroups.size === 0 || replaceDomainGroups.has(domainGroup);
@@ -437,11 +437,11 @@ function playerMergeKey(player: SportsKnowledgePlayer) {
   return `${domainGroupForSport(player.sport)}:${player.league}:${normalize(player.canonical)}`;
 }
 
-function competition(value: SportsLeague, aliases: string[], domainGroup: SportsDomainGroup, sport: SportsKnowledgePlayer["sport"]): SportsCompetitionRecord {
+function competition(value: SportsLeague, aliases: string[], domainGroup: KnowledgeDomainGroup, sport: SportsKnowledgePlayer["sport"]): SportsCompetitionRecord {
   return { value, aliases, domainGroup, sport };
 }
 
-function team(value: string, aliases: string[], domainGroup: SportsDomainGroup, league: SportsLeague): SportsTeamRecord {
+function team(value: string, aliases: string[], domainGroup: KnowledgeDomainGroup, league: SportsLeague): SportsTeamRecord {
   return { value, aliases, domainGroup, league };
 }
 

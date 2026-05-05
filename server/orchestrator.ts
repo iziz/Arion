@@ -1,7 +1,7 @@
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, IndexRecord, OrchestrationPlan, PlayerIdentity } from "../shared/types";
 import { isKnownKnowledgeSourceId } from "../shared/knowledgeSources";
 import { trustedDomainEvents } from "./evidenceTrust";
-import { getKnowledgePlayer } from "./sportsKnowledge";
+import { getKnowledgePlayer } from "./knowledge/registry";
 
 export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: AssetRecord[], indexes: IndexRecord[]): OrchestrationPlan {
   const mode = inferMode(queryPlan);

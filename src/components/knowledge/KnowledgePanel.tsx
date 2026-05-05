@@ -1,15 +1,15 @@
 import { BarChart3, Database, Layers3, Route, X } from "lucide-react";
 import { useState } from "react";
-import type { KnowledgeSourceId, KnowledgeVectorStoreStatus, SportsKnowledgeSnapshot } from "../../../shared/types";
+import type { KnowledgeSourceId, KnowledgeVectorStoreStatus, KnowledgeSnapshot } from "../../../shared/types";
 import { EmptyState } from "../common/ConsolePrimitives";
 
-export function SportsKnowledgePanel({
-  sportsKnowledge,
+export function KnowledgePanel({
+  knowledgeSnapshot,
   selectedDomain,
   knowledgeVectorStore,
   onDelete
 }: {
-  sportsKnowledge: SportsKnowledgeSnapshot | null;
+  knowledgeSnapshot: KnowledgeSnapshot | null;
   selectedDomain: KnowledgeSourceId;
   knowledgeVectorStore: KnowledgeVectorStoreStatus | null;
   onDelete: (id: string) => Promise<void>;
@@ -17,15 +17,15 @@ export function SportsKnowledgePanel({
   const [filter, setFilter] = useState("");
   const [provider, setProvider] = useState("all");
   const normalizedFilter = filter.trim().toLowerCase();
-  const domains = sportsKnowledge?.domains ?? defaultDomains();
+  const domains = knowledgeSnapshot?.domains ?? defaultDomains();
   const selectedDomainInfo = domains.find((item) => item.id === selectedDomain) ?? domains[0];
   const domainSport = selectedDomainInfo?.sport ?? sportForDomain(selectedDomain);
-  const domainCompetitions = sportsKnowledge?.competitions.filter((competition) => competition.domainGroup === selectedDomain || competition.sport === domainSport) ?? [];
+  const domainCompetitions = knowledgeSnapshot?.competitions.filter((competition) => competition.domainGroup === selectedDomain || competition.sport === domainSport) ?? [];
   const domainCompetitionSet = new Set(domainCompetitions.map((competition) => competition.value));
-  const domainTeams = sportsKnowledge?.teams.filter((team) => team.domainGroup === selectedDomain || (team.league && domainCompetitionSet.has(team.league))) ?? [];
-  const domainPlayers = sportsKnowledge?.players.filter((player) => player.sport === domainSport || domainCompetitionSet.has(player.league)) ?? [];
-  const domainActivities = sportsKnowledge?.matchActivities?.filter((activity) => domainCompetitionSet.has(activity.competition)) ?? [];
-  const domainFacts = sportsKnowledge?.facts?.filter((fact) => domainCompetitionSet.has(fact.competition)) ?? [];
+  const domainTeams = knowledgeSnapshot?.teams.filter((team) => team.domainGroup === selectedDomain || (team.league && domainCompetitionSet.has(team.league))) ?? [];
+  const domainPlayers = knowledgeSnapshot?.players.filter((player) => player.sport === domainSport || domainCompetitionSet.has(player.league)) ?? [];
+  const domainActivities = knowledgeSnapshot?.matchActivities?.filter((activity) => domainCompetitionSet.has(activity.competition)) ?? [];
+  const domainFacts = knowledgeSnapshot?.facts?.filter((fact) => domainCompetitionSet.has(fact.competition)) ?? [];
   const players = domainPlayers.filter((player) => {
     const providerMatch = provider === "all" || (provider === "local" ? !player.provider || player.provider === "local" : player.provider === provider);
     if (!providerMatch) return false;
@@ -57,7 +57,7 @@ export function SportsKnowledgePanel({
         <Layers3 size={18} />
         <h2>Related Knowledge</h2>
       </div>
-      {sportsKnowledge ? (
+      {knowledgeSnapshot ? (
         <>
           <section className="knowledge-domain-summary" aria-label="Selected related knowledge summary">
             <div>
@@ -285,7 +285,7 @@ function kindLabel(kind: string) {
   return kind.replace(/_/g, " ");
 }
 
-function defaultDomains(): NonNullable<SportsKnowledgeSnapshot["domains"]> {
+function defaultDomains(): NonNullable<KnowledgeSnapshot["domains"]> {
   return [
     { id: "sports.football", label: "Football", sport: "football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 },
     { id: "sports.american_football", label: "American football", sport: "american_football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 }

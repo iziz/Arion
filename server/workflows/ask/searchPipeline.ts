@@ -9,7 +9,7 @@ import { searchVisualVectors } from "../../localVisualVectorStore";
 import { traceAsync } from "../../observability";
 import { resolveQueryRetrievalPlan } from "../../queryRetrievalPlan";
 import { isPlayerInventoryQuery } from "../../queryPlanner";
-import { knowledgeVectorHitToEvidence } from "../../sportsKnowledgeDocuments";
+import { knowledgeVectorHitToEvidence } from "../../knowledge/documents";
 import type { AssetRecord, IndexRecord, KnowledgeEvidence, KnowledgeSourceId, SearchResult, TimelineSegment } from "../../../shared/types";
 import { formatSearchScope } from "./answerBuilder";
 import { runOptionalAskStep } from "./stepRunner";

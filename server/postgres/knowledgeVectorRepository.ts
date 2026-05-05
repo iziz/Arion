@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import type { KnowledgeSourceId } from "../../shared/types";
-import type { SportsKnowledgeVectorRecord } from "../sportsKnowledgeDocuments";
+import type { KnowledgeVectorRecord } from "../knowledge/documents";
 import { extractKeywords } from "../intelligenceCore/textUtils";
 import { scoreKnowledgeVectorRecord } from "../knowledgeVectorScoring";
 import { buildKnowledgeVectorStatus, type KnowledgeVectorStatusRecord } from "../knowledgeVectorStatus";
@@ -11,9 +11,9 @@ import { isPgVectorCompatible, vectorLiteral } from "./vectorUtils";
 type KnowledgeVectorRow = {
   id: string;
   domain_group: KnowledgeSourceId;
-  provider: SportsKnowledgeVectorRecord["provider"];
-  kind: SportsKnowledgeVectorRecord["kind"];
-  entity_type: SportsKnowledgeVectorRecord["entityType"];
+  provider: KnowledgeVectorRecord["provider"];
+  kind: KnowledgeVectorRecord["kind"];
+  entity_type: KnowledgeVectorRecord["entityType"];
   entity_name: string;
   competition: string | null;
   season: string | null;
@@ -25,7 +25,7 @@ type KnowledgeVectorRow = {
   score?: number;
 };
 
-export async function rebuildKnowledgeVectorStore(records: SportsKnowledgeVectorRecord[]) {
+export async function rebuildKnowledgeVectorStore(records: KnowledgeVectorRecord[]) {
   await ensurePostgresStore();
   validateKnowledgeVectors(records);
   const client = await getPool().connect();
@@ -92,7 +92,7 @@ export async function getKnowledgeVectorStatus() {
   return buildKnowledgeVectorStatus(result.rows as KnowledgeVectorStatusRecord[], "postgres");
 }
 
-function rowValues(record: SportsKnowledgeVectorRecord, pgVector?: string) {
+function rowValues(record: KnowledgeVectorRecord, pgVector?: string) {
   return [
     record.id,
     record.domainGroup,
@@ -111,7 +111,7 @@ function rowValues(record: SportsKnowledgeVectorRecord, pgVector?: string) {
   ];
 }
 
-function validateKnowledgeVectors(records: SportsKnowledgeVectorRecord[]) {
+function validateKnowledgeVectors(records: KnowledgeVectorRecord[]) {
   for (const record of records) {
     if (!isPgVectorCompatible(record.vector)) {
       throw new Error(`Knowledge embedding for ${record.id} is incompatible with pgvector dimension ${record.vector.length}. Rebuild knowledge vectors with the configured model.`);
@@ -119,7 +119,7 @@ function validateKnowledgeVectors(records: SportsKnowledgeVectorRecord[]) {
   }
 }
 
-async function insertKnowledgeVector(client: PoolClient, record: SportsKnowledgeVectorRecord) {
+async function insertKnowledgeVector(client: PoolClient, record: KnowledgeVectorRecord) {
   await client.query(
     `insert into app_knowledge_vectors(
       id, domain_group, provider, kind, entity_type, entity_name, competition, season, team, match_time, text, source_text, embedding_json, embedding

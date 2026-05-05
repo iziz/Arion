@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { SportsKnowledgeSnapshot } from "../shared/types";
-import { mergeSportsKnowledge, type SportsKnowledgeFact, type SportsKnowledgeMatchActivity, type SportsKnowledgePlayer, type SportsLeague } from "./sportsKnowledge";
+import type { KnowledgeSnapshot } from "../shared/types";
+import { mergeSportsKnowledge, type SportsKnowledgeFact, type SportsKnowledgeMatchActivity, type SportsKnowledgePlayer, type SportsLeague } from "./knowledge/adapters/sports/store";
 
 const execFileAsync = promisify(execFile);
 const defaultKaggleDataset = "cclayford/statbunker-football-stats";
@@ -26,7 +26,7 @@ export async function importStatbunkerKnowledge(options: ImportOptions = {}): Pr
   matchActivities: number;
   facts: number;
   warnings: string[];
-  snapshot: SportsKnowledgeSnapshot;
+  snapshot: KnowledgeSnapshot;
 }> {
   const source = options.source ?? "kaggle";
   const warnings: string[] = [];

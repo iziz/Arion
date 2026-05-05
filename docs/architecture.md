@@ -262,7 +262,7 @@ Top-level state includes:
 - selected index, asset, segment, and job
 - current console tab: `data`, `knowledge`, `search`, or `system`
 - asset detail tab: `overview`, `workflow`, or `timeline`
-- selected sports knowledge domain
+- selected related-knowledge domain
 - dialog state for asset group and upload forms
 - busy/message state
 - pending video seek state
@@ -301,8 +301,8 @@ When a selected segment or seek time exists, it is encoded as query parameters:
    - `GET /api/metrics`
    - `GET /api/db/status`
    - `GET /api/observability`
-   - `GET /api/knowledge/sports`
-   - `GET /api/knowledge/sports/vector-store`
+   - `GET /api/knowledge`
+   - `GET /api/knowledge/vector-store`
 
 After initial hydration, it opens `GET /api/events/stream`. The hook schedules a short debounced REST refresh when it receives `asset.updated`, `job.updated`, `event.recorded`, `outbox.updated`, or `ask.operation.updated`. There is no fixed interval polling loop for progress refresh.
 
@@ -377,14 +377,14 @@ Retry actions call:
 - `system`: metrics, jobs, events, DB status, observability.
 - `data`: asset groups, uploaded assets, asset details, video player, timeline, workflow.
 - `search`: ask form, search scope, workflow trace, optional knowledge answer, results, clip detail.
-- `knowledge`: sports knowledge registry and vector store status.
+- `knowledge`: related knowledge registry and vector store status.
 
 Most specialized UI is split under:
 
 - `src/components/assets/AssetComponents.tsx`
 - `src/components/SearchPanels.tsx`
 - `src/components/evidence/EvidenceComponents.tsx`
-- `src/components/knowledge/SportsKnowledgePanel.tsx`
+- `src/components/knowledge/KnowledgePanel.tsx`
 - `src/components/common/ConsolePrimitives.tsx`
 
 ## Backend Boot Sequence
@@ -474,8 +474,8 @@ The API process also does not execute ask operations. It persists `AskOperation`
 | Indexes | `GET /api/indexes`, `POST /api/indexes`, `GET /api/indexes/:id`, `PATCH /api/indexes/:id` | `server/routes/indexRoutes.ts` | `store`, `domainConfig`, `localEmbeddingRuntime`, `events` |
 | Assets | `GET /api/assets`, `GET /api/assets/:id`, `POST /api/assets`, `POST /api/indexes/:id/assets`, clip endpoints, tracking endpoints, `POST /api/indexes/:id/analyze`, reindex/domain refinement endpoints | `server/routes/assetRoutes.ts` | `indexingWorkflow`, `redisJobQueue`, `jobState`, `intelligence`, `trackingStore`, `events` |
 | Jobs | `GET /api/jobs`, `GET /api/jobs/:id`, `POST /api/jobs/:id/retry` | `server/routes/jobRoutes.ts` | `store`, `jobState`, `redisJobQueue` |
-| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/sports/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `openaiQueryPlanner`, `sportsKnowledgeQa`, `vlmWorkerClient` |
-| Knowledge | sports snapshot, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `sportsKnowledge`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
+| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `openaiQueryPlanner`, structured knowledge answer dispatcher, `vlmWorkerClient` |
+| Knowledge | snapshot, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `knowledgeSnapshot`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
 | Vectors | `GET /api/vector-search`, `GET /api/visual-search`, `POST /api/vector-store/rebuild` | `server/routes/vectorRoutes.ts` | `localEmbeddingRuntime`, `localVisualEmbeddingRuntime`, vector stores, `vectorMaintenance` |
 | Orchestration | `GET /api/orchestrate/plan` | `server/routes/orchestrationRoutes.ts` | `orchestrator`, query planning, asset scoping |
 | Analysis | `POST /api/analyze`, `POST /api/assets/:id/analyze` | `server/routes/analysisRoutes.ts` | `analysisWorkflow` |
@@ -568,7 +568,7 @@ Ask operations are server-side async operation records. They are kept in an in-m
 - answer
 - query plan, including domain-agnostic route, response mode, and knowledge mode
 - orchestration plan
-- optional structured knowledge answer payload, currently represented by `SportsKnowledgeAnswer`
+- optional structured knowledge answer payload, currently represented by `StructuredKnowledgeAnswer`
 - search results
 - warnings
 
@@ -947,13 +947,19 @@ Analysis is exposed through:
 
 Asset-level analysis uses `analyzeAndEmit`, which requires the asset to be indexed and then calls `analyzeAsset`. Asset-group analysis calls `analyzeAssetGroup`. Successful analysis records an `analysis.completed` event, delivers matching webhooks, and records billing.
 
-## Related Knowledge And Current Sports Domain Layer
+## Related Knowledge And Domain Adapters
 
-The ask/query architecture treats sports as the current related-knowledge domain attached to an asset group, not as a top-level query route. Query planning uses `knowledgeMode` and the selected asset group's `domainIndexing.groups` to decide whether this layer can ground retrieval or answer directly.
+The ask/query architecture treats related knowledge as an asset-group capability, not as a top-level query route. Query planning uses `knowledgeMode` and the selected asset group's `domainIndexing.groups` to decide whether this layer can ground retrieval or answer directly.
 
-### Sports Knowledge Registry
+### Knowledge Registry
 
-`server/sportsKnowledge.ts` contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
+The generic knowledge facade lives in:
+
+- `server/knowledge/registry.ts`
+- `server/knowledge/documents.ts`
+- `server/knowledge/answer.ts`
+
+The current adapter implementation lives under `server/knowledge/adapters/sports/*` because the only configured domain groups today are football and American football. This adapter contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
 
 - competition matching
 - player alias matching
@@ -962,7 +968,7 @@ The ask/query architecture treats sports as the current related-knowledge domain
 - player upsert/delete
 - provider data merging
 
-The sports snapshot includes:
+The knowledge snapshot includes:
 
 - domains
 - competitions
@@ -981,11 +987,11 @@ Knowledge import routes call provider-specific importers:
 - StatsBomb open data
 - nflverse
 
-The imported knowledge is merged into the local sports knowledge store.
+The imported knowledge is merged into the current adapter store and exposed through the generic knowledge facade.
 
-### Sports Stats QA
+### Structured Knowledge QA
 
-`server/sportsKnowledgeQa.ts` is the current direct-answer adapter for `knowledge_evidence + structured_answer + direct_answer` plans when the selected related knowledge is sports data. It answers supported aggregate sports stat questions directly from imported sports knowledge. It does not treat video retrieval as the authoritative source for aggregate totals.
+`server/knowledge/answer.ts` dispatches direct structured answers for `knowledge_evidence + structured_answer + direct_answer` plans. The current sports adapter answers supported aggregate stat questions directly from imported related knowledge. It does not treat video retrieval as the authoritative source for aggregate totals.
 
 Supported metric families include football and American-football metrics:
 
@@ -1127,7 +1133,7 @@ Visual vectors:
 Knowledge vectors:
 
 - Postgres table: `app_knowledge_vectors`
-- Built from sports knowledge documents.
+- Built from related knowledge documents.
 
 Vector search uses cosine similarity through pgvector distance over compatible vector columns.
 
@@ -1464,4 +1470,4 @@ These are direct consequences of the code shape:
 - CORS is enabled globally.
 - Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.
 - Visual embedding failures do not necessarily fail indexing; they are logged and traced as unavailable unless policy requires downstream capabilities elsewhere.
-- Direct structured answers come from selected related knowledge adapters. The current sports adapter answers aggregate stat questions from imported sports knowledge, not from video moment counts.
+- Direct structured answers come from selected related knowledge adapters. The current sports adapter answers aggregate stat questions from imported related knowledge, not from video moment counts.
