@@ -124,15 +124,18 @@ export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRec
     queryPlan,
     limit: 12
   });
+  const scopedAssetById = new Map(scopedAssets.map((asset) => [asset.id, asset]));
   const moments: AnalysisMoment[] = searchResults
-    .flatMap((result) =>
-      result.segments.map((segment) => ({
-        asset: result.asset,
+    .flatMap((result) => {
+      const asset = scopedAssetById.get(result.asset.id);
+      if (!asset) return [];
+      return result.segments.map((segment) => ({
+        asset,
         segment,
         reasons: result.matchReasons.filter((reason) => reason.segmentId === segment.id),
         verification: result.verification.filter((check) => check.segmentId === segment.id)
-      }))
-    )
+      }));
+    })
     .slice(0, 18);
   const evidencePlan = buildAnalysisEvidencePlan(
     moments.map((moment) => ({

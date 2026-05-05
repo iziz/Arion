@@ -656,7 +656,7 @@ Asset job durability is split between persisted job records and Redis execution 
 flowchart TD
   Start["runIndexingJob\nasset.index or asset.reindex"] --> Probe["Probe media\nffprobe"]
   Probe --> Runtime["Local model runtime\nFFmpeg audio/VAD\nASR service\nOCR service\nvisual sampler"]
-  Runtime --> Scene["Scene detection\nPySceneDetect fallback FFmpeg"]
+  Runtime --> Scene["Scene detection\nFFmpeg default\nPySceneDetect opt-in"]
   Scene --> Timeline["Build local timeline\ntext, OCR, visual, scene data"]
   Timeline --> Keyframes["Generate keyframes\nFFmpeg"]
   Keyframes --> Snapshot["Persist timeline/keyframe snapshot"]

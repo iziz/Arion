@@ -7,6 +7,7 @@ import { logJson } from "./observability";
 const execFileAsync = promisify(execFile);
 const pythonBin = process.env.LOCAL_AI_PYTHON || process.env.PYTHON_BIN || path.resolve(".venv-ai", "bin", "python");
 const sceneScript = path.resolve("scripts", "detect_scenes.py");
+type SceneDetectionEngine = "ffmpeg" | "pyscenedetect";
 
 export type SceneBoundary = {
   at: number;
@@ -24,9 +25,16 @@ export type ShotWindow = {
 };
 
 export async function detectSceneBoundaries(filePath: string, duration: number | null): Promise<SceneBoundary[]> {
-  const pySceneDetect = await detectSceneBoundariesWithPySceneDetect(filePath, duration);
-  if (pySceneDetect.length > 0) return pySceneDetect;
+  if (resolveSceneDetectionEngine() === "pyscenedetect") {
+    const pySceneDetect = await detectSceneBoundariesWithPySceneDetect(filePath, duration);
+    if (pySceneDetect.length > 0) return pySceneDetect;
+  }
   return detectSceneBoundariesWithFfmpeg(filePath, duration);
+}
+
+function resolveSceneDetectionEngine(): SceneDetectionEngine {
+  const value = (process.env.SCENE_DETECTION_ENGINE ?? "ffmpeg").trim().toLowerCase();
+  return value === "pyscenedetect" || value === "py-scene-detect" ? "pyscenedetect" : "ffmpeg";
 }
 
 async function detectSceneBoundariesWithPySceneDetect(filePath: string, duration: number | null): Promise<SceneBoundary[]> {

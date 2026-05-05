@@ -537,10 +537,14 @@ export type AssetSummaryRecord = Pick<
   domainVlm: AssetDomainVlmSummary;
 };
 
+export type SearchResultSegment = Omit<TimelineSegment, "embedding"> & {
+  embedding: [];
+};
+
 export type SearchResult = {
-  asset: AssetRecord;
+  asset: AssetSummaryRecord;
   index: IndexRecord | null;
-  segments: TimelineSegment[];
+  segments: SearchResultSegment[];
   clips: ClipResult[];
   score: number;
   ranking: {

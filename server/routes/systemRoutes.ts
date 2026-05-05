@@ -76,7 +76,6 @@ export function registerSystemRoutes(app: Express) {
     const heartbeat = setInterval(() => {
       if (res.writableEnded) return;
       writeSseComment(res, "heartbeat");
-      void writeCurrentAskOperation().catch(() => undefined);
     }, 15000);
     const unsubscribe = registerRealtimeSubscriber(res, {
       jobId: req.query.jobId ? String(req.query.jobId) : null,

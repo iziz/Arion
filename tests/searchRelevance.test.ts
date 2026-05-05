@@ -384,6 +384,28 @@ test("birthday moment search keeps scenes with direct birthday evidence", () => 
   assert.equal(results[0]?.segments[0]?.id, "birthday");
 });
 
+test("search results expose summarized assets and stripped segment embeddings", () => {
+  const queryPlan = queryPlanForBirthday();
+  const sourceSegment = segment({
+    id: "birthday",
+    transcript: "Everyone sings happy birthday and celebrates together.",
+    embedding: [1, 0]
+  });
+  const results = searchAssets([assetWithSegments([sourceSegment])], [indexRecord()], "생일 축하 장면 찾아줘", {
+    queryPlan,
+    queryVector: [1, 0]
+  });
+  const result = results[0];
+  const assetPayload = result?.asset as Record<string, unknown> | undefined;
+
+  assert.equal(results.length, 1);
+  assert.equal(result?.asset.timelineCount, 1);
+  assert.equal(assetPayload ? "timeline" in assetPayload : true, false);
+  assert.equal(assetPayload ? "keyframes" in assetPayload : true, false);
+  assert.deepEqual(result?.segments[0]?.embedding, []);
+  assert.deepEqual(sourceSegment.embedding, [1, 0]);
+});
+
 test("birthday moment search keeps scenes with VLM-only birthday evidence", () => {
   const queryPlan = queryPlanForBirthday();
   const birthdaySegment = segment({

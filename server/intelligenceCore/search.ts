@@ -1,4 +1,5 @@
-import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, SearchMatchReason, SearchResult, TimelineSegment } from "../../shared/types";
+import { summarizeAssetRecord } from "../../shared/assetSummary";
+import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, SearchMatchReason, SearchResult, SearchResultSegment, TimelineSegment } from "../../shared/types";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
@@ -159,9 +160,9 @@ export function searchAssets(
         };
       });
       return {
-        asset,
+        asset: summarizeAssetRecord(asset),
         index,
-        segments: selectedDetails.map((item) => item.segment),
+        segments: selectedDetails.map((item) => sanitizeSearchSegment(item.segment)),
         clips: selectedDetails.map((item) => item.clip),
         score: totalScore,
         ranking: {
@@ -251,9 +252,9 @@ function searchPlayerInventoryResults(
       const recency = recencyBoost(asset.createdAt);
       const totalScore = Number((playerNames.length * 20 + segmentCandidates.length * 0.5 + source + confidence + recency).toFixed(3));
       return {
-        asset,
+        asset: summarizeAssetRecord(asset),
         index,
-        segments: selectedDetails.map((item) => item.segment),
+        segments: selectedDetails.map((item) => sanitizeSearchSegment(item.segment)),
         clips: selectedDetails.map((item) => item.clip),
         score: totalScore,
         ranking: {
@@ -285,6 +286,13 @@ function searchPlayerInventoryResults(
     .filter((result) => result.score > 0 && result.segments.length > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+function sanitizeSearchSegment(segment: TimelineSegment): SearchResultSegment {
+  return {
+    ...segment,
+    embedding: []
+  };
 }
 
 function inventoryDomainFilters(filters?: DomainSearchFilters): DomainSearchFilters | undefined {

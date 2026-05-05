@@ -1,6 +1,6 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AskOperation, AssetRecord, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
+import type { AskOperation, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import {
@@ -388,7 +388,7 @@ export function SearchConversation({
   trustFilters: SearchTrustFilters;
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   activeMoment?: { assetId: string; segmentId: string | null } | null;
-  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+  onOpenMoment?: (asset: SearchResult["asset"], segment: SearchResult["segments"][number], options?: MomentOpenOptions) => void;
 }) {
   const [expandedResultTurns, setExpandedResultTurns] = useState<Record<string, boolean>>({});
   if (turns.length === 0) return null;
@@ -475,7 +475,7 @@ function AssistantResultDisclosure({
   onToggle: () => void;
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   activeMoment?: { assetId: string; segmentId: string | null } | null;
-  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+  onOpenMoment?: (asset: SearchResult["asset"], segment: SearchResult["segments"][number], options?: MomentOpenOptions) => void;
 }) {
   const visibleMomentCount = results.reduce((sum, result) => sum + Math.min(result.segments.length, 3), 0);
   const totalMomentCount = turn.results.reduce((sum, result) => sum + Math.min(result.segments.length, 3), 0);
@@ -528,7 +528,7 @@ function AssistantResultCard({
   query: string;
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   activeMoment?: { assetId: string; segmentId: string | null } | null;
-  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+  onOpenMoment?: (asset: SearchResult["asset"], segment: SearchResult["segments"][number], options?: MomentOpenOptions) => void;
 }) {
   const ledger = buildEvidenceLedger(result.verification, result.matchReasons, result.segments);
   return (
@@ -569,7 +569,7 @@ function AssistantResultCard({
           onOpen={
             onOpenMoment
               ? async (clip) => {
-                  const segment = result.asset.timeline.find((item) => item.id === clip.segmentId) ?? result.segments.find((item) => item.id === clip.segmentId);
+                  const segment = result.segments.find((item) => item.id === clip.segmentId);
                   if (segment) onOpenMoment(result.asset, segment, { start: clip.start, end: clip.end, label: clip.title });
                 }
               : undefined
@@ -590,11 +590,11 @@ function SearchResultSegment({
   onOpenMoment
 }: {
   result: SearchResult;
-  segment: AssetRecord["timeline"][number];
+  segment: SearchResult["segments"][number];
   query: string;
   getMomentHref: (assetId: string, segmentId?: string | null, at?: number | null) => string;
   active: boolean;
-  onOpenMoment?: (asset: AssetRecord, segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+  onOpenMoment?: (asset: SearchResult["asset"], segment: SearchResult["segments"][number], options?: MomentOpenOptions) => void;
 }) {
   const content = (
     <SearchSceneEvidence
