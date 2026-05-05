@@ -21,6 +21,7 @@ import {
   type DatabaseStatus,
   type ObservabilitySnapshot
 } from "../api";
+import { getConsoleRefreshIntervalMs } from "./useConsoleRefreshPolicy";
 
 export function useConsoleData() {
   const [indexes, setIndexes] = useState<IndexRecord[]>([]);
@@ -137,6 +138,15 @@ export function useConsoleData() {
       }
     };
   }, [refresh]);
+
+  useEffect(() => {
+    const intervalMs = getConsoleRefreshIntervalMs(jobs);
+    if (intervalMs === null) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [jobs, refresh]);
 
   return {
     indexes,

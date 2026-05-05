@@ -1,5 +1,12 @@
 import type { AssetRecord, IndexRecord, JobRecord } from "../shared/types";
 import { formatDuration } from "./displayUtils";
+import {
+  getActiveWorkflowNodeIds,
+  getImpactedWorkflowNodeIds,
+  getWorkflowNodeDescription,
+  getWorkflowRetryStage,
+  getWorkflowWaitingDetailForJob
+} from "../shared/workflowNodes";
 
 export type FlowStepState = "done" | "active" | "waiting" | "skipped" | "error";
 
@@ -7,6 +14,7 @@ export type FlowStep = {
   id: string;
   label: string;
   detail: string;
+  description: string;
   state: FlowStepState;
   progress: number | null;
   retryStage: string;
@@ -132,7 +140,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     job
   });
 
-  const steps: Array<Omit<FlowStep, "progress" | "retryStage">> = [
+  const steps: Array<Omit<FlowStep, "description" | "progress" | "retryStage">> = [
     {
       id: "input",
       label: "Input video",
@@ -677,12 +685,65 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
     }
   ];
 
-  return steps.map((step) => ({
-    ...step,
-    progress: getFlowStepProgress(step, asset, job),
-    retryStage: getRetryStage(step.id),
-    serverProgress: getFlowStepServerProgress(step, job)
-  }));
+  const activeNodeIds = hasActiveJob ? getActiveWorkflowNodeIds(job) : new Set<string>();
+  const impactedNodeIds = hasActiveJob ? getImpactedWorkflowNodeIds(job) : new Set<string>();
+
+  return steps.map((step) => {
+    const currentRunStep = applyCurrentWorkflowPresentation(step, job, activeNodeIds, impactedNodeIds);
+    return {
+      ...currentRunStep,
+      description: getWorkflowNodeDescription(step.id),
+      progress: getFlowStepProgress(currentRunStep, asset, job),
+      retryStage: getWorkflowRetryStage(step.id),
+      serverProgress: getFlowStepServerProgress(currentRunStep, job)
+    };
+  });
+}
+
+type FlowStepDraft = Omit<FlowStep, "description" | "progress" | "retryStage">;
+
+function applyCurrentWorkflowPresentation(step: FlowStepDraft, job: JobRecord | null, activeNodeIds: Set<string>, impactedNodeIds: Set<string>): FlowStepDraft {
+  if (!job || (job.status !== "queued" && job.status !== "running")) return step;
+  if (activeNodeIds.has(step.id)) {
+    return {
+      ...step,
+      detail: getCurrentWorkflowActiveDetail(step.id, job, step.detail),
+      state: "active"
+    };
+  }
+
+  if (impactedNodeIds.has(step.id) && (step.state === "done" || step.state === "active")) {
+    return {
+      ...step,
+      detail: getWorkflowWaitingDetailForJob(job),
+      state: "waiting"
+    };
+  }
+
+  return step;
+}
+
+function getCurrentWorkflowActiveDetail(stepId: string, job: JobRecord, fallback: string) {
+  if (stepId === "videoVlm") {
+    const progress = getVideoVlmJobProgress(job);
+    return progress ? `Analyzing timeline keyframes ${progress.attempted}/${progress.total}` : "Analyzing timeline keyframes";
+  }
+  const details: Record<string, string> = {
+    probe: "Reading media metadata",
+    scene: "Detecting shot boundaries",
+    timeline: "Merging ASR, OCR, visual, and scene windows",
+    keyframes: "Generating segment thumbnails",
+    detector: "Running configured object detector",
+    tracker: "Running configured tracker",
+    soccernet: "Running configured action spotter",
+    domain: "Building sports domain event layer",
+    domainVlm: `Sports event VLM refinement running · ${job.progress}%`,
+    textEmbedding: "Computing semantic text embeddings",
+    visualEmbedding: "Computing visual keyframe embeddings",
+    vector: job.stage === "finalize" ? "Saving indexed asset record" : `Writing vectors (${job.stage})`,
+    ready: "Saving indexed asset record"
+  };
+  return details[stepId] ?? fallback;
 }
 
 function getDomainVlmSummary(asset: AssetRecord) {
@@ -752,7 +813,7 @@ function getVideoVlmJobProgress(job: JobRecord | null) {
   return null;
 }
 
-function getFlowStepServerProgress(step: Omit<FlowStep, "progress" | "retryStage">, job: JobRecord | null) {
+function getFlowStepServerProgress(step: Omit<FlowStep, "description" | "progress" | "retryStage">, job: JobRecord | null) {
   if (step.state !== "active") return undefined;
   if (job?.status !== "queued" && job?.status !== "running") return undefined;
   return {
@@ -824,7 +885,7 @@ function getDomainFlowState({
   return { detail: "Waiting for sports domain indexing", state: "waiting" };
 }
 
-function getFlowStepProgress(step: Omit<FlowStep, "progress" | "retryStage">, asset: AssetRecord, job: JobRecord | null) {
+function getFlowStepProgress(step: Omit<FlowStep, "description" | "progress" | "retryStage">, asset: AssetRecord, job: JobRecord | null) {
   if (step.state === "done") return 100;
   if (step.id === "videoVlm" && step.state === "active") {
     const videoVlmJobProgress = getVideoVlmJobProgress(job);
@@ -980,31 +1041,4 @@ function countLabel(value: string | undefined, noun: string) {
   const count = Number(value);
   if (!Number.isFinite(count)) return value;
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-function getRetryStage(stepId: string) {
-  const retryStages: Record<string, string> = {
-    input: "input",
-    probe: "probe",
-    audio: "audio",
-    vad: "vad",
-    asr: "asr",
-    speakers: "speakers",
-    ocr: "ocr",
-    visual: "visual",
-    scene: "timeline",
-    timeline: "timeline",
-    keyframes: "timeline",
-    videoVlm: "videoVlm",
-    detector: "visual",
-    tracker: "visual",
-    soccernet: "domain",
-    domain: "domain",
-    domainVlm: "domain",
-    textEmbedding: "vector",
-    visualEmbedding: "vector",
-    vector: "vector",
-    ready: "ready"
-  };
-  return retryStages[stepId] ?? stepId;
 }

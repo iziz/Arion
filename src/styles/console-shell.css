@@ -1516,6 +1516,13 @@ textarea:focus {
   color: #637a72;
 }
 
+.flow-node .node-description {
+  color: #335149;
+  font-size: 0.76rem;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
 .node-badge-row {
   display: flex;
   flex-wrap: wrap;

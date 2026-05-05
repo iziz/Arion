@@ -6,6 +6,7 @@ import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
 import { EmptyState } from "../common/ConsolePrimitives";
 import { OcrRoleSummary } from "../evidence/EvidenceComponents";
 import { getDomainSummary, getSearchSceneData } from "../evidence/sceneEvidence";
+import { getWorkflowLogTokens, getWorkflowRuntimeStageIds, getWorkflowSearchImpact, getWorkflowStageAliases } from "../../../shared/workflowNodes";
 
 export type AssetDetailTab = "overview" | "workflow" | "timeline";
 
@@ -360,6 +361,7 @@ export function FlowNode({
           <strong>{step.label}</strong>
         </div>
         <p>{step.detail}</p>
+        <p className="node-description">{step.description}</p>
         {step.serverProgress && (
           <span className="node-server-progress">
             server {step.serverProgress.status} · {step.serverProgress.stage} · {step.serverProgress.progress}%
@@ -582,72 +584,6 @@ function isWorkflowStageMatch(step: FlowStep, stage: string) {
   return getWorkflowStageAliases(step.id).some((alias) => normalizedStage === alias || normalizedStage.startsWith(`${alias}-`));
 }
 
-function getWorkflowRuntimeStageIds(stepId: string) {
-  const runtimeStages: Record<string, string[]> = {
-    audio: ["audio", "audio-probe"],
-    vad: ["audio"],
-    asr: ["asr"],
-    speakers: ["diarization"],
-    ocr: ["ocr"],
-    visual: ["visual"]
-  };
-  return runtimeStages[stepId] ?? [];
-}
-
-function getWorkflowStageAliases(stepId: string) {
-  const stageAliases: Record<string, string[]> = {
-    input: ["queued"],
-    probe: ["probe"],
-    audio: ["sample", "local-model-runtime", "runtime-audio"],
-    vad: ["local-model-runtime", "runtime-audio"],
-    asr: ["local-model-runtime", "runtime-asr"],
-    speakers: ["diarization", "local-model-runtime", "runtime-diarization"],
-    ocr: ["local-model-runtime", "runtime-ocr"],
-    visual: ["sample", "local-model-runtime", "runtime-visual"],
-    scene: ["timeline", "scene-detection"],
-    timeline: ["timeline"],
-    keyframes: ["keyframes"],
-    videoVlm: ["video-vlm"],
-    detector: ["vision-detection"],
-    tracker: ["vision-tracking"],
-    soccernet: ["soccernet-action"],
-    domain: ["domain-index"],
-    domainVlm: ["domain-vlm"],
-    textEmbedding: ["embed"],
-    visualEmbedding: ["visual-embedding", "visual-embedding-unavailable"],
-    vector: ["vector-upsert-text", "vector-upsert-visual", "finalize"],
-    ready: ["complete", "finalize"]
-  };
-  return stageAliases[stepId] ?? [stepId.toLowerCase()];
-}
-
-function getWorkflowLogTokens(stepId: string) {
-  const logTokens: Record<string, string[]> = {
-    input: ["upload", "queued", "indexing started"],
-    probe: ["probe", "probing", "media"],
-    audio: ["runtime:audio", "audio", "sampling"],
-    vad: ["vad", "speech", "music"],
-    asr: ["runtime:asr", "asr", "transcription", "whisper"],
-    speakers: ["runtime:diarization", "diarization", "speaker", "whisperx"],
-    ocr: ["runtime:ocr", "ocr"],
-    visual: ["runtime:visual", "visual", "frame", "sampling"],
-    scene: ["scene"],
-    timeline: ["timeline"],
-    keyframes: ["keyframe"],
-    videoVlm: ["video-vlm", "vlm scene"],
-    detector: ["vision-detection", "detecting players", "detector"],
-    tracker: ["vision-tracking", "tracking players", "tracker"],
-    soccernet: ["soccernet", "action spotting"],
-    domain: ["domain-index", "sports domain", "event layer"],
-    domainVlm: ["domain-vlm", "vlm"],
-    textEmbedding: ["semantic text", "embedding started", "embedding complete", "embed"],
-    visualEmbedding: ["visual-embedding", "visual embedding", "visual embeddings"],
-    vector: ["vector", "upsert", "writing"],
-    ready: ["complete", "finalize", "saving"]
-  };
-  return logTokens[stepId] ?? [stepId.toLowerCase()];
-}
-
 function formatWorkflowTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
@@ -680,47 +616,7 @@ function qualityLabelForStep(step: FlowStep) {
 }
 
 function searchImpactForStep(step: FlowStep) {
-  const stepId = step.id;
-  if (step.state === "error") return "Search impact: failed";
-  if (step.state === "skipped") {
-    const skippedImpacts: Record<string, string> = {
-      visual: "Search impact: visual unavailable",
-      keyframes: "Search impact: thumbnails unavailable",
-      videoVlm: "Search impact: VLM scene captions not used",
-      detector: "Search impact: detector not used",
-      tracker: "Search impact: tracker not used",
-      domain: "Search impact: domain layer unavailable",
-      domainVlm: "Search impact: sports-event refinement not applied",
-      visualEmbedding: "Search impact: visual ranking not used",
-      textEmbedding: "Search impact: semantic ranking not used",
-      vector: "Search impact: vector write unavailable"
-    };
-    return skippedImpacts[stepId] ?? "Search impact: not used";
-  }
-  const impacts: Record<string, string> = {
-    input: "Search impact: eligibility",
-    probe: "Search impact: eligibility",
-    audio: "Search impact: ASR input",
-    vad: "Search impact: ASR coverage",
-    asr: "Search impact: text searchable",
-    speakers: "Search impact: speaker context",
-    ocr: "Search impact: screen text searchable",
-    visual: "Search impact: visual profile",
-    scene: "Search impact: moment boundaries",
-    timeline: "Search impact: moment retrieval",
-    keyframes: "Search impact: thumbnails",
-    videoVlm: "Search impact: VLM scene captions",
-    detector: "Search impact: object evidence",
-    tracker: "Search impact: motion evidence",
-    soccernet: "Search impact: football actions",
-    domain: "Search impact: domain-aware",
-    domainVlm: "Search impact: sports-event refinement",
-    textEmbedding: "Search impact: semantic ranking",
-    visualEmbedding: "Search impact: visual ranking",
-    vector: "Search impact: vector DB",
-    ready: "Search impact: searchable"
-  };
-  return impacts[stepId] ?? "Search impact: diagnostic";
+  return getWorkflowSearchImpact(step.id, step.state);
 }
 
 function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {

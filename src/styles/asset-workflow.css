@@ -815,6 +815,11 @@
   overflow-wrap: anywhere;
 }
 
+.flow-node .node-description {
+  color: #c5d4d8;
+  font-weight: 760;
+}
+
 .flow-node > em {
   width: fit-content;
   border-radius: 999px;
