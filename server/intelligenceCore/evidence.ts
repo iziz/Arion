@@ -661,7 +661,7 @@ function buildLexicalMatchSources(asset: AssetRecord, segment: TimelineSegment) 
 }
 
 function shouldIncludeSportsVisionReasons(filters?: DomainSearchFilters, queryPlan?: DomainQueryPlan) {
-  if (queryPlan?.route === "sports_moment_retrieval" || queryPlan?.route === "sports_analysis" || queryPlan?.route === "sports_stat_qa") {
+  if (queryPlan?.knowledgeMode !== "none") {
     return true;
   }
   return Boolean(filters && (filters.competition || filters.season || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role));

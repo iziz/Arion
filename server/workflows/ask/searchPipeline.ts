@@ -206,7 +206,7 @@ function shouldUseRelatedKnowledgeLayer(
   const activeSources = activeRelatedKnowledgeSources(indexes, indexId);
   if (domainGroup) return activeSources.has(domainGroup);
   if (queryPlan.intent.domain && activeSources.has(queryPlan.intent.domain)) return true;
-  return isRelatedKnowledgeRoute(queryPlan.route) && activeSources.size > 0;
+  return queryPlan.knowledgeMode !== "none" && activeSources.size > 0;
 }
 
 function resolveRelatedKnowledgeSourceId(indexes: IndexRecord[], indexId: string | undefined, domainGroup: AskRequest["domainGroup"]): KnowledgeSourceId | undefined {
@@ -223,10 +223,6 @@ function activeRelatedKnowledgeSources(indexes: IndexRecord[], indexId: string |
     for (const group of index.domainIndexing.groups) sources.add(group);
   }
   return sources;
-}
-
-function isRelatedKnowledgeRoute(route: SearchPipelineRequest["queryPlan"]["route"]) {
-  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }
 
 function dedupeKnowledgeEvidence(evidence: KnowledgeEvidence[]) {

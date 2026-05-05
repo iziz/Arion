@@ -4,7 +4,9 @@ import { buildRetrievalPlan, sanitizeEvidenceTerms } from "./queryRetrievalPlan"
 import { getSportsKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, matchKnowledgePlayers } from "./sportsKnowledge";
 
 type OpenAiPlan = {
-  route?: DomainQueryPlan["route"];
+  route?: string;
+  responseMode?: string;
+  knowledgeMode?: string;
   questionType?: "moment_retrieval" | "stat_qa";
   metric?: DomainQueryPlan["intent"]["metric"];
   competition?: string | null;
@@ -27,14 +29,20 @@ type OpenAiPlan = {
 const planCache = new Map<string, { expiresAt: number; plan: DomainQueryPlan }>();
 const allowedQuestionTypes = new Set(["moment_retrieval", "stat_qa"]);
 const allowedRoutes = new Set<DomainQueryPlan["route"]>([
-  "video_summary",
-  "generic_video_qa",
-  "sports_moment_retrieval",
-  "sports_analysis",
-  "sports_stat_qa",
-  "asset_lookup",
+  "asset_evidence",
+  "knowledge_evidence",
+  "asset_catalog",
   "unsupported"
 ]);
+const allowedResponseModes = new Set<DomainQueryPlan["responseMode"]>([
+  "moment_retrieval",
+  "grounded_answer",
+  "summary",
+  "analysis",
+  "structured_answer",
+  "asset_lookup"
+]);
+const allowedKnowledgeModes = new Set<DomainQueryPlan["knowledgeMode"]>(["none", "grounding", "direct_answer"]);
 const allowedMetrics = new Set([
   "goals",
   "assists",
@@ -104,7 +112,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
           {
             role: "system",
             content:
-              "You are a query router for a video intelligence platform with optional related knowledge. Return only JSON. Choose the route from the allowed route contract, extract structured sports constraints only when the route is sports-specific, and do not invent statistics or facts. Use null when uncertain. Object, person, scene, text, speech, or visual-moment searches inside a video are generic_video_qa, not unsupported, even when they are broad or low-confidence. Use unsupported only for requests that cannot be answered from indexed video or related knowledge. Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown."
+              "You are a query router for a video intelligence platform with optional related knowledge attached to the selected asset group. Return only JSON. Choose route only by evidence source: asset_evidence for indexed video evidence, knowledge_evidence for a direct answer from selected related knowledge, asset_catalog for asset/group lookup, unsupported when neither indexed assets nor selected related knowledge can answer. Do not encode domain names such as sports in route. Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering a question from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for structured related-knowledge facts, asset_lookup for catalog queries. Choose knowledgeMode by how related knowledge is used: none, grounding, or direct_answer. Extract structured constraints only when supported by the selected related-knowledge context or explicit wording, and do not invent statistics or facts. Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown."
           },
           {
             role: "user",
@@ -113,7 +121,9 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               defaultFootballSeasonRule: "For Premier League, current season is YYYY-YY starting in July. In May 2026 this is 2025-26.",
               allowed: {
                 route: Array.from(allowedRoutes),
-                questionType: ["moment_retrieval", "stat_qa"],
+                responseMode: Array.from(allowedResponseModes),
+                knowledgeMode: Array.from(allowedKnowledgeModes),
+                legacyQuestionType: ["moment_retrieval", "stat_qa"],
                 metric: Array.from(allowedMetrics),
                 eventType: Array.from(allowedEventTypes),
                 passType: Array.from(allowedPassTypes),
@@ -125,8 +135,9 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               explicitFilters,
               query,
               outputShape: {
-                route: "video_summary | generic_video_qa | sports_moment_retrieval | sports_analysis | sports_stat_qa | asset_lookup | unsupported",
-                questionType: "moment_retrieval | stat_qa",
+                route: "asset_evidence | knowledge_evidence | asset_catalog | unsupported",
+                responseMode: "moment_retrieval | grounded_answer | summary | analysis | structured_answer | asset_lookup",
+                knowledgeMode: "none | grounding | direct_answer",
                 metric: "goals | assists | appearances | minutes | cards | points | touchdowns | passing_yards | passing_touchdowns | rushing_yards | receiving_yards | sacks | interceptions | null",
                 competition: "string | null",
                 season: "string | null",
@@ -182,19 +193,50 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     llmFilters.competition ?? explicit.competition ?? base.domainFilters.competition
   );
   const wantsLeaderboardGrounding = Boolean(metric && isStatLeaderboardQuery(base.originalQuery) && !llmFilters.player && !base.domainFilters.player);
+  const legacyPlan = legacyRoutePlan(llm.route);
   const llmRoute = allowedValue(llm.route, allowedRoutes) as DomainQueryPlan["route"] | undefined;
-  let route = llmRoute ?? routeFromLegacyQuestionType(llm.questionType, metric) ?? base.route;
-  if (route === "unsupported" && isMomentSearchQuery(base.originalQuery) && hasRetrievalPlan(llm)) route = "generic_video_qa";
-  if (!llmRoute && hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) && !isSportsRoute(route)) route = base.route;
-  if (route !== "unsupported" && wantsLeaderboardGrounding) route = "sports_stat_qa";
-  if (route !== "unsupported" && hasActiveSportsFilters(explicit) && !isSportsRoute(route)) route = base.route;
-  if (route !== "unsupported" && route === "sports_stat_qa" && base.route !== "sports_stat_qa" && !isStatLeaderboardQuery(base.originalQuery)) {
-    route = hasActiveSportsFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "sports_moment_retrieval" : base.route;
+  let route = llmRoute ?? legacyPlan?.route ?? base.route;
+  let responseMode =
+    (allowedValue(llm.responseMode, allowedResponseModes) as DomainQueryPlan["responseMode"] | undefined) ??
+    legacyPlan?.responseMode ??
+    responseModeFromLegacyQuestionType(llm.questionType, metric) ??
+    base.responseMode;
+  let knowledgeMode =
+    (allowedValue(llm.knowledgeMode, allowedKnowledgeModes) as DomainQueryPlan["knowledgeMode"] | undefined) ??
+    legacyPlan?.knowledgeMode ??
+    base.knowledgeMode;
+  if (route === "unsupported" && isMomentSearchQuery(base.originalQuery) && hasRetrievalPlan(llm)) {
+    route = "asset_evidence";
+    responseMode = base.responseMode === "summary" || base.responseMode === "analysis" || base.responseMode === "grounded_answer" ? base.responseMode : "moment_retrieval";
+    knowledgeMode = base.knowledgeMode;
   }
-  if (route !== "unsupported" && route === "sports_stat_qa" && !metric) route = base.route === "sports_stat_qa" ? "sports_stat_qa" : "generic_video_qa";
-  const questionType = questionTypeForRoute(route);
+  if (!llmRoute && !legacyPlan && hasActiveDomainFilters(base.domainFilters) && !hasActiveDomainFilters(llmFilters) && knowledgeMode === "none") {
+    route = base.route;
+    responseMode = base.responseMode;
+    knowledgeMode = base.knowledgeMode;
+  }
+  if (route !== "unsupported" && wantsLeaderboardGrounding) {
+    route = "knowledge_evidence";
+    responseMode = "structured_answer";
+    knowledgeMode = "direct_answer";
+  }
+  if (route !== "unsupported" && hasActiveDomainFilters(explicit) && knowledgeMode === "none") {
+    route = base.route;
+    responseMode = base.responseMode;
+    knowledgeMode = base.knowledgeMode;
+  }
+  if (route !== "unsupported" && responseMode === "structured_answer" && base.responseMode !== "structured_answer" && !isStatLeaderboardQuery(base.originalQuery)) {
+    route = hasActiveDomainFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "asset_evidence" : base.route;
+    responseMode = hasActiveDomainFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "moment_retrieval" : base.responseMode;
+    knowledgeMode = hasActiveDomainFilters({ ...base.domainFilters, ...llmFilters, ...explicit }) ? "grounding" : base.knowledgeMode;
+  }
+  if (route !== "unsupported" && responseMode === "structured_answer" && !metric) {
+    route = base.responseMode === "structured_answer" ? "knowledge_evidence" : "asset_evidence";
+    responseMode = base.responseMode === "structured_answer" ? "structured_answer" : "grounded_answer";
+    knowledgeMode = base.responseMode === "structured_answer" ? "direct_answer" : "none";
+  }
   const rawDomainFilters = compactFilters(
-    route === "sports_stat_qa"
+    responseMode === "structured_answer"
       ? {
           ...base.domainFilters,
           ...llmFilters,
@@ -204,12 +246,12 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
           fieldZone: undefined,
           role: undefined
         }
-      : isSportsRoute(route)
+      : knowledgeMode !== "none"
         ? { ...base.domainFilters, ...llmFilters, ...explicit }
         : { ...explicit }
   );
-  const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, route, explicit);
-  const semanticQuery = !llmRoute && hasActiveSportsFilters(base.domainFilters) && !hasActiveSportsFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
+  const domainFilters = sanitizeInferredFilters(rawDomainFilters, base.originalQuery, responseMode, knowledgeMode, explicit);
+  const semanticQuery = !llmRoute && !legacyPlan && hasActiveDomainFilters(base.domainFilters) && !hasActiveDomainFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
   const retrieval = buildRetrievalPlan(base.originalQuery, semanticQuery, {
     textQuery: llm.retrieval?.textQuery ?? semanticQuery,
     visualQuery: llm.retrieval?.visualQuery ?? semanticQuery,
@@ -227,11 +269,13 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
     retrieval,
     domainFilters,
     route,
+    responseMode,
+    knowledgeMode,
     intent: {
       ...base.intent,
-      domain: isSportsRoute(route) && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
-      questionType,
-      metric: route === "sports_stat_qa" ? metric : null,
+      domain: knowledgeMode !== "none" && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
+      questionType: responseMode,
+      metric: responseMode === "structured_answer" ? metric : null,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -250,10 +294,11 @@ function mergeOpenAiPlan(base: DomainQueryPlan, llm: OpenAiPlan, explicitFilters
 function sanitizeInferredFilters(
   filters: DomainSearchFilters,
   query: string,
-  route: DomainQueryPlan["route"],
+  responseMode: DomainQueryPlan["responseMode"],
+  knowledgeMode: DomainQueryPlan["knowledgeMode"],
   explicitFilters: DomainSearchFilters
 ) {
-  if (!isSportsRoute(route) || route === "sports_stat_qa") return filters;
+  if (knowledgeMode === "none" || responseMode === "structured_answer") return filters;
   const next = { ...filters };
   if (!explicitFilters.season && !hasExplicitSeason(query)) delete next.season;
   if (!explicitFilters.fieldZone && !hasExplicitFieldZone(query)) delete next.fieldZone;
@@ -261,21 +306,32 @@ function sanitizeInferredFilters(
   return compactFilters(next);
 }
 
-function routeFromLegacyQuestionType(questionType: OpenAiPlan["questionType"], metric: DomainQueryPlan["intent"]["metric"]) {
+function responseModeFromLegacyQuestionType(questionType: OpenAiPlan["questionType"], metric: DomainQueryPlan["intent"]["metric"]) {
   if (!allowedQuestionTypes.has(String(questionType))) return undefined;
-  if (questionType === "stat_qa" && metric) return "sports_stat_qa" as const;
+  if (questionType === "stat_qa" && metric) return "structured_answer" as const;
   return undefined;
 }
 
-function questionTypeForRoute(route: DomainQueryPlan["route"]): DomainQueryPlan["intent"]["questionType"] {
-  return route === "sports_stat_qa" ? "stat_qa" : "moment_retrieval";
+function legacyRoutePlan(route: unknown): Pick<DomainQueryPlan, "route" | "responseMode" | "knowledgeMode"> | undefined {
+  switch (route) {
+    case "video_summary":
+      return { route: "asset_evidence", responseMode: "summary", knowledgeMode: "none" };
+    case "generic_video_qa":
+      return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "none" };
+    case "sports_moment_retrieval":
+      return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "grounding" };
+    case "sports_analysis":
+      return { route: "asset_evidence", responseMode: "analysis", knowledgeMode: "grounding" };
+    case "sports_stat_qa":
+      return { route: "knowledge_evidence", responseMode: "structured_answer", knowledgeMode: "direct_answer" };
+    case "asset_lookup":
+      return { route: "asset_catalog", responseMode: "asset_lookup", knowledgeMode: "none" };
+    default:
+      return undefined;
+  }
 }
 
-function isSportsRoute(route: DomainQueryPlan["route"]) {
-  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
-}
-
-function hasActiveSportsFilters(filters: DomainSearchFilters) {
+function hasActiveDomainFilters(filters: DomainSearchFilters) {
   return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
 }
 

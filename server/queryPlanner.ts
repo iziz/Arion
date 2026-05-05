@@ -14,8 +14,8 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const playerMatch = matchSearchPlayer(originalQuery);
   let competition = explicitFilters.competition ?? inferCompetition(originalQuery);
   if (!competition && playerMatch) competition = playerMatch.value.league;
-  const sportsContext = hasSportsIntentContext(normalized, explicitFilters, competition, Boolean(playerMatch));
-  const statMetric = sportsContext ? inferStatMetric(normalized, competition) : null;
+  const relatedKnowledgeContext = hasRelatedKnowledgeIntentContext(normalized, explicitFilters, competition, Boolean(playerMatch));
+  const statMetric = relatedKnowledgeContext ? inferStatMetric(normalized, competition) : null;
   const statQuestion = Boolean(
     statMetric &&
       (hasAny(normalized, ["how many", "number of", "몇", "얼마나", "득점 수", "기록"]) || isStatLeaderboardQuery(originalQuery))
@@ -56,14 +56,14 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     confidence += 0.08;
   }
 
-  const receiveIntent = !statQuestion && sportsContext && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
-  const shotIntent = !statQuestion && sportsContext && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
-  const dribbleIntent = sportsContext && hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
-  const saveIntent = sportsContext && hasAny(normalized, ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"]);
-  const pressureIntent = sportsContext && hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
-  const scrambleIntent = sportsContext && hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
-  const pocketEscapeIntent = sportsContext && hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
-  const throwOnRunIntent = sportsContext && hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
+  const receiveIntent = !statQuestion && relatedKnowledgeContext && hasAny(normalized, ["receive", "receives", "received", "receiver", "receiving", "받는", "받아", "받았다", "리시브"]);
+  const shotIntent = !statQuestion && relatedKnowledgeContext && hasAny(normalized, ["goal", "goals", "scoring", "scored", "score", "shot", "shoot", "finish", "득점", "골", "슛", "슈팅", "마무리"]);
+  const dribbleIntent = relatedKnowledgeContext && hasAny(normalized, ["dribble", "dribbles", "dribbling", "take on", "takes on", "드리블", "돌파"]);
+  const saveIntent = relatedKnowledgeContext && hasAny(normalized, ["save", "saves", "keeper save", "goalkeeper save", "선방", "세이브"]);
+  const pressureIntent = relatedKnowledgeContext && hasAny(normalized, ["pressure", "under pressure", "pressured", "압박"]);
+  const scrambleIntent = relatedKnowledgeContext && hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
+  const pocketEscapeIntent = relatedKnowledgeContext && hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
+  const throwOnRunIntent = relatedKnowledgeContext && hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
   if (receiveIntent || inferred.passType) {
     inferred.eventType = "pass_receive";
     inferred.role = "receiver";
@@ -93,10 +93,10 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   }
 
   if (!inferred.eventType && (inferred.player || inferred.competition || inferred.fieldZone)) {
-    warnings.push(statQuestion ? "This is a stats question; use knowledge QA instead of moment retrieval for the direct answer." : "No explicit event was detected, so semantic search remains broad.");
+    warnings.push(statQuestion ? "This is a structured knowledge question; use related knowledge instead of moment retrieval for the direct answer." : "No explicit event was detected, so semantic search remains broad.");
   }
   if (statQuestion && isMomentSearchQuery(originalQuery)) {
-    warnings.push("This query needs sports-knowledge grounding before searching indexed video moments.");
+    warnings.push("This query needs related-knowledge grounding before searching indexed video moments.");
   }
   if (inferred.player && inferred.role === "receiver") {
     warnings.push("Player role is inferred from language; detector/tracker evidence is not available yet.");
@@ -108,7 +108,7 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const domainFilters = compactFilters({ ...inferred, ...compactFilters(explicitFilters) });
   const semanticQuery = playerInventory ? "mentioned player names" : buildSemanticQuery(originalQuery, domainFilters);
   const rewrittenQuery = playerInventory ? "Extract mentioned player names from indexed timeline text and domain scopes." : buildRewrittenQuery(domainFilters, semanticQuery);
-  const route = inferQueryRoute(originalQuery, statQuestion, domainFilters, playerInventory);
+  const routePlan = inferQueryRoute(originalQuery, statQuestion, domainFilters, playerInventory);
   const retrieval = buildRetrievalPlan(originalQuery, semanticQuery);
 
   return {
@@ -117,11 +117,13 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     rewrittenQuery,
     retrieval,
     domainFilters,
-    route,
+    route: routePlan.route,
+    responseMode: routePlan.responseMode,
+    knowledgeMode: routePlan.knowledgeMode,
     intent: {
-      domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
-      questionType: route === "sports_stat_qa" ? "stat_qa" : "moment_retrieval",
-      metric: route === "sports_stat_qa" ? statMetric : null,
+      domain: routePlan.knowledgeMode !== "none" && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
+      questionType: routePlan.responseMode,
+      metric: routePlan.responseMode === "structured_answer" ? statMetric : null,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -138,25 +140,28 @@ function inferQueryRoute(
   statQuestion: boolean,
   domainFilters: DomainSearchFilters,
   playerInventory: boolean
-): DomainQueryPlan["route"] {
-  if (statQuestion) return "sports_stat_qa";
-  if (playerInventory) return "asset_lookup";
-  if (hasSportsRouteEvidence(domainFilters)) {
-    return /분석|비교|패턴|리포트|analy[sz]e|compare|pattern|report/i.test(query)
-      ? "sports_analysis"
-      : "sports_moment_retrieval";
+): Pick<DomainQueryPlan, "route" | "responseMode" | "knowledgeMode"> {
+  if (statQuestion) return { route: "knowledge_evidence", responseMode: "structured_answer", knowledgeMode: "direct_answer" };
+  if (playerInventory) return { route: "asset_catalog", responseMode: "asset_lookup", knowledgeMode: "none" };
+  const hasDomainFilters = hasDomainFilterEvidence(domainFilters);
+  if (hasDomainFilters) {
+    return {
+      route: "asset_evidence",
+      responseMode: isAnalysisQuery(query) ? "analysis" : isSummaryQuery(query) ? "summary" : isGroundedAnswerQuery(query) ? "grounded_answer" : "moment_retrieval",
+      knowledgeMode: "grounding"
+    };
   }
-  if (/요약|정리|summari[sz]e|summary|recap/i.test(query)) return "video_summary";
-  if (/영상|비디오|asset|video|clip|있|찾|검색|보여|질문|what|where|when|does|is there/i.test(query)) return "generic_video_qa";
-  return "generic_video_qa";
+  if (isSummaryQuery(query)) return { route: "asset_evidence", responseMode: "summary", knowledgeMode: "none" };
+  if (isGroundedAnswerQuery(query)) return { route: "asset_evidence", responseMode: "grounded_answer", knowledgeMode: "none" };
+  return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "none" };
 }
 
-function hasSportsRouteEvidence(filters: DomainSearchFilters) {
+function hasDomainFilterEvidence(filters: DomainSearchFilters) {
   return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
 }
 
-function hasSportsIntentContext(normalized: string, explicitFilters: DomainSearchFilters, competition: string | undefined, hasPlayerMatch: boolean) {
-  if (competition || hasPlayerMatch || hasSportsRouteEvidence(explicitFilters)) return true;
+function hasRelatedKnowledgeIntentContext(normalized: string, explicitFilters: DomainSearchFilters, competition: string | undefined, hasPlayerMatch: boolean) {
+  if (competition || hasPlayerMatch || hasDomainFilterEvidence(explicitFilters)) return true;
   return hasAny(normalized, [
     "football",
     "soccer",
@@ -183,6 +188,24 @@ function hasSportsIntentContext(normalized: string, explicitFilters: DomainSearc
     "터치다운",
     "쿼터백"
   ]);
+}
+
+function isSummaryQuery(query: string) {
+  return /요약|정리|summari[sz]e|summary|recap/i.test(query);
+}
+
+function isAnalysisQuery(query: string) {
+  return /분석|비교|패턴|리포트|analy[sz]e|compare|pattern|report/i.test(query);
+}
+
+function isGroundedAnswerQuery(query: string) {
+  const readable = readableText(query);
+  const normalized = normalize(query);
+  if (isMomentSearchQuery(query) || isSummaryQuery(query) || isAnalysisQuery(query)) return false;
+  return (
+    /뭐|무엇|어떤|어때|설명|스타일|왜|누구|어디|언제|얼마|보이나|입고|착용|말해/.test(readable) ||
+    /\b(what|which|who|where|when|why|how|describe|explain|style|look like|wearing|worn|answer)\b/.test(normalized)
+  );
 }
 
 export function isPlayerInventoryQuery(query: string) {

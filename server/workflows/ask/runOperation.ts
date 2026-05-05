@@ -45,11 +45,11 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       const plan = await planDomainQueryWithOpenAi(request.query, planningFilters);
       return {
         value: plan,
-        output: `${plan.route.replace(/_/g, " ")} · ${plan.rewrittenQuery} · ${Math.round(plan.confidence * 100)}%`
+        output: `${plan.route.replace(/_/g, " ")} · ${plan.responseMode.replace(/_/g, " ")} · ${plan.knowledgeMode.replace(/_/g, " ")} · ${Math.round(plan.confidence * 100)}%`
       };
     });
 
-    const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && queryPlan.route === "sports_stat_qa";
+    const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && isDirectKnowledgeAnswerPlan(queryPlan);
     const sportsAnswer = shouldRunKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
@@ -67,13 +67,13 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       : disabledSportsKnowledgeAnswer(
           queryPlan,
           request.useKnowledgeLayer
-            ? "Knowledge direct answer is skipped for non-stat video retrieval."
+            ? "Knowledge direct answer is skipped for this retrieval workflow."
             : "Knowledge layer is disabled for this search.",
           request.useKnowledgeLayer
             ? "Knowledge direct answer was skipped because the route is not a knowledge-answer route."
             : "Knowledge layer was disabled by the selected search scope."
         );
-    if (!shouldRunKnowledgeAnswer && queryPlan.route === "sports_stat_qa") {
+    if (!shouldRunKnowledgeAnswer && isDirectKnowledgeAnswerPlan(queryPlan)) {
       skipAskStep(entry, {
         id: "knowledge_answer",
         label: "Knowledge answer",
@@ -102,17 +102,17 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       };
     });
 
-    if (queryPlan.route === "sports_stat_qa" && sportsAnswer.applicable && sportsAnswer.route === "stat_qa" && !continueWithRetrieval) {
+    if (isDirectKnowledgeAnswerPlan(queryPlan) && sportsAnswer.applicable && sportsAnswer.route === "stat_qa" && !continueWithRetrieval) {
       skipAskStep(entry, {
         id: "retrieve",
         label: "Moment retrieval",
         owner: "retrieval",
         input: queryPlan.semanticQuery,
-        output: "Skipped because this is a structured sports statistics question."
+        output: "Skipped because this is a direct structured knowledge question."
       });
       completeAskOperation(entry, {
         operation: entry.operation,
-        route: "stat_qa",
+        route: "structured_answer",
         answer: sportsAnswer.answer,
         queryPlan,
         orchestrationPlan,
@@ -148,7 +148,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
           const nextAnswer = buildAskAnalysisAnswer(results, queryPlan, orchestrationPlan);
           return {
             value: nextAnswer,
-            output: results.length > 0 ? analysisOutputForRoute(queryPlan.route) : "Skipped because retrieval returned no moments.",
+            output: results.length > 0 ? analysisOutputForMode(queryPlan.responseMode) : "Skipped because retrieval returned no moments.",
             status: results.length > 0 ? "succeeded" : "skipped"
           };
         })
@@ -170,10 +170,14 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
   }
 }
 
-function analysisOutputForRoute(route: Parameters<typeof buildAskAnalysisAnswer>[1]["route"]) {
-  if (route === "video_summary") return "Generated a local video summary from retrieved evidence.";
-  if (route === "sports_analysis") return "Generated a local sports pattern summary from retrieved moments.";
+function analysisOutputForMode(responseMode: Parameters<typeof buildAskAnalysisAnswer>[1]["responseMode"]) {
+  if (responseMode === "summary") return "Generated a local video summary from retrieved evidence.";
+  if (responseMode === "analysis") return "Generated a local pattern analysis from retrieved moments.";
   return "Generated a local grounded answer from retrieved moments.";
+}
+
+function isDirectKnowledgeAnswerPlan(queryPlan: Parameters<typeof answerSportsKnowledgeQuestion>[0]) {
+  return queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.knowledgeMode === "direct_answer";
 }
 
 function disabledSportsKnowledgeAnswer(

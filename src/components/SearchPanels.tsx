@@ -16,7 +16,7 @@ export type SearchConversationTurn = {
   id: string;
   query: string;
   answer: string;
-  route: "stat_qa" | "moment_retrieval" | "empty" | "error";
+  route: "structured_answer" | "moment_retrieval" | "empty" | "error";
   sportsAnswer: SportsKnowledgeAnswer | null;
   results: SearchResult[];
   plan: DomainQueryPlan | null;
@@ -273,7 +273,11 @@ export function SearchWorkflowTrace({
 
   if (!operation && !queryPlan && !orchestrationPlan) return null;
   const items = buildWorkflowItems(operation, queryPlan, orchestrationPlan, totalResults, visibleResults);
-  const route = operation?.route === "pending" ? "running" : queryPlan?.route.replace(/_/g, " ") ?? operation?.route.replace(/_/g, " ") ?? "search";
+  const route = operation?.route === "pending"
+    ? "running"
+    : queryPlan
+      ? `${queryPlan.route.replace(/_/g, " ")} · ${queryPlan.responseMode.replace(/_/g, " ")}`
+      : operation?.route.replace(/_/g, " ") ?? "search";
   const summaryChips = buildWorkflowSummaryChips(operation, queryPlan, orchestrationPlan, totalResults, visibleResults, items.length);
 
   return (
@@ -391,7 +395,7 @@ export function SearchConversation({
               <p>{turn.query}</p>
             </div>
             <div className={`assistant-bubble ${turn.route} ${turn.results.length > 0 ? "has-results" : ""}`}>
-              <span>{turn.route === "stat_qa" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
+              <span>{turn.route === "structured_answer" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
               {turn.answer && !running && <p>{turn.answer}</p>}
               {running && (
                 <div className="assistant-search-status" aria-live="polite">
@@ -616,6 +620,8 @@ function buildWorkflowSummaryChips(
     { label: "steps", value: String(itemCount) },
     operation ? { label: "status", value: formatWorkflowStatus(operation.status) } : null,
     queryPlan ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
+    queryPlan ? { label: "answer", value: queryPlan.responseMode.replace(/_/g, " ") } : null,
+    queryPlan ? { label: "knowledge", value: queryPlan.knowledgeMode.replace(/_/g, " ") } : null,
     queryPlan ? { label: "plan", value: `${Math.round(queryPlan.confidence * 100)}%` } : null,
     orchestrationPlan ? { label: "engine", value: orchestrationPlan.retrieval.engine.replace(/_/g, " ") } : null,
     totalResults > 0 ? { label: "results", value: `${visibleResults}/${totalResults}` } : null
@@ -673,6 +679,8 @@ function buildQueryPlanWorkflowItem(queryPlan: DomainQueryPlan | null, step: Ask
   const filterEntries = Object.entries(queryPlan?.domainFilters ?? {}).filter(([, value]) => Boolean(value));
   const intentChips = [
     queryPlan?.route ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
+    queryPlan?.responseMode ? { label: "answer", value: queryPlan.responseMode.replace(/_/g, " ") } : null,
+    queryPlan?.knowledgeMode ? { label: "knowledge", value: queryPlan.knowledgeMode.replace(/_/g, " ") } : null,
     queryPlan?.intent.eventType ? { label: "event", value: queryPlan.intent.eventType } : null,
     queryPlan?.intent.passType ? { label: "pass", value: queryPlan.intent.passType } : null,
     queryPlan?.intent.fieldZone ? { label: "zone", value: queryPlan.intent.fieldZone } : null

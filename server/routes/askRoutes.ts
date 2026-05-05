@@ -35,7 +35,7 @@ export function registerAskRoutes(app: Express) {
     const useKnowledgeLayer = req.query.useKnowledgeLayer !== "false";
     const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
     const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
-    if (useKnowledgeLayer && queryPlan.route === "sports_stat_qa") {
+    if (useKnowledgeLayer && queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.knowledgeMode === "direct_answer") {
       const sportsAnswer = answerSportsKnowledgeQuestion(queryPlan);
       const scopedAssets = scopeAssetsForQuery(assets, {
         query,
@@ -71,8 +71,8 @@ export function registerAskRoutes(app: Express) {
         return;
       }
       res.status(409).json({
-        error: "This query asks for aggregate sports statistics. Use /api/knowledge/sports/answer instead of /api/search.",
-        route: "stat_qa",
+        error: "This query asks for a direct structured knowledge answer. Use the related knowledge answer endpoint instead of /api/search.",
+        route: "structured_answer",
         answer: sportsAnswer
       });
       return;

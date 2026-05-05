@@ -57,6 +57,9 @@ export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: Domai
   if (isGenericVideoSummaryRequest(queryPlan)) {
     return buildGenericVideoSummaryAnswer(results, queryPlan, topMoments, sourceProfile, korean);
   }
+  if (queryPlan.knowledgeMode === "none") {
+    return buildGenericGroundedAnswer(results, queryPlan, topMoments, sourceProfile, korean);
+  }
   const features = collectMomentFeatures(results);
   const subject = queryPlan.intent.player ?? topGroup(features.map((feature) => feature.player).filter(Boolean) as string[])?.value ?? "the requested player";
   const headline = korean ? buildStyleHeadlineKo(features) : buildStyleHeadlineEn(features);
@@ -89,27 +92,97 @@ export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: Domai
 }
 
 function isGenericVideoSummaryRequest(queryPlan: DomainQueryPlan) {
-  if (queryPlan.route === "video_summary") return true;
-  return /요약|정리|summari[sz]e|summary|recap/i.test(queryPlan.originalQuery) && !hasSportsIntent(queryPlan);
+  if (queryPlan.responseMode === "summary") return true;
+  return /요약|정리|summari[sz]e|summary|recap/i.test(queryPlan.originalQuery) && queryPlan.knowledgeMode === "none";
 }
 
-function hasSportsIntent(queryPlan: DomainQueryPlan) {
-  if (queryPlan.route === "sports_moment_retrieval" || queryPlan.route === "sports_analysis" || queryPlan.route === "sports_stat_qa") return true;
-  return Boolean(
-    queryPlan.intent.domain ||
-      queryPlan.intent.metric ||
-      queryPlan.intent.player ||
-      queryPlan.intent.eventType ||
-      queryPlan.intent.passType ||
-      queryPlan.intent.fieldZone ||
-      queryPlan.intent.role ||
-      queryPlan.domainFilters.competition ||
-      queryPlan.domainFilters.player ||
-      queryPlan.domainFilters.eventType ||
-      queryPlan.domainFilters.passType ||
-      queryPlan.domainFilters.fieldZone ||
-      queryPlan.domainFilters.role
-  );
+function buildGenericGroundedAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean) {
+  const top = results[0];
+  const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
+  const snippets = collectGroundedSnippets(results);
+  const evidenceScope = korean
+    ? `${segmentCount}개 moment/${results.length}개 asset`
+    : `${segmentCount} moments across ${results.length} assets`;
+  const clothingStyle = inferClothingStyle(queryPlan.originalQuery, snippets.join(" "), korean);
+  if (korean) {
+    if (clothingStyle) {
+      return [
+        `검색된 영상 근거 기준으로 답하면, 남자의 옷 스타일은 "${clothingStyle}"에 가깝습니다.`,
+        snippets.length > 0 ? `근거: ${joinSummarySnippetsKo(snippets.slice(0, 4))}.` : "",
+        `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거입니다.`,
+        sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
+        `주의: 이 답변은 최종 검색된 ${evidenceScope}의 ASR/OCR/visual evidence에 한정됩니다.`
+      ].filter(Boolean).join(" ");
+    }
+    return [
+      snippets.length > 0
+        ? `검색된 영상 근거 기준으로 답하면, ${joinSummarySnippetsKo(snippets.slice(0, 4))}로 확인됩니다.`
+        : "검색된 구간에는 이 질문에 답할 충분한 ASR/OCR/visual evidence가 제한적입니다.",
+      `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거입니다.`,
+      sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
+      `주의: 이 답변은 최종 검색된 ${evidenceScope}에 한정됩니다.`
+    ].filter(Boolean).join(" ");
+  }
+  if (clothingStyle) {
+    return [
+      `From the retrieved video evidence, the man's clothing style is closest to "${clothingStyle}".`,
+      snippets.length > 0 ? `Evidence: ${joinSummarySnippetsEn(snippets.slice(0, 4))}.` : "",
+      `The strongest retrieved source is "${top.asset.title}" around ${topMoments || "the retrieved timeline"}.`,
+      sourceProfile ? `Sources: ${sourceProfile}.` : "",
+      `This answer is limited to the retrieved ${evidenceScope} and their ASR/OCR/visual evidence.`
+    ].filter(Boolean).join(" ");
+  }
+  return [
+    snippets.length > 0
+      ? `From the retrieved video evidence, the answer is grounded in these observations: ${joinSummarySnippetsEn(snippets.slice(0, 4))}.`
+      : "The retrieved moments do not contain enough ASR/OCR/visual evidence to answer this precisely.",
+    `The strongest retrieved source is "${top.asset.title}" around ${topMoments || "the retrieved timeline"}.`,
+    sourceProfile ? `Sources: ${sourceProfile}.` : "",
+    `This answer is limited to the retrieved ${evidenceScope}.`
+  ].filter(Boolean).join(" ");
+}
+
+function collectGroundedSnippets(results: SearchResult[]) {
+  const seen = new Set<string>();
+  const snippets: string[] = [];
+  for (const result of results) {
+    for (const segment of result.segments) {
+      const scene = segment.sceneData;
+      const candidates = [
+        scene?.vlm?.caption,
+        scene?.vlm?.description,
+        scene?.vlm?.evidence.join(", "),
+        scene?.vlm?.objects.join(", "),
+        scene?.vlm?.actions.join(", "),
+        scene?.vlm?.labels.join(", "),
+        segment.transcript,
+        segment.label
+      ];
+      for (const candidate of candidates) {
+        const text = cleanSummaryText(candidate ?? "");
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        snippets.push(truncateSentence(text, 140));
+        if (snippets.length >= 6) return snippets;
+      }
+    }
+  }
+  return snippets;
+}
+
+function inferClothingStyle(query: string, evidenceText: string, korean: boolean) {
+  const isClothingQuery = /옷|의상|복장|스타일|입고|착용|clothing|outfit|style|wearing|worn|dress/i.test(query);
+  if (!isClothingQuery) return null;
+  const text = evidenceText.toLowerCase();
+  const traits = [
+    /suit|blazer|dress shirt|tie|formal|business|정장|블레이저|셔츠|타이|격식/.test(text) ? (korean ? "포멀한" : "formal") : "",
+    /hoodie|sweatshirt|t-?shirt|jeans|sneakers|casual|후드|티셔츠|청바지|스니커즈|캐주얼/.test(text) ? (korean ? "캐주얼한" : "casual") : "",
+    /jacket|coat|outerwear|재킷|자켓|코트|아우터/.test(text) ? (korean ? "아우터 중심의" : "outerwear-led") : "",
+    /black|dark|navy|어두운|검정|검은|네이비/.test(text) ? (korean ? "어두운 톤의" : "dark-toned") : "",
+    /white|light|bright|흰|하얀|밝은/.test(text) ? (korean ? "밝은 톤의" : "light-toned") : ""
+  ].filter(Boolean);
+  if (traits.length === 0) return korean ? "구체적 단정이 어려운 영상 기반 스타일" : "not specific enough to classify confidently";
+  return korean ? `${traits.join(" ")} 스타일` : `${traits.join(" ")} style`;
 }
 
 function buildGenericVideoSummaryAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean) {

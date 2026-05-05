@@ -178,18 +178,32 @@ test("English lexical scoring uses terms instead of substring matches", () => {
   assert.equal(scoreText("The goal is scored.", ["goal"]), 1);
 });
 
-test("generic business goal language is not forced into a sports route by rules", () => {
+test("generic business goal language is not forced into a related-knowledge route by rules", () => {
   const plan = planDomainQuery("business goal video");
 
-  assert.equal(plan.route, "generic_video_qa");
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "moment_retrieval");
+  assert.equal(plan.knowledgeMode, "none");
   assert.deepEqual(plan.domainFilters, {});
 });
 
-test("OpenAI generic route can override rules sports false positives", async () => {
+test("generic clothing question is planned as a grounded video answer", () => {
+  const plan = planDomainQuery("이 영상에 나오는 남자의 옷 스타일이 뭐야?");
+  const orchestration = buildOrchestrationPlan(plan, [assetWithSegments([])], [indexRecord()]);
+
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "grounded_answer");
+  assert.equal(plan.knowledgeMode, "none");
+  assert.equal(orchestration.mode, "analysis");
+  assert.equal(orchestration.analysis.required, true);
+});
+
+test("OpenAI generic route can override related-knowledge false positives", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
-      route: "generic_video_qa",
-      questionType: "moment_retrieval",
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "none",
       semanticQuery: "business objective video",
       retrieval: {
         textQuery: "business objective discussion",
@@ -202,7 +216,9 @@ test("OpenAI generic route can override rules sports false positives", async () 
     () => planDomainQueryWithOpenAi("business goal video")
   );
 
-  assert.equal(plan.route, "generic_video_qa");
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "moment_retrieval");
+  assert.equal(plan.knowledgeMode, "none");
   assert.deepEqual(plan.domainFilters, {});
   assert.equal(plan.semanticQuery, "business objective video");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["business objective"]);
@@ -241,7 +257,8 @@ test("OpenAI object moment retrieval is not treated as unsupported when retrieva
     () => planDomainQueryWithOpenAi("반지 나오는 장면 찾아줘")
   );
 
-  assert.equal(plan.route, "generic_video_qa");
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "moment_retrieval");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["반지", "ring"]);
 });
 
@@ -431,7 +448,7 @@ test("match reasons use the same vector thresholds as search inclusion", () => {
   assert.deepEqual(reasons, []);
 });
 
-test("empty generic Korean answer does not expose sports-specific guidance", () => {
+test("empty generic Korean answer does not expose domain-specific guidance", () => {
   const queryPlan = queryPlanForBirthday();
   const serverAnswer = buildAskVideoAnswer([], queryPlan);
   const clientFallback = buildSearchAssistantAnswer([], queryPlan);
@@ -441,10 +458,12 @@ test("empty generic Korean answer does not expose sports-specific guidance", () 
   assert.equal(clientFallback, serverAnswer);
 });
 
-test("empty sports Korean answer keeps sports-specific guidance", () => {
+test("empty related-knowledge Korean answer keeps constraint guidance", () => {
   const queryPlan: DomainQueryPlan = {
     ...queryPlanForBirthday(),
-    route: "sports_moment_retrieval",
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
     domainFilters: {
       player: "Son Heung-min"
     },
@@ -465,10 +484,12 @@ test("generic orchestration does not expose related-knowledge identity or scope 
   assert.doesNotMatch(JSON.stringify(plan), /No player requested|No competition\/season requested|sports knowledge/i);
 });
 
-test("sports orchestration uses identity and scope only when related knowledge is active in scope", () => {
+test("orchestration uses identity and scope only when related knowledge is active in scope", () => {
   const sportsPlan: DomainQueryPlan = {
     ...queryPlanForBirthday(),
-    route: "sports_moment_retrieval",
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
     intent: {
       ...queryPlanForBirthday().intent,
       domain: "sports.football",
@@ -487,7 +508,9 @@ test("sports orchestration uses identity and scope only when related knowledge i
 
 function queryPlanForBirthday(): DomainQueryPlan {
   return {
-    route: "generic_video_qa",
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "none",
     originalQuery: "생일 축하 장면 찾아줘",
     rewrittenQuery: "Find the birthday celebration scene or birthday wish moment in the video.",
     semanticQuery: "Find the birthday celebration scene or birthday wish moment in the video.",
@@ -518,7 +541,9 @@ function queryPlanForBirthday(): DomainQueryPlan {
 
 function queryPlanForRing(): DomainQueryPlan {
   return {
-    route: "generic_video_qa",
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "none",
     originalQuery: "반지 나오는 장면 찾아줘",
     rewrittenQuery: "Find the scene where a ring appears or is shown.",
     semanticQuery: "Find the scene where a ring appears or is shown.",

@@ -5,7 +5,7 @@ import { getKnowledgePlayer } from "./sportsKnowledge";
 
 export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: AssetRecord[], indexes: IndexRecord[]): OrchestrationPlan {
   const mode = inferMode(queryPlan);
-  const domainWorkflow = shouldUseDomainWorkflow(queryPlan, indexes, assets);
+  const domainWorkflow = shouldUseRelatedKnowledgeWorkflow(queryPlan, indexes, assets);
   const knowledgePlayer = queryPlan.intent.player ? getKnowledgePlayer(queryPlan.intent.player) : null;
   const identityCandidates = domainWorkflow ? collectIdentityCandidates(queryPlan.intent.player, assets) : [];
   const scopeCoverage = domainWorkflow ? estimateScopeCoverage(queryPlan, assets) : { competition: "not_requested", season: "not_requested" };
@@ -19,7 +19,7 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
         scopeCoverage.competition === "missing" ? "Competition scope is not indexed for some matching assets; keep it as a soft constraint." : "",
         scopeCoverage.season === "missing" ? "Season scope is not indexed for some matching assets; keep it as a soft constraint." : "",
         queryPlan.intent.player && identityCandidates.length === 0 && !knowledgePlayer ? "Player identity is unresolved; use lexical title/ASR fallback." : "",
-        queryPlan.intent.player && identityCandidates.length === 0 && knowledgePlayer && mode !== "stat_qa"
+        queryPlan.intent.player && identityCandidates.length === 0 && knowledgePlayer && mode !== "structured_answer"
           ? "Player identity is known in the selected related knowledge, but not grounded in indexed video evidence yet."
           : ""
       ].filter(Boolean)
@@ -30,12 +30,12 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
         routeDecision.status !== "ready" ? routeDecision.reason : "",
         identityDecision && identityDecision.status !== "ready" ? identityDecision.reason : "",
         scopeDecision && scopeDecision.status !== "ready" ? scopeDecision.reason : "",
-        mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
+        mode !== "search" && mode !== "structured_answer" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
       ].filter(Boolean)
     : [
         ...queryPlan.warnings,
         routeDecision.status !== "ready" ? routeDecision.reason : "",
-        mode !== "search" && mode !== "stat_qa" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
+        mode !== "search" && mode !== "structured_answer" ? "Generation step should only run over retrieved, evidence-backed moments." : ""
       ].filter(Boolean);
   const confidence = Number(Math.min(queryPlan.confidence, ...decisions.map((decision) => decision.confidence)).toFixed(2));
 
@@ -53,8 +53,8 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
       fallback: retrievalFallback
     },
     analysis: {
-      required: mode !== "search" && mode !== "stat_qa",
-      model: mode === "search" || mode === "stat_qa" ? "none" : "pattern_analysis_generate",
+      required: mode !== "search" && mode !== "structured_answer",
+      model: mode === "search" || mode === "structured_answer" ? "none" : "pattern_analysis_generate",
       prompt: buildAnalysisPrompt(queryPlan, domainWorkflow),
       inputs: analysisInputsForRoute(queryPlan, domainWorkflow)
     },
@@ -63,28 +63,28 @@ export function buildOrchestrationPlan(queryPlan: DomainQueryPlan, assets: Asset
 }
 
 function inferMode(queryPlan: DomainQueryPlan): OrchestrationPlan["mode"] {
-  switch (queryPlan.route) {
-    case "sports_stat_qa":
-      return "stat_qa";
-    case "video_summary":
-    case "sports_analysis":
+  if (queryPlan.route === "unsupported") return "search";
+  switch (queryPlan.responseMode) {
+    case "structured_answer":
+      return "structured_answer";
+    case "summary":
+    case "analysis":
+    case "grounded_answer":
       return "analysis";
-    case "sports_moment_retrieval":
-    case "generic_video_qa":
+    case "moment_retrieval":
     case "asset_lookup":
-    case "unsupported":
       return "search";
   }
 }
 
 function retrievalEngineForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["retrieval"]["engine"] {
-  if (queryPlan.route === "sports_stat_qa") return "structured_domain";
-  if (isRelatedKnowledgeRoute(queryPlan.route)) return "hybrid";
+  if (queryPlan.knowledgeMode === "direct_answer") return "structured_domain";
+  if (queryPlan.knowledgeMode === "grounding") return "hybrid";
   return "semantic_retrieval";
 }
 
-function shouldUseDomainWorkflow(queryPlan: DomainQueryPlan, indexes: IndexRecord[], assets: AssetRecord[]) {
-  if (!isRelatedKnowledgeRoute(queryPlan.route)) return false;
+function shouldUseRelatedKnowledgeWorkflow(queryPlan: DomainQueryPlan, indexes: IndexRecord[], assets: AssetRecord[]) {
+  if (queryPlan.knowledgeMode === "none") return false;
   return scopedDomainIndexes(queryPlan, indexes, assets).length > 0;
 }
 
@@ -162,11 +162,11 @@ function buildGenericOrchestrationSteps(
       id: "route",
       label: "Evidence route",
       owner: "router",
-      action: "Keep retrieval scoped to indexed video evidence for this route.",
+      action: "Keep retrieval scoped to indexed asset evidence for this route.",
       input: routeLabel(queryPlan.route),
       output: routeDecision.reason,
       status: routeDecision.status,
-      trigger: "Video-only retrieval does not use related-knowledge identity or scope grounding."
+      trigger: "Asset-evidence retrieval can run without related-knowledge identity or scope grounding."
     },
     {
       id: "evidence_scope",
@@ -186,41 +186,41 @@ function buildGenericOrchestrationSteps(
 function buildRetrievalStep(queryPlan: DomainQueryPlan, mode: OrchestrationPlan["mode"], useDomainRetrieval: boolean, retrievalFallback: string[]): OrchestrationPlan["steps"][number] {
   return {
     id: "retrieve",
-    label: mode === "stat_qa" ? "Stats retrieval" : "Moment retrieval",
-    owner: mode === "stat_qa" ? "knowledge" : "retrieval",
+    label: mode === "structured_answer" ? "Structured retrieval" : "Moment retrieval",
+    owner: mode === "structured_answer" ? "knowledge" : "retrieval",
     action:
-      mode === "stat_qa"
-        ? "Query imported related knowledge statistics before video moment retrieval."
+      mode === "structured_answer"
+        ? "Query imported related knowledge before video moment retrieval."
         : useDomainRetrieval
           ? "Run semantic retrieval and merge it with structured event filters."
           : "Run semantic retrieval over indexed video evidence.",
     input: queryPlan.semanticQuery,
-    output: mode === "stat_qa" ? "Player metric answer with source evidence" : "Ranked timeline segments with match reasons",
+    output: mode === "structured_answer" ? "Structured knowledge answer with source evidence" : "Ranked timeline segments with match reasons",
     status: retrievalFallback.length > 0 ? "fallback" : "ready",
-    trigger: mode === "stat_qa" ? "Questions asking for counts or season totals." : "Need to find candidate moments before analysis."
+    trigger: mode === "structured_answer" ? "Questions asking for structured facts from related knowledge." : "Need to find candidate moments before analysis."
   };
 }
 
 function buildGenerationStep(mode: OrchestrationPlan["mode"]): OrchestrationPlan["steps"][number] {
   return {
     id: "generate",
-    label: mode === "stat_qa" ? "Direct answer" : "Answer generation",
+    label: mode === "structured_answer" ? "Direct answer" : "Answer generation",
     owner: "analysis",
     action:
-      mode === "stat_qa"
+      mode === "structured_answer"
         ? "Return a sourced stats answer without treating video search results as official totals."
         : mode === "search"
           ? "Skip generation unless the user asks for summary, comparison, or decision patterns."
           : "Generate a grounded answer from retrieved segments only.",
-    input: mode === "stat_qa" ? "Imported knowledge rows" : mode === "search" ? "Not required" : "Retrieved video evidence",
-    output: mode === "stat_qa" ? "Sourced statistics answer" : mode === "search" ? "Search results only" : "Evidence-backed video answer",
+    input: mode === "structured_answer" ? "Imported knowledge rows" : mode === "search" ? "Not required" : "Retrieved video evidence",
+    output: mode === "structured_answer" ? "Sourced structured answer" : mode === "search" ? "Search results only" : "Evidence-backed video answer",
     status: mode === "search" ? "fallback" : "ready",
-    trigger: mode === "stat_qa" ? "Aggregate stat question." : "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
+    trigger: mode === "structured_answer" ? "Direct related-knowledge question." : "Analysis verbs such as summarize, compare, pattern, decision, or analyze."
   };
 }
 
 function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["steps"][number] {
-  if (!isRelatedKnowledgeRoute(queryPlan.route)) {
+  if (queryPlan.knowledgeMode === "none") {
     return {
       id: "ground",
       label: "Knowledge grounding",
@@ -310,7 +310,7 @@ function buildIdentityDecision(player: string | null, candidates: DomainScopeVal
       reason: "The query does not require player identity grounding."
     };
   }
-  if (mode === "stat_qa" && knowledgePlayer) {
+  if (mode === "structured_answer" && knowledgePlayer) {
     return {
       id: "identity",
       label: "Identity",
@@ -375,7 +375,7 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
 }
 
 function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], assets: AssetRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
-  if (!isRelatedKnowledgeRoute(queryPlan.route)) {
+  if (queryPlan.knowledgeMode === "none") {
     return {
       id: "route",
       label: "Route",
@@ -390,7 +390,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
   }
   const requestedDomain = isKnownKnowledgeSourceId(queryPlan.intent.domain) ? queryPlan.intent.domain : null;
   const domainIndexes = scopedDomainIndexes(queryPlan, indexes, assets);
-  if (mode === "stat_qa") {
+  if (mode === "structured_answer") {
     return {
       id: "route",
       label: "Route",
@@ -418,7 +418,7 @@ function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecor
 }
 
 function buildAnalysisPrompt(queryPlan: DomainQueryPlan, useRelatedKnowledge: boolean) {
-  if (queryPlan.route === "video_summary") {
+  if (queryPlan.responseMode === "summary") {
     return "Summarize only from retrieved indexed video evidence. Prefer ASR/OCR text when present, include key time ranges, and report evidence gaps.";
   }
   if (!useRelatedKnowledge) {
@@ -443,18 +443,12 @@ function analysisInputsForRoute(queryPlan: DomainQueryPlan, useRelatedKnowledge:
 
 function routeLabel(route: DomainQueryPlan["route"]) {
   switch (route) {
-    case "video_summary":
-      return "Video summary";
-    case "generic_video_qa":
-      return "Generic video QA";
-    case "sports_moment_retrieval":
-      return "Related knowledge moment retrieval";
-    case "sports_analysis":
-      return "Related knowledge analysis";
-    case "sports_stat_qa":
-      return "Related knowledge stats QA";
-    case "asset_lookup":
-      return "Asset lookup";
+    case "asset_evidence":
+      return "Asset evidence";
+    case "knowledge_evidence":
+      return "Knowledge evidence";
+    case "asset_catalog":
+      return "Asset catalog";
     case "unsupported":
       return "Unsupported";
   }
@@ -466,8 +460,4 @@ function normalize(value: string) {
 
 function splitRequestedValues(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function isRelatedKnowledgeRoute(route: DomainQueryPlan["route"]) {
-  return route === "sports_moment_retrieval" || route === "sports_analysis" || route === "sports_stat_qa";
 }

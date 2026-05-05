@@ -178,7 +178,7 @@ flowchart TB
 | Frontend orchestration | `src/App.tsx` | Owns selected tab, selected asset/index/segment, dialogs, upload, retries, URL state, and passes props to `ConsoleLayout`. |
 | Frontend API client | `src/api.ts` | Thin `fetch` wrapper with JSON parsing, type guards, and form payload helpers. |
 | Frontend data refresh | `src/hooks/useConsoleData.ts` | Performs initial REST hydration, then refreshes operational data from `/api/events/stream` SSE notifications. |
-| Frontend search state | `src/hooks/useSearchController.ts` | Posts `/api/ask`, waits on operation-scoped SSE updates, tracks query plan, orchestration plan, sports answer, and result conversation. |
+| Frontend search state | `src/hooks/useSearchController.ts` | Posts `/api/ask`, waits on operation-scoped SSE updates, tracks query plan, orchestration plan, optional structured knowledge answer, and result conversation. |
 | Frontend routing | `src/navigation.ts` | Converts console state to path/query URLs and parses URLs back into console state. |
 | API entry | `server/index.ts` | Creates Express app, applies middleware, registers routes, persists operation records/outbox entries, exposes SSE, and starts listener. |
 | Asset job worker | `server/jobWorker.ts` | Runs BullMQ worker process, recovers interrupted jobs, claims queued `JobRecord`s, and executes long-running asset workflows. |
@@ -318,7 +318,7 @@ The hook uses `Promise.allSettled` and per-payload type guards. Partial failures
 - knowledge layer toggle
 - current `AskResponse`
 - query plan and orchestration plan
-- sports stats answer
+- optional structured knowledge answer, currently surfaced through the sports answer payload type
 - raw and trust-filtered results
 - local conversation history
 
@@ -376,7 +376,7 @@ Retry actions call:
 
 - `system`: metrics, jobs, events, DB status, observability.
 - `data`: asset groups, uploaded assets, asset details, video player, timeline, workflow.
-- `search`: ask form, search scope, workflow trace, sports answer, results, clip detail.
+- `search`: ask form, search scope, workflow trace, optional knowledge answer, results, clip detail.
 - `knowledge`: sports knowledge registry and vector store status.
 
 Most specialized UI is split under:
@@ -564,11 +564,11 @@ Jobs track async work:
 Ask operations are server-side async operation records. They are kept in an in-memory map while the API process is running and persisted through the ask operation store. The response shape includes:
 
 - operation status and step trace
-- route: pending, stat QA, moment retrieval, empty, or error
+- operation route: pending, structured answer, moment retrieval, empty, or error
 - answer
-- query plan
+- query plan, including domain-agnostic route, response mode, and knowledge mode
 - orchestration plan
-- optional sports stats answer
+- optional structured knowledge answer payload, currently represented by `SportsKnowledgeAnswer`
 - search results
 - warnings
 
@@ -829,22 +829,21 @@ flowchart TD
   Worker --> Run["Run persisted AskRequest"]
   Run --> Scope["Scope assets\nasset/index/domain/tag/modality"]
   Scope --> Plan["Query planning\nrules + optional OpenAI planner"]
-  Plan --> KnowledgeAnswer{"Sports stat QA?"}
-  KnowledgeAnswer -->|yes| Stats["Answer from imported sports knowledge"]
-  KnowledgeAnswer -->|no| SkipStats["Skip direct sports-stat answer"]
-  Stats --> StatSeed{"Answered stat QA\nand moment retrieval requested?"}
-  StatSeed -->|yes| RewriteStat["Rewrite plan from sports answer"]
-  StatSeed -->|no| MetadataSeed
-  SkipStats --> MetadataSeed["Optionally rewrite leaderboard moment query\nfrom scoped asset metadata"]
-  RewriteStat --> Orchestrate["Build orchestration plan"]
-  MetadataSeed --> Orchestrate
-  Orchestrate --> DirectStat{"Answered stat QA\nand no retrieval seed?"}
-  DirectStat -->|yes| CompleteStats["Complete stat_qa response"]
-  DirectStat -->|no| Retrieval["Execute search pipeline"]
+  Plan --> KnowledgeAnswer{"knowledge_evidence +\nstructured_answer + direct_answer?"}
+  KnowledgeAnswer -->|yes| DirectKnowledge["Answer from selected related knowledge"]
+  KnowledgeAnswer -->|no| SkipKnowledgeAnswer["Skip direct knowledge answer"]
+  DirectKnowledge --> SeedRetrieval{"Answered directly\nand moment retrieval requested?"}
+  SeedRetrieval -->|yes| RewriteFromKnowledge["Rewrite plan from knowledge answer\nasset_evidence + moment_retrieval + grounding"]
+  SeedRetrieval -->|no| Orchestrate
+  SkipKnowledgeAnswer --> Orchestrate["Build orchestration plan"]
+  RewriteFromKnowledge --> Orchestrate
+  Orchestrate --> DirectStructured{"Direct structured answer\nand no retrieval seed?"}
+  DirectStructured -->|yes| CompleteStructured["Complete structured_answer response"]
+  DirectStructured -->|no| Retrieval["Execute search pipeline"]
   Retrieval --> Analysis{"Analysis required?"}
   Analysis -->|yes| Generate["Build grounded local analysis answer"]
   Analysis -->|no| Answer["Build video search answer"]
-  CompleteStats --> Complete["Complete AskResponse"]
+  CompleteStructured --> Complete["Complete AskResponse"]
   Generate --> Complete
   Answer --> Complete
   Run -->|caught error| Failed["Persist failed AskResponse"]
@@ -858,13 +857,32 @@ Query planning has two layers:
 
 1. `server/queryPlanner.ts`
    - Rule-based Korean/English parsing.
-   - Detects competitions, players, seasons, sports stat questions, event types, pass types, field zones, and player inventory queries.
+   - Detects competitions, players, seasons, structured knowledge questions, event types, pass types, field zones, grounded-answer questions, summary/analysis requests, and player inventory queries.
    - Produces a `DomainQueryPlan`.
 2. `server/openaiQueryPlanner.ts`
    - Optional refinement through OpenAI Responses API.
    - Runs only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off.
-   - Merges LLM output into the rule plan with allow-lists for routes, metrics, roles, event types, pass types, and field zones.
+   - Merges LLM output into the rule plan with allow-lists for routes, response modes, knowledge modes, metrics, roles, event types, pass types, and field zones.
    - Falls back to the rule plan on error and adds a warning.
+
+The query plan contract deliberately separates source routing from answer shape and related-knowledge usage:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `route` | `asset_evidence`, `knowledge_evidence`, `asset_catalog`, `unsupported` | Selects the evidence source. It does not encode a domain name such as sports. |
+| `responseMode` | `moment_retrieval`, `grounded_answer`, `summary`, `analysis`, `structured_answer`, `asset_lookup` | Selects the answer shape. This is what decides whether retrieval-only output or grounded generation is needed. |
+| `knowledgeMode` | `none`, `grounding`, `direct_answer` | Selects whether selected related knowledge is ignored, used only to ground asset retrieval, or used as the primary answer source. |
+
+Current examples from the code:
+
+| User intent | Route plan |
+| --- | --- |
+| Find a visible object or moment in indexed video | `asset_evidence + moment_retrieval + none` |
+| Ask what something in the video looks like | `asset_evidence + grounded_answer + none` |
+| Summarize selected video evidence | `asset_evidence + summary + none` |
+| Find a moment involving an entity resolved through selected related knowledge | `asset_evidence + moment_retrieval + grounding` |
+| Answer a structured fact from selected related knowledge | `knowledge_evidence + structured_answer + direct_answer` |
+| List or inspect asset catalog metadata | `asset_catalog + asset_lookup + none` |
 
 ### Orchestration
 
@@ -872,29 +890,31 @@ Query planning has two layers:
 
 It decides:
 
-- mode: search, analysis, or stat QA
-- identity readiness
-- scope readiness
+- mode: search, analysis, or structured answer
+- identity readiness when related knowledge is active in the selected asset group
+- scope readiness when related knowledge is active in the selected asset group
 - retrieval engine:
-  - `semantic_retrieval`
-  - `structured_domain`
-  - `hybrid`
+  - `semantic_retrieval` for asset evidence without related knowledge
+  - `structured_domain` for direct related-knowledge answers
+  - `hybrid` for asset retrieval grounded by selected related knowledge
 - whether analysis generation is required
 - warnings and fallbacks
+
+Analysis generation is required for `responseMode` values `grounded_answer`, `summary`, and `analysis`. It is skipped for retrieval-only `moment_retrieval`, `asset_lookup`, and direct `structured_answer` responses.
 
 ### Search Pipeline
 
 `executeSearchPipeline` performs retrieval:
 
 1. Scope assets by asset ID, index ID, domain group, tag, modality, and explicit asset references in the query.
-2. Decide whether the sports knowledge layer applies.
-3. Ground the query with sports knowledge when applicable.
+2. Decide whether the selected asset group exposes related knowledge and whether `knowledgeMode` allows using it.
+3. Ground the query with selected related knowledge when applicable.
 4. Expand the query with domain aliases.
 5. Embed the text query.
 6. Attempt visual text embedding for visual vector search.
 7. Search text vectors.
 8. Search visual vectors when the visual query vector is available.
-9. Search sports knowledge vectors when the sports knowledge layer applies.
+9. Search related knowledge vectors when the knowledge layer applies.
 10. Merge grounding evidence and knowledge vector evidence.
 11. Call `searchAssets` to rank and verify matching timeline segments.
 
@@ -915,7 +935,7 @@ Knowledge vector flow:
 
 ### Synchronous Search Endpoints
 
-`GET /api/search` exposes a synchronous search path using the same query planning and `executeSearchPipeline` machinery. For sports stat questions, it may return a `409` instructing clients to use the sports answer endpoint unless it can build a seeded retrieval plan.
+`GET /api/search` exposes a synchronous search path using the same query planning and `executeSearchPipeline` machinery. For direct structured knowledge questions, it may return a `409` instructing clients to use the related knowledge answer endpoint unless it can build a seeded asset-retrieval plan.
 
 ### Analysis
 
@@ -927,7 +947,9 @@ Analysis is exposed through:
 
 Asset-level analysis uses `analyzeAndEmit`, which requires the asset to be indexed and then calls `analyzeAsset`. Asset-group analysis calls `analyzeAssetGroup`. Successful analysis records an `analysis.completed` event, delivers matching webhooks, and records billing.
 
-## Sports Knowledge And Domain Layer
+## Related Knowledge And Current Sports Domain Layer
+
+The ask/query architecture treats sports as the current related-knowledge domain attached to an asset group, not as a top-level query route. Query planning uses `knowledgeMode` and the selected asset group's `domainIndexing.groups` to decide whether this layer can ground retrieval or answer directly.
 
 ### Sports Knowledge Registry
 
@@ -963,7 +985,7 @@ The imported knowledge is merged into the local sports knowledge store.
 
 ### Sports Stats QA
 
-`server/sportsKnowledgeQa.ts` answers supported aggregate sports stat questions directly from imported sports knowledge. It does not treat video retrieval as the authoritative source for aggregate totals.
+`server/sportsKnowledgeQa.ts` is the current direct-answer adapter for `knowledge_evidence + structured_answer + direct_answer` plans when the selected related knowledge is sports data. It answers supported aggregate sports stat questions directly from imported sports knowledge. It does not treat video retrieval as the authoritative source for aggregate totals.
 
 Supported metric families include football and American-football metrics:
 
@@ -983,7 +1005,7 @@ Supported metric families include football and American-football metrics:
 
 ### Knowledge Grounding
 
-`server/knowledgeGrounding.ts` builds evidence for retrieval:
+`server/knowledgeGrounding.ts` builds evidence for `asset_evidence` retrieval when `knowledgeMode` is `grounding`:
 
 - competition scope
 - player profiles
@@ -1442,4 +1464,4 @@ These are direct consequences of the code shape:
 - CORS is enabled globally.
 - Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.
 - Visual embedding failures do not necessarily fail indexing; they are logged and traced as unavailable unless policy requires downstream capabilities elsewhere.
-- Aggregate sports stat answers come from imported sports knowledge, not from video moment counts.
+- Direct structured answers come from selected related knowledge adapters. The current sports adapter answers aggregate stat questions from imported sports knowledge, not from video moment counts.

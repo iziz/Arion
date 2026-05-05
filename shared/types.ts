@@ -565,13 +565,20 @@ export type DomainSearchFilters = {
 };
 
 export type QueryRoute =
-  | "video_summary"
-  | "generic_video_qa"
-  | "sports_moment_retrieval"
-  | "sports_analysis"
-  | "sports_stat_qa"
-  | "asset_lookup"
+  | "asset_evidence"
+  | "knowledge_evidence"
+  | "asset_catalog"
   | "unsupported";
+
+export type ResponseMode =
+  | "moment_retrieval"
+  | "grounded_answer"
+  | "summary"
+  | "analysis"
+  | "structured_answer"
+  | "asset_lookup";
+
+export type KnowledgeMode = "none" | "grounding" | "direct_answer";
 
 export type DomainQueryPlan = {
   originalQuery: string;
@@ -584,9 +591,11 @@ export type DomainQueryPlan = {
   };
   domainFilters: DomainSearchFilters;
   route: QueryRoute;
+  responseMode: ResponseMode;
+  knowledgeMode: KnowledgeMode;
   intent: {
     domain: string | null;
-    questionType?: "moment_retrieval" | "stat_qa";
+    questionType?: "moment_retrieval" | "grounded_answer" | "summary" | "analysis" | "structured_answer" | "asset_lookup";
     metric?:
       | "goals"
       | "assists"
@@ -655,7 +664,7 @@ export type SportsKnowledgeAnswer = {
   warnings: string[];
 };
 
-export type AskRoute = "pending" | "stat_qa" | "moment_retrieval" | "empty" | "error";
+export type AskRoute = "pending" | "structured_answer" | "moment_retrieval" | "empty" | "error";
 
 export type AskOperationStep = {
   id: string;
@@ -696,7 +705,7 @@ export type AskResponse = {
 
 export type OrchestrationPlan = {
   query: string;
-  mode: "search" | "analysis" | "search_and_analysis" | "stat_qa";
+  mode: "search" | "analysis" | "search_and_analysis" | "structured_answer";
   confidence: number;
   decisions: Array<{
     id: string;

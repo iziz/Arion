@@ -177,11 +177,11 @@ export function useSearchController({
       setQueryPlan(completed.queryPlan);
       setOrchestrationPlan(completed.orchestrationPlan);
       setSportsAnswer(completed.sportsAnswer?.applicable ? completed.sportsAnswer : null);
-      if (completed.route === "stat_qa" && completed.sportsAnswer) {
+      if (completed.route === "structured_answer" && completed.sportsAnswer) {
         setSearchResults([]);
         upsertSearchTurn(
           buildSearchTurnFromResponse(turnId, submittedQuery, completed, completed.answer ?? completed.sportsAnswer.answer, {
-            route: "stat_qa",
+            route: "structured_answer",
             sportsAnswer: completed.sportsAnswer,
             results: []
           })
@@ -377,7 +377,7 @@ function buildSearchTurnFromResponse(
 }
 
 function conversationRouteFor(response: AskResponse): SearchConversationTurn["route"] {
-  if (response.route === "stat_qa") return "stat_qa";
+  if (response.route === "structured_answer") return "structured_answer";
   if (response.route === "error" || response.operation.status === "failed") return "error";
   if (response.route === "empty") return "empty";
   return "moment_retrieval";

@@ -21,7 +21,9 @@ export function applyScopeDomainDefaults(
 
 export function shouldContinueWithMomentRetrieval(queryPlan: DomainQueryPlan, sportsAnswer: SportsKnowledgeAnswer) {
   return Boolean(
-    queryPlan.route === "sports_stat_qa" &&
+    queryPlan.route === "knowledge_evidence" &&
+      queryPlan.responseMode === "structured_answer" &&
+      queryPlan.knowledgeMode === "direct_answer" &&
       sportsAnswer.applicable &&
       sportsAnswer.route === "stat_qa" &&
       sportsAnswer.status === "answered" &&
@@ -58,7 +60,9 @@ export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, sportsAnsw
     semanticQuery,
     rewrittenQuery: buildRewrittenQuery(domainFilters),
     domainFilters,
-    route: "sports_moment_retrieval",
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
     intent: {
       ...queryPlan.intent,
       domain: domainFromFilters(domainFilters),
