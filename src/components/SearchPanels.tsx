@@ -1,6 +1,6 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AskOperation, AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
+import type { AskOperation, AssetRecord, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import {
@@ -43,7 +43,7 @@ export function SearchScopeSelector({
   mode: SearchScopeMode;
   onModeChange: (mode: SearchScopeMode) => void;
   indexes: IndexRecord[];
-  assets: AssetRecord[];
+  assets: AssetSummaryRecord[];
   indexId: string;
   onIndexChange: (indexId: string) => void;
   assetId: string;
@@ -179,7 +179,7 @@ function describeIndexDomain(index: IndexRecord | null): { label: string; tone: 
   return { label: formatDomainGroups(index.domainIndexing.groups), tone: "domain" };
 }
 
-function describeAllVideoDomains(indexes: IndexRecord[], assets: AssetRecord[]): { label: string; tone: SearchKnowledgeContext["tone"] } {
+function describeAllVideoDomains(indexes: IndexRecord[], assets: AssetSummaryRecord[]): { label: string; tone: SearchKnowledgeContext["tone"] } {
   const assetIndexIds = new Set(assets.map((asset) => asset.indexId).filter(Boolean));
   const scopedIndexes = indexes.filter((index) => assetIndexIds.has(index.id));
   const domainIndexes = scopedIndexes.filter((index) => index.domainIndexing?.enabled);
@@ -245,6 +245,7 @@ type WorkflowItem = {
   title: string;
   summary: string;
   detail?: string;
+  details?: Array<{ label: string; value: string }>;
   status: WorkflowItemStatus;
   durationMs?: number | null;
   chips: Array<{ label: string; value: string }>;
@@ -346,6 +347,16 @@ export function SearchWorkflowTrace({
                     </div>
                   )}
                   {item.detail && <small>{item.detail}</small>}
+                  {item.details && item.details.length > 0 && (
+                    <div className="workflow-detail-grid" aria-label={`${item.title} details`}>
+                      {item.details.map((detail) => (
+                        <span key={`${item.id}-${detail.label}`}>
+                          <b>{detail.label}</b>
+                          <em>{detail.value}</em>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </article>
             ))}
@@ -693,16 +704,76 @@ function buildQueryPlanWorkflowItem(queryPlan: DomainQueryPlan | null, step: Ask
   ].filter(Boolean) as Array<{ label: string; value: string }>;
   const semanticDetail = queryPlan?.semanticQuery && queryPlan.semanticQuery !== queryPlan.rewrittenQuery ? `Semantic query: ${queryPlan.semanticQuery}.` : "";
   const warnings = queryPlan?.warnings.length ? queryPlan.warnings.slice(0, 2).join(" ") : "";
+  const details = queryPlan ? buildQueryPlanDetails(queryPlan, step) : [];
   return {
     id: "query-plan",
     owner: step?.owner ?? "router",
     title: "Query plan",
     summary: queryPlan?.rewrittenQuery ?? step?.output ?? step?.input ?? "Preparing a structured search plan.",
     detail: [semanticDetail, warnings || step?.input].filter(Boolean).join(" "),
+    details,
     status: step?.status ?? (queryPlan ? "succeeded" : "queued"),
     durationMs: step?.durationMs,
     chips
   };
+}
+
+function buildQueryPlanDetails(queryPlan: DomainQueryPlan, step: AskOperation["steps"][number] | undefined) {
+  const retrieval = queryPlan.retrieval;
+  const filters = compactRecord(queryPlan.domainFilters);
+  const intent = compactRecord({
+    domain: queryPlan.intent.domain,
+    questionType: queryPlan.intent.questionType,
+    metric: queryPlan.intent.metric,
+    eventType: queryPlan.intent.eventType,
+    passType: queryPlan.intent.passType,
+    fieldZone: queryPlan.intent.fieldZone,
+    player: queryPlan.intent.player,
+    role: queryPlan.intent.role
+  });
+  return [
+    { label: "Original query", value: queryPlan.originalQuery },
+    { label: "Planner", value: plannerLabel(queryPlan) },
+    { label: "Step input", value: step?.input ?? queryPlan.originalQuery },
+    { label: "Step output", value: step?.output ?? planOutputLabel(queryPlan) },
+    { label: "Rewritten query", value: queryPlan.rewrittenQuery },
+    { label: "Semantic query", value: queryPlan.semanticQuery },
+    retrieval?.textQuery ? { label: "Vector text query", value: retrieval.textQuery } : null,
+    retrieval?.visualQuery ? { label: "Visual query", value: retrieval.visualQuery } : null,
+    retrieval?.evidenceTerms?.length ? { label: "Evidence terms", value: retrieval.evidenceTerms.join(", ") } : null,
+    Object.keys(filters).length > 0 ? { label: "Filters", value: formatDetailRecord(filters) } : null,
+    Object.keys(intent).length > 0 ? { label: "Intent", value: formatDetailRecord(intent) } : null,
+    queryPlan.warnings.length > 0 ? { label: "Warnings", value: queryPlan.warnings.join(" ") } : null,
+    queryPlan.planner?.fallbackReason ? { label: "Fallback reason", value: queryPlan.planner.fallbackReason } : null
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+}
+
+function plannerLabel(queryPlan: DomainQueryPlan) {
+  if (!queryPlan.planner) return "rules";
+  return [
+    queryPlan.planner.source,
+    queryPlan.planner.model,
+    `${Math.round(queryPlan.confidence * 100)}% confidence`
+  ].filter(Boolean).join(" · ");
+}
+
+function planOutputLabel(queryPlan: DomainQueryPlan) {
+  return [
+    queryPlan.route.replace(/_/g, " "),
+    queryPlan.responseMode.replace(/_/g, " "),
+    queryPlan.knowledgeMode.replace(/_/g, " "),
+    `${Math.round(queryPlan.confidence * 100)}%`
+  ].join(" · ");
+}
+
+function compactRecord<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== "")
+  ) as Record<string, unknown>;
+}
+
+function formatDetailRecord(value: Record<string, unknown>) {
+  return Object.entries(value).map(([key, item]) => `${key}=${String(item)}`).join(" · ");
 }
 
 function buildOrchestrationWorkflowItem(orchestrationPlan: OrchestrationPlan | null, step: AskOperation["steps"][number] | undefined): WorkflowItem {

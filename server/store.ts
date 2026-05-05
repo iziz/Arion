@@ -3,6 +3,7 @@ import { normalizeCapabilityPolicy, normalizeDomainIndexing } from "./domainConf
 import { createDefaultIndex as createPostgresDefaultIndex } from "./postgres/defaults";
 import * as pgStore from "./postgresStore";
 import { publishRealtimeEvent } from "./services/realtimeEvents";
+import { summarizeAssetRecord } from "../shared/assetSummary";
 import type { AssetRecord, EventRecord, IndexRecord, JobRecord } from "../shared/types";
 
 export async function ensureStore() {
@@ -33,7 +34,7 @@ export async function getAsset(id: string) {
 
 export async function saveAsset(asset: AssetRecord) {
   const saved = await pgStore.saveAsset(asset);
-  publishRealtimeEvent("asset.updated", { assetId: saved.id, indexId: saved.indexId, asset: saved });
+  publishRealtimeEvent("asset.updated", { assetId: saved.id, indexId: saved.indexId, asset: summarizeAssetRecord(saved) });
   return saved;
 }
 

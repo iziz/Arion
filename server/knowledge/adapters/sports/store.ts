@@ -20,6 +20,11 @@ export type SportsKnowledgePlayer = {
 
 export type SportsKnowledgeMatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
 export type SportsKnowledgeFact = NonNullable<KnowledgeSnapshot["facts"]>[number];
+export type KnowledgeSnapshotSummaryOptions = {
+  maxPlayersPerDomain?: number;
+  maxActivitiesPerDomain?: number;
+  maxFactsPerDomain?: number;
+};
 
 export type KnowledgeMatch<T> = {
   value: T;
@@ -167,6 +172,19 @@ export function getKnowledgeSnapshot() {
   };
 }
 
+export function getKnowledgeSnapshotSummary(options: KnowledgeSnapshotSummaryOptions = {}): KnowledgeSnapshot {
+  const snapshot = getKnowledgeSnapshot();
+  const maxPlayersPerDomain = boundedLimit(options.maxPlayersPerDomain, 300);
+  const maxActivitiesPerDomain = boundedLimit(options.maxActivitiesPerDomain, 120);
+  const maxFactsPerDomain = boundedLimit(options.maxFactsPerDomain, 160);
+  return {
+    ...snapshot,
+    players: limitByDomain(snapshot.players, (player) => domainGroupForSport(player.sport), maxPlayersPerDomain),
+    matchActivities: limitByDomain(snapshot.matchActivities ?? [], (activity) => domainGroupForLeague(activity.competition), maxActivitiesPerDomain),
+    facts: limitByDomain(snapshot.facts ?? [], (fact) => domainGroupForLeague(fact.competition), maxFactsPerDomain)
+  };
+}
+
 export function upsertSportsKnowledgePlayer(input: Partial<SportsKnowledgePlayer> & { canonical: string }): KnowledgeSnapshot {
   const external = loadExternalKnowledge();
   const players = external.players ?? [];
@@ -296,6 +314,23 @@ function buildKnowledgeDomains({
     matchActivities: matchActivities.filter((activity) => domainGroupForLeague(activity.competition) === domain.id).length,
     facts: facts.filter((fact) => domainGroupForLeague(fact.competition) === domain.id).length
   }));
+}
+
+function boundedLimit(value: number | undefined, fallback: number) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(2000, Math.floor(value as number)));
+}
+
+function limitByDomain<T>(items: T[], domainFn: (item: T) => KnowledgeDomainGroup, limit: number) {
+  if (limit === 0) return [];
+  const counts = new Map<KnowledgeDomainGroup, number>();
+  return items.filter((item) => {
+    const domain = domainFn(item);
+    const count = counts.get(domain) ?? 0;
+    if (count >= limit) return false;
+    counts.set(domain, count + 1);
+    return true;
+  });
 }
 
 function normalizeCompetitionRecord(record: SportsCompetitionRecord): SportsCompetitionRecord {

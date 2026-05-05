@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { importFootballDataKnowledge } from "../footballDataClient";
 import { importFootballDataUkKnowledge } from "../footballDataUkImport";
 import { buildKnowledgeDocuments, knowledgeVectorHitToEvidence } from "../knowledge/documents";
-import { deleteKnowledgePlayer, getKnowledgeSnapshot, upsertKnowledgePlayer } from "../knowledge/registry";
+import { deleteKnowledgePlayer, getKnowledgeSnapshot, getKnowledgeSnapshotSummary, upsertKnowledgePlayer } from "../knowledge/registry";
 import { embedQueryText } from "../localEmbeddingRuntime";
 import { getKnowledgeVectorStatus, rebuildKnowledgeVectorStore, searchKnowledgeVectors } from "../localKnowledgeVectorStore";
 import { importNflverseKnowledge } from "../nflverseImport";
@@ -11,7 +11,12 @@ import { importStatsBombOpenDataKnowledge } from "../statsbombOpenDataImport";
 
 export function registerKnowledgeRoutes(app: Express) {
   app.get(["/api/knowledge", "/api/knowledge/sports"], async (_req, res) => {
-    res.json(getKnowledgeSnapshot());
+    const summary = _req.query.summary === "true" || _req.query.view === "summary";
+    res.json(summary ? getKnowledgeSnapshotSummary() : getKnowledgeSnapshot());
+  });
+
+  app.get(["/api/knowledge/summary", "/api/knowledge/sports/summary"], async (_req, res) => {
+    res.json(getKnowledgeSnapshotSummary());
   });
 
   app.get(["/api/knowledge/vector-store", "/api/knowledge/sports/vector-store"], async (_req, res) => {
@@ -130,20 +135,19 @@ export function registerKnowledgeRoutes(app: Express) {
     const team = String(req.body.team ?? "").trim();
     const league = String(req.body.league ?? "");
     const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
-    res.status(201).json(
-      upsertKnowledgePlayer({
-        id: String(req.body.id ?? "").trim() || undefined,
-        canonical,
-        aliases,
-        activeSeasons,
-        teamsBySeason,
-        sport: req.body.sport === "american_football" ? "american_football" : "football",
-        league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
-        position: String(req.body.position ?? "").trim() || null,
-        shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
-        provider: "local"
-      })
-    );
+    upsertKnowledgePlayer({
+      id: String(req.body.id ?? "").trim() || undefined,
+      canonical,
+      aliases,
+      activeSeasons,
+      teamsBySeason,
+      sport: req.body.sport === "american_football" ? "american_football" : "football",
+      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
+      position: String(req.body.position ?? "").trim() || null,
+      shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
+      provider: "local"
+    });
+    res.status(201).json(getKnowledgeSnapshotSummary());
   });
 
   app.put(["/api/knowledge/players/:id", "/api/knowledge/sports/players/:id"], async (req, res) => {
@@ -168,20 +172,19 @@ export function registerKnowledgeRoutes(app: Express) {
     const team = String(req.body.team ?? "").trim();
     const league = String(req.body.league ?? "");
     const teamsBySeason = Object.fromEntries(activeSeasons.map((season) => [season, team]));
-    res.json(
-      upsertKnowledgePlayer({
-        id,
-        canonical,
-        aliases,
-        activeSeasons,
-        teamsBySeason,
-        sport: req.body.sport === "american_football" ? "american_football" : "football",
-        league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
-        position: String(req.body.position ?? "").trim() || null,
-        shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
-        provider: "local"
-      })
-    );
+    upsertKnowledgePlayer({
+      id,
+      canonical,
+      aliases,
+      activeSeasons,
+      teamsBySeason,
+      sport: req.body.sport === "american_football" ? "american_football" : "football",
+      league: league === "NFL" || league === "Champions League" || league === "Bundesliga" || league === "Premier League" ? league : undefined,
+      position: String(req.body.position ?? "").trim() || null,
+      shirtNumber: req.body.shirtNumber ? Number(req.body.shirtNumber) : null,
+      provider: "local"
+    });
+    res.json(getKnowledgeSnapshotSummary());
   });
 
   app.delete(["/api/knowledge/players/:id", "/api/knowledge/sports/players/:id"], async (req, res) => {
@@ -190,7 +193,8 @@ export function registerKnowledgeRoutes(app: Express) {
       res.status(400).json({ error: "Player id is required" });
       return;
     }
-    res.json(deleteKnowledgePlayer(id));
+    deleteKnowledgePlayer(id);
+    res.json(getKnowledgeSnapshotSummary());
   });
 }
 

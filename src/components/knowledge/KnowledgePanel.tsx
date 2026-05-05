@@ -26,6 +26,13 @@ export function KnowledgePanel({
   const domainPlayers = knowledgeSnapshot?.players.filter((player) => player.sport === domainSport || domainCompetitionSet.has(player.league)) ?? [];
   const domainActivities = knowledgeSnapshot?.matchActivities?.filter((activity) => domainCompetitionSet.has(activity.competition)) ?? [];
   const domainFacts = knowledgeSnapshot?.facts?.filter((fact) => domainCompetitionSet.has(fact.competition)) ?? [];
+  const domainTotals = {
+    competitions: selectedDomainInfo?.competitions.length ?? domainCompetitions.length,
+    teams: selectedDomainInfo?.teams ?? domainTeams.length,
+    players: selectedDomainInfo?.players ?? domainPlayers.length,
+    activities: selectedDomainInfo?.matchActivities ?? domainActivities.length,
+    facts: selectedDomainInfo?.facts ?? domainFacts.length
+  };
   const players = domainPlayers.filter((player) => {
     const providerMatch = provider === "all" || (provider === "local" ? !player.provider || player.provider === "local" : player.provider === provider);
     if (!providerMatch) return false;
@@ -50,7 +57,7 @@ export function KnowledgePanel({
   const positionStats = topEntries(domainPlayers.map((player) => player.position ?? "unknown"));
   const activityRoleStats = topEntries(domainActivities.map((activity) => activity.role));
   const factKindStats = topEntries(domainFacts.map((fact) => fact.kind));
-  const availableKnowledgeDocuments = domainCompetitions.length + domainTeams.length + domainPlayers.length + domainActivities.length + domainFacts.length;
+  const availableKnowledgeDocuments = domainTotals.competitions + domainTotals.teams + domainTotals.players + domainTotals.activities + domainTotals.facts;
   return (
     <section className="panel knowledge-panel">
       <div className="panel-title">
@@ -66,11 +73,11 @@ export function KnowledgePanel({
               <p>{selectedDomain} · {domainSport.replace(/_/g, " ")}</p>
             </div>
             <div className="knowledge-domain-metrics">
-              <span><b>Players</b>{domainPlayers.length}</span>
-              <span><b>Teams</b>{domainTeams.length}</span>
-              <span><b>Competitions</b>{domainCompetitions.length}</span>
-              <span><b>Activities</b>{domainActivities.length}</span>
-              <span><b>Facts</b>{domainFacts.length}</span>
+              <span><b>Players</b>{domainTotals.players}</span>
+              <span><b>Teams</b>{domainTotals.teams}</span>
+              <span><b>Competitions</b>{domainTotals.competitions}</span>
+              <span><b>Activities</b>{domainTotals.activities}</span>
+              <span><b>Facts</b>{domainTotals.facts}</span>
             </div>
           </section>
           <KnowledgeRagCard
@@ -104,7 +111,7 @@ export function KnowledgePanel({
             <section className="knowledge-list-block wide">
               <div className="subsection-heading compact">
                 <p className="section-label">Knowledge Registry</p>
-                <h3>{domainCompetitions.length} competitions · {domainTeams.length} teams</h3>
+                <h3>{domainTotals.competitions} competitions · {domainTeams.slice(0, 80).length}/{domainTotals.teams} teams shown</h3>
               </div>
               <div className="knowledge-registry-grid">
                 <div className="table-list knowledge-table compact-table">
@@ -134,7 +141,7 @@ export function KnowledgePanel({
             <section className="knowledge-list-block">
               <div className="subsection-heading compact">
                 <p className="section-label">Players</p>
-                <h3>{players.length} records</h3>
+                <h3>{players.slice(0, 60).length}/{domainTotals.players} records shown</h3>
               </div>
               <div className="table-list knowledge-table">
                 {players.slice(0, 60).map((player) => {
@@ -163,7 +170,7 @@ export function KnowledgePanel({
             <section className="knowledge-list-block">
               <div className="subsection-heading compact">
                 <p className="section-label">Match Activity</p>
-                <h3>{domainActivities.length} records</h3>
+                <h3>{domainActivities.slice(0, 40).length}/{domainTotals.activities} records shown</h3>
               </div>
               <div className="table-list knowledge-table">
                 {domainActivities.slice(0, 40).map((activity) => (
@@ -180,7 +187,7 @@ export function KnowledgePanel({
             <section className="knowledge-list-block wide">
               <div className="subsection-heading compact">
                 <p className="section-label">Facts</p>
-                <h3>{domainFacts.length} records</h3>
+                <h3>{domainFacts.slice(0, 80).length}/{domainTotals.facts} records shown</h3>
               </div>
               <div className="table-list knowledge-table">
                 {domainFacts.slice(0, 80).map((fact) => (

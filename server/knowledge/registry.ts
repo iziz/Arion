@@ -2,6 +2,7 @@ export {
   deleteSportsKnowledgePlayer as deleteKnowledgePlayer,
   getKnowledgePlayer,
   getKnowledgeSnapshot,
+  getKnowledgeSnapshotSummary,
   matchCompetition as matchKnowledgeCompetition,
   matchKnowledgePlayer,
   matchKnowledgePlayers,

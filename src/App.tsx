@@ -1,12 +1,14 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AssetRecord,
+  AssetSummaryRecord,
   ClipDetailResult,
   IndexRecord,
   JobRecord,
   KnowledgeSourceId,
 } from "../shared/types";
 import { KNOWLEDGE_SOURCES } from "../shared/knowledgeSources";
+import { summarizeAssetRecord } from "../shared/assetSummary";
 import {
   api,
   getFailureMessage,
@@ -50,6 +52,8 @@ export default function App() {
   } = useConsoleData();
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [selectedMomentTime, setSelectedMomentTime] = useState<number | null>(null);
+  const [selectedAssetDetail, setSelectedAssetDetail] = useState<AssetRecord | null>(null);
+  const [selectedAssetLoading, setSelectedAssetLoading] = useState(false);
   const [clipDetail, setClipDetail] = useState<ClipDetailResult | null>(null);
   const [clipDetailLoading, setClipDetailLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -91,11 +95,11 @@ export default function App() {
     setMessage
   });
   const visibleAssets = assets.filter((asset) => !selectedIndex || asset.indexId === selectedIndex.id);
-  const visibleIndexedAssets = visibleAssets.filter((asset) => asset.status === "indexed").length;
-  const selectedAsset = useMemo(
+  const selectedAssetSummary = useMemo(
     () => visibleAssets.find((asset) => asset.id === selectedAssetId) ?? null,
     [selectedAssetId, visibleAssets]
   );
+  const selectedAsset = selectedAssetDetail?.id === selectedAssetId ? selectedAssetDetail : null;
   const selectedAssetJob = selectedAsset ? getLatestAssetJob(jobs, selectedAsset.id) : null;
   const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null;
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
@@ -170,16 +174,44 @@ export default function App() {
     setPendingSeek(null);
   }, [pendingSeek, selectedAsset]);
 
+  useEffect(() => {
+    if (!selectedAssetId) {
+      setSelectedAssetDetail(null);
+      setSelectedAssetLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSelectedAssetLoading(true);
+    api.get<AssetRecord>(`/api/assets/${selectedAssetId}`)
+      .then((asset) => {
+        if (cancelled) return;
+        setSelectedAssetDetail(asset);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSelectedAssetDetail(null);
+        setMessage(`Asset detail load failed: ${getFailureMessage(error)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedAssetLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAssetId, selectedAssetSummary?.updatedAt, setMessage]);
+
   function upsertUploadedAsset(asset: AssetRecord, job?: JobRecord) {
+    const summary = summarizeAssetRecord(asset);
     setAssets((current) => {
-      const existing = current.findIndex((item) => item.id === asset.id);
+      const existing = current.findIndex((item) => item.id === summary.id);
       if (existing >= 0) {
         const currentAsset = current[existing];
-        if (isNewerAssetRecord(currentAsset, asset)) return current;
-        return current.map((item) => (item.id === asset.id ? asset : item));
+        if (isNewerAssetSummary(currentAsset, summary)) return current;
+        return current.map((item) => (item.id === summary.id ? summary : item));
       }
-      return [asset, ...current];
+      return [summary, ...current];
     });
+    setSelectedAssetDetail(asset);
     if (job) {
       setJobs((current) => {
         const existing = current.findIndex((item) => item.id === job.id);
@@ -193,12 +225,12 @@ export default function App() {
     }
     setIndexes((current) =>
       current.map((index) =>
-        index.id === asset.indexId
+        index.id === summary.indexId
           ? {
               ...index,
-              assetIds: index.assetIds.includes(asset.id) ? index.assetIds : [...index.assetIds, asset.id],
+              assetIds: index.assetIds.includes(summary.id) ? index.assetIds : [...index.assetIds, summary.id],
               status: "ready",
-              updatedAt: asset.updatedAt
+              updatedAt: summary.updatedAt
             }
           : index
       )
@@ -415,7 +447,7 @@ export default function App() {
     );
   }
 
-  function selectAsset(asset: AssetRecord) {
+  function selectAsset(asset: AssetSummaryRecord) {
     playerRef.current?.pause();
     setActiveTab("data");
     setSelectedIndexId(asset.indexId);
@@ -443,9 +475,9 @@ export default function App() {
       indexes={indexes}
       assets={assets}
       visibleAssets={visibleAssets}
-      visibleIndexedAssets={visibleIndexedAssets}
       selectedIndex={selectedIndex}
       selectedAsset={selectedAsset}
+      selectedAssetLoading={selectedAssetLoading}
       selectedAssetJob={selectedAssetJob}
       selectedSegment={selectedSegment}
       selectedJob={selectedJob}
@@ -507,7 +539,7 @@ export default function App() {
   );
 }
 
-function isNewerAssetRecord(current: AssetRecord, next: AssetRecord) {
+function isNewerAssetSummary(current: AssetSummaryRecord, next: AssetSummaryRecord) {
   const currentTime = Date.parse(current.updatedAt) || 0;
   const nextTime = Date.parse(next.updatedAt) || 0;
   if (currentTime !== nextTime) return currentTime > nextTime;

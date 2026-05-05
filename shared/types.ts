@@ -502,6 +502,41 @@ export type AssetRecord = {
   updatedAt: string;
 };
 
+export type AssetDomainVlmSummary = {
+  refined: number;
+  invalid: number;
+  failed: number;
+  skipped: number;
+  attempted: number;
+};
+
+export type AssetSummaryRecord = Pick<
+  AssetRecord,
+  | "id"
+  | "indexId"
+  | "title"
+  | "description"
+  | "originalName"
+  | "storedName"
+  | "mimeType"
+  | "size"
+  | "duration"
+  | "width"
+  | "height"
+  | "status"
+  | "progress"
+  | "tags"
+  | "summary"
+  | "error"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  timelineCount: number;
+  keyframeCount: number;
+  domainEventCount: number;
+  domainVlm: AssetDomainVlmSummary;
+};
+
 export type SearchResult = {
   asset: AssetRecord;
   index: IndexRecord | null;

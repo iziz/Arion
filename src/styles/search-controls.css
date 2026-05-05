@@ -1457,6 +1457,40 @@
   gap: 8px;
 }
 
+.workflow-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.workflow-detail-grid span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid #d9ebe4;
+  border-radius: 8px;
+  background: #f7fbf9;
+  padding: 8px 10px;
+}
+
+.workflow-detail-grid b {
+  color: #2b8b70;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.workflow-detail-grid em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #33453f;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 780;
+  line-height: 1.4;
+}
+
 @media (max-width: 760px) {
   .search-workflow-header,
   .workflow-step-heading {

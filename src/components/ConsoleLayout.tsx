@@ -16,6 +16,7 @@ import {
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
 import type {
   AssetRecord,
+  AssetSummaryRecord,
   ClipDetailResult,
   DomainQueryPlan,
   EventRecord,
@@ -58,11 +59,11 @@ export type ConsoleLayoutProps = {
   activeTab: ConsoleTab;
   setActiveTab: (tab: ConsoleTab) => void;
   indexes: IndexRecord[];
-  assets: AssetRecord[];
-  visibleAssets: AssetRecord[];
-  visibleIndexedAssets: number;
+  assets: AssetSummaryRecord[];
+  visibleAssets: AssetSummaryRecord[];
   selectedIndex: IndexRecord | null;
   selectedAsset: AssetRecord | null;
+  selectedAssetLoading: boolean;
   selectedAssetJob: JobRecord | null;
   selectedSegment: AssetRecord["timeline"][number] | null;
   selectedJob: JobRecord | null;
@@ -74,7 +75,7 @@ export type ConsoleLayoutProps = {
   searchResults: SearchResult[];
   setDialogMode: Dispatch<SetStateAction<DialogMode>>;
   selectIndex: (indexId: string) => void;
-  selectAsset: (asset: AssetRecord) => void;
+  selectAsset: (asset: AssetSummaryRecord) => void;
   deleteIndex: (indexId: string) => Promise<void>;
   deleteAsset: (assetId: string) => Promise<void>;
   busy: boolean;
@@ -123,7 +124,7 @@ export type ConsoleLayoutProps = {
 };
 
 type SearchVideoPreview = {
-  asset: AssetRecord;
+  asset: Pick<AssetRecord, "id" | "title" | "storedName">;
   segment: AssetRecord["timeline"][number];
   start?: number;
   end?: number;
@@ -182,9 +183,9 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     indexes,
     assets,
     visibleAssets,
-    visibleIndexedAssets,
     selectedIndex,
     selectedAsset,
+    selectedAssetLoading,
     selectedAssetJob,
     selectedSegment,
     selectedJob,
@@ -245,6 +246,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   const [searchTargetOpen, setSearchTargetOpen] = useState(false);
   const knowledgeDomains = knowledgeSnapshot?.domains ?? defaultKnowledgeDomains();
   const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? KNOWLEDGE_SOURCES[0]?.id ?? "";
+  const knowledgeRecordCount = sumKnowledgeDomainDocuments(knowledgeDomains);
   const observabilityView = observability ? buildObservabilityView(observability) : null;
   const failedJobCount = jobs.filter((job) => job.status === "failed").length;
   const succeededJobCount = jobs.filter((job) => job.status === "succeeded").length;
@@ -273,7 +275,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   }, [knowledgeDomains, selectedKnowledgeDomain]);
 
   function openSearchVideo(
-    asset: AssetRecord,
+    asset: Pick<AssetRecord, "id" | "title" | "storedName">,
     segment: AssetRecord["timeline"][number],
     options: { start?: number; end?: number; label?: string } = {}
   ) {
@@ -320,7 +322,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "data"}
           icon={<FileVideo size={17} />}
           label="에셋"
-          meta={`${visibleIndexedAssets}/${visibleAssets.length} indexed`}
+          meta={`${indexes.length} groups · ${assets.length} assets`}
           onClick={() => setActiveTab("data")}
         />
         {activeTab === "data" && (
@@ -387,7 +389,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "knowledge"}
           icon={<Layers3 size={17} />}
           label="지식"
-          meta={`${knowledgeSnapshot?.players.length ?? 0} records`}
+          meta={knowledgeSnapshot ? `${knowledgeRecordCount} records` : "loading"}
           onClick={() => setActiveTab("knowledge")}
         />
         {activeTab === "knowledge" && (
@@ -528,6 +530,14 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   />
                 </section>
               )}
+            </>
+          ) : selectedAssetLoading ? (
+            <>
+              <div className="panel-title detail-title">
+                <FileVideo size={18} />
+                <h2>Node workflow</h2>
+              </div>
+              <EmptyState text="Asset detail is loading." />
             </>
           ) : (
             <>
@@ -881,6 +891,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         </section>
       )}
     </main>
+  );
+}
+
+function sumKnowledgeDomainDocuments(domains: NonNullable<KnowledgeSnapshot["domains"]>) {
+  return domains.reduce(
+    (total, domain) => total + domain.competitions.length + domain.teams + domain.players + domain.matchActivities + domain.facts,
+    0
   );
 }
 

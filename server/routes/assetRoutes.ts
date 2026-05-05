@@ -12,13 +12,19 @@ import { getTrackingSummary, listTrackingRecords } from "../trackingStore";
 import { isVlmWorkerEnabled } from "../vlmWorkerClient";
 import { createAssetFromUpload, normalizeWorkflowStage } from "../workflows/indexingWorkflow";
 import { deleteAssetCascade, getAsset, getIndex, listAssets, listIndexes } from "../store";
+import { summarizeAssetRecords } from "../../shared/assetSummary";
 import type { JobRecord } from "../../shared/types";
 
 type UploadMiddleware = { single(fieldName: string): RequestHandler };
 
 export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
   app.get("/api/assets", async (req, res) => {
-    res.json(await listAssets(req.query.indexId ? String(req.query.indexId) : undefined));
+    const assets = await listAssets(req.query.indexId ? String(req.query.indexId) : undefined);
+    res.json(shouldReturnAssetSummary(req.query) ? summarizeAssetRecords(assets) : assets);
+  });
+
+  app.get("/api/assets/summary", async (req, res) => {
+    res.json(summarizeAssetRecords(await listAssets(req.query.indexId ? String(req.query.indexId) : undefined)));
   });
 
   app.get("/api/assets/:id", async (req, res) => {
@@ -206,4 +212,8 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
       skippedAssets: skipped
     });
   });
+}
+
+function shouldReturnAssetSummary(query: Record<string, unknown>) {
+  return query.view === "summary" || query.summary === "true";
 }

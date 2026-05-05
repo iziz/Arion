@@ -1,6 +1,6 @@
 import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
-import type { AssetRecord, IndexRecord, JobRecord } from "../../../shared/types";
+import type { AssetRecord, AssetSummaryRecord, IndexRecord, JobRecord } from "../../../shared/types";
 import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
 import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
@@ -103,7 +103,7 @@ export function AssetGroupSummary({
   onRefineVlm
 }: {
   index: IndexRecord | null;
-  assets: AssetRecord[];
+  assets: AssetSummaryRecord[];
   busy: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -186,18 +186,18 @@ function summarizeCapabilityPolicy(policy: NonNullable<IndexRecord["capabilityPo
   return "capabilities optional";
 }
 
-function summarizeAssetGroupVlm(assets: AssetRecord[]) {
+function summarizeAssetGroupVlm(assets: AssetSummaryRecord[]) {
   const counts = assets.reduce(
-    (sum, asset) => {
-      for (const segment of asset.timeline) {
-        const status = segment.domain?.vlm?.status;
-        if (status) sum[status] += 1;
-      }
-      return sum;
-    },
-    { refined: 0, invalid: 0, failed: 0, skipped: 0 }
+    (sum, asset) => ({
+      refined: sum.refined + asset.domainVlm.refined,
+      invalid: sum.invalid + asset.domainVlm.invalid,
+      failed: sum.failed + asset.domainVlm.failed,
+      skipped: sum.skipped + asset.domainVlm.skipped,
+      attempted: sum.attempted + asset.domainVlm.attempted
+    }),
+    { refined: 0, invalid: 0, failed: 0, skipped: 0, attempted: 0 }
   );
-  const attempted = counts.refined + counts.invalid + counts.failed;
+  const attempted = counts.attempted;
   if (attempted === 0) return "not run";
   return `${counts.refined}/${attempted} refined${counts.invalid ? ` · ${counts.invalid} invalid` : ""}${counts.failed ? ` · ${counts.failed} failed` : ""}`;
 }
@@ -1520,7 +1520,7 @@ export function AssetDetailTabs({ active, onChange }: { active: AssetDetailTab; 
     </div>
   );
 }
-export function AssetStatusIndicator({ asset }: { asset: AssetRecord }) {
+export function AssetStatusIndicator({ asset }: { asset: Pick<AssetRecord, "status"> }) {
   if (asset.status === "indexed") {
     return (
       <span className="asset-status-icon" aria-label="Indexed" title="Indexed">

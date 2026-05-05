@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  AssetRecord,
+  AssetSummaryRecord,
   EventRecord,
   IndexRecord,
   JobRecord,
@@ -25,7 +25,7 @@ import { getConsoleRefreshIntervalMs } from "./useConsoleRefreshPolicy";
 
 export function useConsoleData() {
   const [indexes, setIndexes] = useState<IndexRecord[]>([]);
-  const [assets, setAssets] = useState<AssetRecord[]>([]);
+  const [assets, setAssets] = useState<AssetSummaryRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [metrics, setMetrics] = useState<MetricsSummary>(emptyMetrics);
@@ -50,12 +50,12 @@ export function useConsoleData() {
       const failures: string[] = [];
       const [indexesResult, assetsResult, jobsResult, eventsResult] = await Promise.allSettled([
         api.get<IndexRecord[]>("/api/indexes"),
-        api.get<AssetRecord[]>("/api/assets"),
+        api.get<AssetSummaryRecord[]>("/api/assets/summary"),
         api.get<JobRecord[]>("/api/jobs"),
         api.get<EventRecord[]>("/api/events?limit=20")
       ]);
       const nextIndexes = getArrayResult<IndexRecord>(indexesResult, "indexes", failures);
-      const nextAssets = getArrayResult<AssetRecord>(assetsResult, "assets", failures);
+      const nextAssets = getArrayResult<AssetSummaryRecord>(assetsResult, "assets", failures);
       const nextJobs = getArrayResult<JobRecord>(jobsResult, "jobs", failures);
       const nextEvents = getArrayResult<EventRecord>(eventsResult, "events", failures);
 
@@ -77,8 +77,13 @@ export function useConsoleData() {
         api.get<MetricsSummary>("/api/metrics"),
         api.get<DatabaseStatus>("/api/db/status"),
         api.get<ObservabilitySnapshot>("/api/observability"),
-        api.get<KnowledgeSnapshot>("/api/knowledge"),
-        api.get<KnowledgeVectorStoreStatus>("/api/knowledge/vector-store")
+        getWithFallback<KnowledgeSnapshot>([
+          "/api/knowledge/summary",
+          "/api/knowledge?summary=true",
+          "/api/knowledge/sports/summary",
+          "/api/knowledge/sports?summary=true"
+        ]),
+        getWithFallback<KnowledgeVectorStoreStatus>(["/api/knowledge/vector-store", "/api/knowledge/sports/vector-store"])
       ]);
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
@@ -171,4 +176,16 @@ export function useConsoleData() {
     message,
     setMessage
   };
+}
+
+async function getWithFallback<T>(urls: string[]): Promise<T> {
+  let lastError: unknown = null;
+  for (const url of urls) {
+    try {
+      return await api.get<T>(url);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`All API fallbacks failed: ${urls.join(", ")}`);
 }
