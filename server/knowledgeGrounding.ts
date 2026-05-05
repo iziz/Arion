@@ -1,7 +1,6 @@
 import type { AssetRecord, DomainQueryPlan, DomainSearchFilters, KnowledgeEvidence, PlayerIdentity } from "../shared/types";
 import { trustedDomainEvents } from "./evidenceTrust";
-import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayers } from "./knowledge/registry";
-import { isPlayerInventoryQuery } from "./queryPlanner";
+import { getKnowledgePlayer, getKnowledgeSnapshot, matchKnowledgePlayer } from "./knowledge/registry";
 
 export type GroundedQuery = {
   filters: DomainSearchFilters;
@@ -32,16 +31,14 @@ function groundFacts(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
   const snapshot = getKnowledgeSnapshot();
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;
-  const query = normalize(queryPlan.originalQuery);
-  const wantsTeamStats = /table|standing|offense|defense|attendance|nationalit|goals|points|touchdowns?|passing|rushing|receiving|sacks?|interceptions?|팀|순위|득점|실점|관중|국적|터치다운|야드/.test(query);
-  if (!requestedCompetition && !requestedSeason && !wantsTeamStats) return [];
+  const wantsStructuredStats = Boolean(queryPlan.intent.metric || queryPlan.intent.statMode || queryPlan.responseMode === "structured_answer");
+  if (!requestedCompetition && !requestedSeason && !wantsStructuredStats) return [];
 
   return (snapshot.facts ?? [])
     .filter((fact) => {
       if (requestedCompetition && fact.competition !== requestedCompetition) return false;
       if (requestedSeason && !seasonMatches([fact.season], requestedSeason)) return false;
-      if (query && fact.entityName && query.includes(normalize(fact.entityName))) return true;
-      if (wantsTeamStats) return true;
+      if (wantsStructuredStats) return true;
       return Boolean(requestedCompetition || requestedSeason);
     })
     .slice(0, 30)
@@ -66,7 +63,7 @@ export function knowledgeEvidenceForNames(evidence: KnowledgeEvidence[], names: 
 }
 
 function groundCompetition(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
-  const competition = queryPlan.domainFilters.competition ?? matchKnowledgeCompetition(queryPlan.originalQuery)?.value;
+  const competition = queryPlan.domainFilters.competition;
   if (!competition) return [];
   return [
     {
@@ -84,7 +81,7 @@ function groundCompetition(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
 
 function groundPlayers(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
   const snapshot = getKnowledgeSnapshot();
-  const requestedPlayer = queryPlan.domainFilters.player ?? matchKnowledgePlayers(queryPlan.originalQuery)[0]?.value.canonical;
+  const requestedPlayer = resolvePlannedPlayer(queryPlan);
   const requestedCompetition = queryPlan.domainFilters.competition;
   const requestedSeason = queryPlan.domainFilters.season;
   const candidates = snapshot.players.filter((player) => {
@@ -131,6 +128,22 @@ function groundPlayers(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
   });
 }
 
+function resolvePlannedPlayer(queryPlan: DomainQueryPlan) {
+  const direct = queryPlan.domainFilters.player ?? queryPlan.intent.player ?? undefined;
+  if (direct) return direct;
+  const analysisSubject = queryPlan.intent.analysisSubject;
+  if (analysisSubject) {
+    const player = getKnowledgePlayer(analysisSubject);
+    if (player) return player.canonical;
+  }
+  const plannedText = [
+    queryPlan.retrieval?.evidenceTerms.join(" "),
+    queryPlan.semanticQuery,
+    queryPlan.rewrittenQuery
+  ].filter(Boolean).join(" ");
+  return matchKnowledgePlayer(plannedText)?.value.canonical;
+}
+
 function groundMatchActivities(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
   const snapshot = getKnowledgeSnapshot();
   const requestedPlayer = queryPlan.domainFilters.player;
@@ -162,8 +175,7 @@ function groundMatchActivities(queryPlan: DomainQueryPlan): KnowledgeEvidence[] 
 }
 
 function groundVideoScope(queryPlan: DomainQueryPlan, assets: AssetRecord[]): KnowledgeEvidence[] {
-  const inventoryQuery = isPlayerInventoryQuery(queryPlan.originalQuery);
-  if (!inventoryQuery && !queryPlan.domainFilters.player) return [];
+  if (!isPlayerInventoryPlan(queryPlan) && !queryPlan.domainFilters.player && !queryPlan.intent.player) return [];
 
   const evidence: KnowledgeEvidence[] = [];
   for (const asset of assets) {
@@ -214,13 +226,29 @@ function addIdentity(players: Map<string, { name: string; confidence: number; ev
 }
 
 function rankKnowledgeEvidence(queryPlan: DomainQueryPlan, evidence: KnowledgeEvidence[]) {
-  const queryText = normalize(`${queryPlan.originalQuery} ${queryPlan.semanticQuery}`);
+  const queryText = normalize(plannedEvidenceText(queryPlan));
   const terms = queryTerms(queryText);
   const filters = queryPlan.domainFilters;
   return evidence
     .map((item) => ({ item, score: scoreKnowledgeEvidence(item, queryText, terms, filters) }))
     .sort((a, b) => b.score - a.score || b.item.confidence - a.item.confidence)
     .map((entry) => entry.item);
+}
+
+function plannedEvidenceText(queryPlan: DomainQueryPlan) {
+  return [
+    queryPlan.semanticQuery,
+    queryPlan.rewrittenQuery,
+    queryPlan.intent.analysisSubject,
+    queryPlan.intent.player,
+    queryPlan.intent.metric,
+    queryPlan.intent.statMode,
+    queryPlan.retrieval?.evidenceTerms.join(" ")
+  ].filter(Boolean).join(" ");
+}
+
+function isPlayerInventoryPlan(queryPlan: DomainQueryPlan) {
+  return queryPlan.route === "asset_catalog" || queryPlan.responseMode === "asset_lookup";
 }
 
 function scoreKnowledgeEvidence(item: KnowledgeEvidence, queryText: string, terms: string[], filters: DomainSearchFilters) {

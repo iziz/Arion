@@ -27,6 +27,7 @@ DEFAULT_DEVICE_MAP = "mps" if platform.system() == "Darwin" else "auto"
 DEVICE_MAP = os.environ.get("QWEN_VLM_DEVICE_MAP", DEFAULT_DEVICE_MAP)
 TORCH_DTYPE = os.environ.get("QWEN_VLM_TORCH_DTYPE", "float32" if DEVICE_MAP == "cpu" else "auto")
 MAX_NEW_TOKENS = int(os.environ.get("QWEN_VLM_MAX_NEW_TOKENS", "384"))
+QUERY_PLAN_MAX_NEW_TOKENS = int(os.environ.get("QWEN_VLM_QUERY_MAX_NEW_TOKENS", "768"))
 MODEL_LOAD_LOCK = threading.Lock()
 MODEL_GENERATION_LOCK = threading.Lock()
 
@@ -46,6 +47,17 @@ class VideoSegmentRequest(BaseModel):
     imagePath: str | None = None
     asset: dict[str, Any] = {}
     segment: dict[str, Any] = {}
+
+
+class QueryPlanRequest(BaseModel):
+    model: str | None = None
+    query: str = ""
+    currentDate: str | None = None
+    defaultFootballSeasonRule: str | None = None
+    allowed: dict[str, Any] = {}
+    knownCompetitions: list[str] = []
+    knownPlayers: list[dict[str, Any]] = []
+    explicitFilters: dict[str, Any] = {}
 
 
 app = FastAPI(title="Arion Qwen VLM Worker", version="0.1.0")
@@ -84,6 +96,15 @@ async def analyze_video_segment(request: VideoSegmentRequest) -> dict[str, Any]:
     if not parsed:
         return _empty_video_response("Model did not return parseable JSON.", raw=output_text)
     return _normalize_video_response(parsed, output_text)
+
+
+@app.post("/plan/query")
+async def plan_query(request: QueryPlanRequest) -> dict[str, Any]:
+    output_text = await asyncio.to_thread(_generate_query_plan_text_locked, request)
+    parsed = _parse_json(output_text)
+    if not parsed:
+        return _empty_query_plan_response("Model did not return parseable JSON.", raw=output_text)
+    return _normalize_query_plan_response(parsed, output_text)
 
 
 def _model_loaded() -> bool:
@@ -149,6 +170,10 @@ def _generate_video_text(request: VideoSegmentRequest) -> str:
     return _generate_from_messages(_build_video_messages(request), _image_path(request))
 
 
+def _generate_query_plan_text(request: QueryPlanRequest) -> str:
+    return _generate_from_messages(_build_query_plan_messages(request), None, QUERY_PLAN_MAX_NEW_TOKENS)
+
+
 def _generate_text_locked(request: StructureRequest) -> str:
     with MODEL_GENERATION_LOCK:
         return _generate_text(request)
@@ -159,13 +184,18 @@ def _generate_video_text_locked(request: VideoSegmentRequest) -> str:
         return _generate_video_text(request)
 
 
-def _generate_from_messages(messages: list[dict[str, Any]], image_path: str | None) -> str:
+def _generate_query_plan_text_locked(request: QueryPlanRequest) -> str:
+    with MODEL_GENERATION_LOCK:
+        return _generate_query_plan_text(request)
+
+
+def _generate_from_messages(messages: list[dict[str, Any]], image_path: str | None, max_tokens: int = MAX_NEW_TOKENS) -> str:
     if BACKEND == "mlx":
-        return _generate_text_with_mlx(messages, image_path)
-    return _generate_text_with_transformers(messages)
+        return _generate_text_with_mlx(messages, image_path, max_tokens)
+    return _generate_text_with_transformers(messages, max_tokens)
 
 
-def _generate_text_with_transformers(messages: list[dict[str, Any]]) -> str:
+def _generate_text_with_transformers(messages: list[dict[str, Any]], max_tokens: int) -> str:
     model, processor = _load_model()
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = _process_vision_info(messages)
@@ -177,7 +207,7 @@ def _generate_text_with_transformers(messages: list[dict[str, Any]]) -> str:
         return_tensors="pt",
     )
     inputs = inputs.to(model.device)
-    generated_ids = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+    generated_ids = model.generate(**inputs, max_new_tokens=max_tokens)
     generated_ids_trimmed = [
         output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
     ]
@@ -188,7 +218,7 @@ def _generate_text_with_transformers(messages: list[dict[str, Any]]) -> str:
     )[0]
 
 
-def _generate_text_with_mlx(messages: list[dict[str, Any]], image_path: str | None) -> str:
+def _generate_text_with_mlx(messages: list[dict[str, Any]], image_path: str | None, max_tokens: int) -> str:
     from mlx_vlm import apply_chat_template, generate
 
     model, processor = _load_model()
@@ -204,7 +234,7 @@ def _generate_text_with_mlx(messages: list[dict[str, Any]], image_path: str | No
         processor,
         prompt,
         image=[image_path] if image_path else None,
-        max_tokens=MAX_NEW_TOKENS,
+        max_tokens=max_tokens,
         temperature=0.0,
         verbose=False,
     )
@@ -335,6 +365,54 @@ def _build_video_messages(request: VideoSegmentRequest) -> list[dict[str, Any]]:
     return [{"role": "user", "content": content}]
 
 
+def _build_query_plan_messages(request: QueryPlanRequest) -> list[dict[str, Any]]:
+    shape = (
+        "{\"route\":\"asset_evidence|knowledge_seeded_asset_evidence|knowledge_evidence|asset_catalog|unsupported\","
+        "\"responseMode\":\"moment_retrieval|grounded_answer|summary|analysis|structured_answer|asset_lookup\","
+        "\"knowledgeMode\":\"none|grounding|direct_answer\",\"metric\":null,"
+        "\"statMode\":\"leaderboard|player_total|null\",\"analysisSubject\":null,"
+        "\"competition\":null,\"season\":null,\"player\":null,\"eventType\":null,"
+        "\"passType\":null,\"fieldZone\":null,\"role\":null,\"semanticQuery\":\"...\","
+        "\"retrieval\":{\"textQuery\":\"...\",\"visualQuery\":\"...\","
+        "\"evidenceTerms\":[\"...\"],\"requiredEvidence\":[{\"kind\":\"visible_text|spoken_text\","
+        "\"terms\":[\"literal text only\"],\"match\":\"all|any\"}]},"
+        "\"filterEvidence\":{\"competition\":[\"...\"],\"season\":[\"...\"],\"player\":[\"...\"],"
+        "\"eventType\":[\"...\"],\"passType\":[\"...\"],\"fieldZone\":[\"...\"],\"role\":[\"...\"],"
+        "\"statMode\":[\"...\"],\"analysisSubject\":[\"...\"]},"
+        "\"confidence\":0.0,\"warnings\":[\"...\"]}"
+    )
+    prompt = {
+        "task": (
+            "Plan a query for a video intelligence search platform. "
+            "Return compact valid JSON only, no markdown. "
+            f"Use this exact shape: {shape}"
+        ),
+        "routingRules": [
+            "Choose route by evidence source: asset_evidence for indexed video evidence, knowledge_seeded_asset_evidence when selected related knowledge must first resolve a ranking/stat subject before indexed video moment retrieval, knowledge_evidence for selected related knowledge direct answers, asset_catalog for asset/group lookup, unsupported only when neither source can answer.",
+            "Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for related-knowledge facts, asset_lookup for catalog queries.",
+            "For sports statistics, set statMode to leaderboard for top/ranking/leader questions, player_total for a specific player's total, otherwise null.",
+            "For analysis questions, set analysisSubject to the normalized subject being analyzed when the user names one.",
+            "Return filterEvidence for every inferred structured filter, statMode, or analysisSubject. Each value must be a short exact phrase or planner rationale. Caller explicitFilters do not need filterEvidence.",
+            "Use retrieval.requiredEvidence for hard evidence constraints. For visible text, OCR, subtitle, caption, logo text, or on-screen text requests, requiredEvidence must contain the literal required text with kind=visible_text.",
+            "For spoken dialogue requests such as says, speaks, said, uttered, 말하는, or 라고 말, requiredEvidence must contain the literal spoken phrase and direct translation aliases with kind=spoken_text.",
+            "If the user quotes a phrase or uses X라고 말, preserve the literal phrase and do not broaden it to same-language paraphrases. Use broader polite, casual, stem, and translation variants only when the user asks for a concept such as thank-you expressions rather than an exact utterance.",
+            "OCR, subtitle, caption, logo, screen text, and visible text are evidence channels. Do not put those channel names into requiredEvidence. Put only the user-requested literal text there.",
+            "Speech, ASR, transcript, says, speaks, and 말하는 are evidence channels or actions. Do not put those channel/action words into requiredEvidence.",
+            "For non-English queries, evidenceTerms should include original-language literal evidence and useful English aliases. Do not include command words such as find, show, search, scene, video, clip, appears, or shown.",
+            "Do not inspect video frames here; this is a text-only query planning pass."
+        ],
+        "currentDate": request.currentDate,
+        "defaultFootballSeasonRule": request.defaultFootballSeasonRule,
+        "allowed": request.allowed,
+        "knownCompetitions": request.knownCompetitions[:80],
+        "knownPlayers": request.knownPlayers[:50],
+        "explicitFilters": request.explicitFilters,
+        "query": request.query,
+    }
+    content = [{"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}]
+    return [{"role": "user", "content": content}]
+
+
 def _parse_json(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -376,6 +454,78 @@ def _normalize_video_response(parsed: dict[str, Any], raw: str) -> dict[str, Any
         "evidence": evidence if evidence else [raw[:240]],
         "rawResponse": raw[:2000],
     }
+
+
+def _normalize_query_plan_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
+    return {
+        "provider": f"qwen2.5-vl:{BACKEND}",
+        "model": DEFAULT_MODEL,
+        "route": _optional_text(parsed.get("route")),
+        "responseMode": _optional_text(parsed.get("responseMode")),
+        "knowledgeMode": _optional_text(parsed.get("knowledgeMode")),
+        "questionType": _optional_text(parsed.get("questionType")),
+        "metric": _optional_text(parsed.get("metric")),
+        "statMode": _optional_text(parsed.get("statMode")),
+        "analysisSubject": _optional_text(parsed.get("analysisSubject")),
+        "competition": _optional_text(parsed.get("competition")),
+        "season": _optional_text(parsed.get("season")),
+        "player": _optional_text(parsed.get("player")),
+        "eventType": _optional_text(parsed.get("eventType")),
+        "passType": _optional_text(parsed.get("passType")),
+        "fieldZone": _optional_text(parsed.get("fieldZone")),
+        "role": _optional_text(parsed.get("role")),
+        "semanticQuery": _optional_text(parsed.get("semanticQuery")),
+        "retrieval": _query_retrieval(parsed.get("retrieval")),
+        "filterEvidence": _filter_evidence(parsed.get("filterEvidence")),
+        "confidence": _confidence(parsed.get("confidence")),
+        "warnings": _string_list(parsed.get("warnings"), 8),
+        "rawResponse": raw[:2000],
+    }
+
+
+def _query_retrieval(value: Any) -> dict[str, Any]:
+    retrieval = value if isinstance(value, dict) else {}
+    return {
+        "textQuery": _optional_text(retrieval.get("textQuery")),
+        "visualQuery": _optional_text(retrieval.get("visualQuery")),
+        "evidenceTerms": _string_list(retrieval.get("evidenceTerms"), 16),
+        "requiredEvidence": _required_evidence(retrieval.get("requiredEvidence")),
+    }
+
+
+def _filter_evidence(value: Any) -> dict[str, list[str]]:
+    source = value if isinstance(value, dict) else {}
+    keys = (
+        "competition",
+        "season",
+        "player",
+        "eventType",
+        "passType",
+        "fieldZone",
+        "role",
+        "statMode",
+        "analysisSubject",
+    )
+    return {key: evidence for key in keys if (evidence := _string_list(source.get(key), 6))}
+
+
+def _required_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    constraints: list[dict[str, Any]] = []
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        terms = _string_list(item.get("terms"), 8)
+        if not terms:
+            continue
+        kind = item.get("kind") if item.get("kind") in ("visible_text", "spoken_text") else "visible_text"
+        constraints.append({
+            "kind": kind,
+            "terms": terms,
+            "match": "any" if item.get("match") == "any" else "all",
+        })
+    return constraints
 
 
 def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
@@ -470,6 +620,13 @@ def _string_list(value: Any, limit: int) -> list[str]:
     return items
 
 
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:240] if text else None
+
+
 def _evidence(value: Any, raw: str) -> list[str]:
     if not isinstance(value, list):
         return [raw[:240]]
@@ -524,6 +681,15 @@ def _empty_video_response(reason: str, raw: str = "") -> dict[str, Any]:
         "actions": [],
         "visibleText": [],
         "evidence": [reason, raw[:240]] if raw else [reason],
+        "rawResponse": raw[:2000] if raw else "",
+    }
+
+
+def _empty_query_plan_response(reason: str, raw: str = "") -> dict[str, Any]:
+    return {
+        "provider": f"qwen2.5-vl:{BACKEND}",
+        "model": DEFAULT_MODEL,
+        "error": reason,
         "rawResponse": raw[:2000] if raw else "",
     }
 

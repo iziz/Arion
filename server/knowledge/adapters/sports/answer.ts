@@ -1,6 +1,5 @@
 import type { DomainQueryPlan, StructuredKnowledgeAnswer, KnowledgeSnapshot } from "../../../../shared/types";
-import { isStatLeaderboardQuery } from "../../../queryPlanner";
-import { getKnowledgePlayer, getKnowledgeSnapshot, matchCompetition, matchKnowledgePlayer, playerTeamForSeason } from "./store";
+import { getKnowledgePlayer, getKnowledgeSnapshot, playerTeamForSeason } from "./store";
 
 type MatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
 type Metric = NonNullable<StructuredKnowledgeAnswer["subject"]["metric"]>;
@@ -12,14 +11,16 @@ type MetricRow = {
 
 export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): StructuredKnowledgeAnswer {
   const metric = queryPlan.intent.metric ?? null;
-  const playerMatch = queryPlan.intent.player ? getKnowledgePlayer(queryPlan.intent.player) : matchKnowledgePlayer(queryPlan.originalQuery)?.value ?? null;
-  const competition = queryPlan.domainFilters.competition ?? matchCompetition(queryPlan.originalQuery)?.value ?? playerMatch?.league ?? null;
+  const requestedPlayer = queryPlan.intent.player ?? queryPlan.domainFilters.player ?? null;
+  const playerMatch = requestedPlayer ? getKnowledgePlayer(requestedPlayer) : null;
+  const competition = queryPlan.domainFilters.competition ?? playerMatch?.league ?? null;
   const season = queryPlan.domainFilters.season ?? null;
+  const statMode = queryPlan.intent.statMode ?? (playerMatch ? "player_total" : null);
 
   if (queryPlan.route !== "knowledge_evidence" || queryPlan.responseMode !== "structured_answer" || queryPlan.knowledgeMode !== "direct_answer" || !metric) {
     return emptyAnswer("unsupported", "This query is not a supported sports statistics question.", { player: playerMatch?.canonical ?? null, competition, season, metric });
   }
-  if (!playerMatch) {
+  if (statMode === "leaderboard") {
     const leader = resolveLeaderboardSubject(queryPlan, metric, competition, season);
     if (leader) {
       return {
@@ -39,23 +40,23 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Struc
         ].filter(Boolean)
       };
     }
-    if (isStatLeaderboardQuery(queryPlan.originalQuery)) {
-      return {
-        applicable: true,
-        route: "stat_qa",
-        answer: `I do not have imported ${metric} leaderboard data for ${formatScope(competition, season)}.`,
-        confidence: 0.34,
-        subject: { player: null, competition, season, metric },
-        value: null,
-        status: "missing_stat",
-        evidence: [],
-        fallback: null,
-        warnings: [
-          "No imported leaderboard rows matched this scoped statistics question.",
-          "Video retrieval may still use indexed asset metadata as a scoped fallback."
-        ]
-      };
-    }
+    return {
+      applicable: true,
+      route: "stat_qa",
+      answer: `I do not have imported ${metric} leaderboard data for ${formatScope(competition, season)}.`,
+      confidence: 0.34,
+      subject: { player: null, competition, season, metric },
+      value: null,
+      status: "missing_stat",
+      evidence: [],
+      fallback: null,
+      warnings: [
+        "No imported leaderboard rows matched this scoped statistics question.",
+        "Video retrieval may still use indexed asset metadata as a scoped fallback."
+      ]
+    };
+  }
+  if (!playerMatch) {
     return {
       applicable: true,
       route: "stat_qa",
@@ -172,7 +173,7 @@ function aggregateMetric(rows: MatchActivity[], metric: Metric) {
 }
 
 function resolveLeaderboardSubject(queryPlan: DomainQueryPlan, metric: Metric, competition: string | null, season: string | null) {
-  if (!isStatLeaderboardQuery(queryPlan.originalQuery)) return null;
+  if (queryPlan.intent.statMode !== "leaderboard") return null;
   const snapshot = getKnowledgeSnapshot();
   const scopedActivities = (snapshot.matchActivities ?? []).filter((activity) => matchesScope(activity, competition, season));
   const metricRows = selectBestMetricRows(scopedActivities.filter((activity) => activity.role === "STAT"), metric);

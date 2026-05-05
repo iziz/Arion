@@ -8,9 +8,8 @@ import { searchVectors } from "../../localVectorStore";
 import { searchVisualVectors } from "../../localVisualVectorStore";
 import { traceAsync } from "../../observability";
 import { resolveQueryRetrievalPlan } from "../../queryRetrievalPlan";
-import { isPlayerInventoryQuery } from "../../queryPlanner";
 import { knowledgeVectorHitToEvidence } from "../../knowledge/documents";
-import type { AssetRecord, IndexRecord, KnowledgeEvidence, KnowledgeSourceId, SearchResult, TimelineSegment } from "../../../shared/types";
+import type { AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeEvidence, KnowledgeSourceId, SearchResult, TimelineSegment } from "../../../shared/types";
 import { formatSearchScope } from "./answerBuilder";
 import { runOptionalAskStep } from "./stepRunner";
 import type { AskRequest, SearchPipelineRequest } from "./types";
@@ -86,12 +85,12 @@ export async function executeSearchPipeline({
     knowledgeEvidence: groundedQuery.evidence,
     useKnowledgeLayer: useRelatedKnowledgeLayer
   };
-  if (isPlayerInventoryQuery(query)) {
+  if (isPlayerInventoryPlan(queryPlan)) {
     return runOptionalAskStep(askEntry, {
       id: "rank",
       label: "Rank matching assets",
       owner: "retrieval",
-      input: "player inventory query"
+      input: "asset lookup plan"
     }, async () => {
       const results = searchAssets(scopedAssets, indexes, query, options).map((result) => ({ ...result, explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`] }));
       return {
@@ -195,6 +194,10 @@ export async function executeSearchPipeline({
       output: `${results.length} assets · ${results.reduce((sum, result) => sum + result.segments.length, 0)} moments`
     };
   });
+}
+
+function isPlayerInventoryPlan(queryPlan: DomainQueryPlan) {
+  return queryPlan.route === "asset_catalog" || queryPlan.responseMode === "asset_lookup";
 }
 
 function shouldUseRelatedKnowledgeLayer(

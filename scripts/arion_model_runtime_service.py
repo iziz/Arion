@@ -164,8 +164,6 @@ async def detect_objects(request: Request) -> JSONResponse:
         "--conf",
         str(body.get("confidence") or os.environ.get("VISION_DETECTOR_CONF") or "0.25"),
     ]
-    if bool(body.get("allowHeuristicFallback")):
-        args.append("--allow-heuristic-fallback")
     return await run_script_response(
         request,
         args,

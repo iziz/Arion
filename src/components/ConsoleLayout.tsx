@@ -134,12 +134,11 @@ type SearchVideoPreview = {
 type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
 type ObservabilityLog = ObservabilitySnapshot["recentLogs"][number];
 
-const dataTechStack = ["React", "Express", "Multer", "FFmpeg/ffprobe", "Whisper", "PaddleOCR", "OpenCLIP", "pgvector"] as const;
-
 const sectionTechStacks = {
-  search: "Query planner · multilingual-e5 · OpenCLIP visual vectors · pgvector HNSW · hybrid lexical ranking",
-  knowledge: "Related knowledge · registry sources · semantic vectors · evidence grounding",
-  system: "TypeScript · Vite · Node.js/Express · PostgreSQL · OpenTelemetry · local queue · NDJSON logs"
+  data: ["React", "Express", "Multer", "FFmpeg/ffprobe", "Whisper", "PaddleOCR", "OpenCLIP", "pgvector"] as const,
+  search: ["LLM query planner", "multilingual-e5 text vectors", "OpenCLIP visual vectors", "pgvector HNSW", "hybrid lexical ranking", "Redis/BullMQ ask queue"] as const,
+  knowledge: ["Sports registry", "football-data/StatBunker/StatsBomb/nflverse", "multilingual-e5 knowledge vectors", "pgvector HNSW", "evidence grounding"] as const,
+  system: ["TypeScript", "Vite", "Node.js/Express", "PostgreSQL/pgvector", "Redis/BullMQ", "OpenTelemetry", "NDJSON logs"] as const
 } as const;
 
 type AssetOverviewFact = {
@@ -174,6 +173,18 @@ function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
     { label: "Color", value: asset.intelligence.visual.dominantColor },
     { label: "Frame change", value: asset.intelligence.visual.motionScore.toString() }
   ];
+}
+
+function TechStackTags({ items }: { items: readonly string[] }) {
+  return (
+    <h2 className="section-stack-title tech-stack-tags" aria-label={items.join(", ")}>
+      {items.map((item) => (
+        <span key={item} className="tech-stack-tag">
+          {item}
+        </span>
+      ))}
+    </h2>
+  );
 }
 
 export function ConsoleLayout(props: ConsoleLayoutProps) {
@@ -321,15 +332,15 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <TabButton
           active={activeTab === "data"}
           icon={<FileVideo size={17} />}
-          label="에셋"
+          label="Assets"
           meta={`${indexes.length} groups · ${assets.length} assets`}
           onClick={() => setActiveTab("data")}
         />
         {activeTab === "data" && (
           <section className="asset-nav" aria-label="Data navigation">
             <div className="asset-nav-header">
-              <span>에셋그룹</span>
-              <button type="button" className="nav-add-button" aria-label="에셋그룹 만들기" onClick={() => setDialogMode("index")}>
+              <span>Asset Groups</span>
+              <button type="button" className="nav-add-button" aria-label="Create asset group" onClick={() => setDialogMode("index")}>
                 <Plus size={14} />
               </button>
             </div>
@@ -347,13 +358,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </div>
 
             <div className="asset-nav-header nested">
-              <span>영상</span>
-              <button type="button" className="nav-add-button" aria-label="영상 추가" onClick={() => setDialogMode("asset")}>
+              <span>Videos</span>
+              <button type="button" className="nav-add-button" aria-label="Add video" onClick={() => setDialogMode("asset")}>
                 <Plus size={14} />
               </button>
             </div>
             <div className="asset-nav-list video-list">
-              {visibleAssets.length === 0 && <p>영상 없음</p>}
+              {visibleAssets.length === 0 && <p>No videos</p>}
               {visibleAssets.map((asset) => {
                 const deleteDisabled = busy || activeAssetIds.has(asset.id);
                 return (
@@ -365,8 +376,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                     <button
                       type="button"
                       className="nav-delete-button"
-                      aria-label={`${asset.title} 삭제`}
-                      title={deleteDisabled ? "인덱싱 중인 영상은 삭제할 수 없습니다." : "영상 삭제"}
+                      aria-label={`Delete ${asset.title}`}
+                      title={deleteDisabled ? "Cannot delete a video while indexing is running." : "Delete video"}
                       disabled={deleteDisabled}
                       onClick={() => void deleteAsset(asset.id)}
                     >
@@ -381,21 +392,21 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <TabButton
           active={activeTab === "search"}
           icon={<Search size={17} />}
-          label="검색"
+          label="Search"
           meta={`${searchResults.length} results`}
           onClick={() => setActiveTab("search")}
         />
         <TabButton
           active={activeTab === "knowledge"}
           icon={<Layers3 size={17} />}
-          label="지식"
+          label="Knowledge"
           meta={knowledgeSnapshot ? `${knowledgeRecordCount} records` : "loading"}
           onClick={() => setActiveTab("knowledge")}
         />
         {activeTab === "knowledge" && (
           <section className="asset-nav knowledge-nav" aria-label="Related knowledge navigation">
             <div className="asset-nav-header">
-              <span>관련 지식</span>
+              <span>Related Knowledge</span>
             </div>
             <div className="asset-nav-list">
               {knowledgeDomains.map((domain) => (
@@ -415,7 +426,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <TabButton
           active={activeTab === "system"}
           icon={<Activity size={17} />}
-          label="시스템"
+          label="System"
           meta={activeJobCount > 0 ? `${activeJobCount} active` : `${metrics.indexedAssets}/${metrics.assets} indexed`}
           onClick={() => setActiveTab("system")}
         />
@@ -425,14 +436,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       <section className="section-block workflow-section">
         <div className="section-heading">
           <div>
-            <p className="section-label">Data</p>
-            <h2 className="section-stack-title tech-stack-tags" aria-label={dataTechStack.join(", ")}>
-              {dataTechStack.map((item) => (
-                <span key={item} className="tech-stack-tag">
-                  {item}
-                </span>
-              ))}
-            </h2>
+            <TechStackTags items={sectionTechStacks.data} />
           </div>
         </div>
         <AssetGroupSummary
@@ -558,7 +562,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Knowledge</p>
-            <h2 className="section-stack-title">{sectionTechStacks.knowledge}</h2>
+            <TechStackTags items={sectionTechStacks.knowledge} />
           </div>
         </div>
         <KnowledgePanel
@@ -575,7 +579,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Search</p>
-            <h2 className="section-stack-title">{sectionTechStacks.search}</h2>
+            <TechStackTags items={sectionTechStacks.search} />
           </div>
         </div>
       <section className="tools">
@@ -645,7 +649,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">System</p>
-            <h2 className="section-stack-title">{sectionTechStacks.system}</h2>
+            <TechStackTags items={sectionTechStacks.system} />
           </div>
         </div>
         <section className="system-console">

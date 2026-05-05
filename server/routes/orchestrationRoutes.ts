@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { buildOrchestrationPlan } from "../orchestrator";
-import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
+import { planDomainQueryWithLlm } from "../llmQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { listAssets, listIndexes } from "../store";
 import { scopeAssetsForQuery } from "../workflows/askWorkflow";
@@ -22,7 +22,7 @@ export function registerOrchestrationRoutes(app: Express) {
       modality: req.query.modality ? String(req.query.modality) : undefined,
       useKnowledgeLayer: req.query.useKnowledgeLayer !== "false"
     }, indexes);
-    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters);
+    const queryPlan = await planDomainQueryWithLlm(String(req.query.q ?? ""), explicitFilters);
     res.json(buildOrchestrationPlan(queryPlan, scopedAssets, indexes));
   });
 }

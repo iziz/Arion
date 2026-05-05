@@ -970,18 +970,51 @@
   text-transform: uppercase;
 }
 
-.user-bubble > p,
-.assistant-bubble > p {
+.user-bubble > p {
   margin: 0;
   font-size: 15px;
   font-weight: 760;
   line-height: 1.6;
 }
 
-.assistant-bubble > p {
+.assistant-answer {
+  display: grid;
+  gap: 8px;
   width: min(760px, 100%);
   font-size: 16px;
   font-weight: 760;
+  line-height: 1.6;
+}
+
+.assistant-answer-row {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.assistant-answer-row b {
+  padding-top: 3px;
+  color: #238c73;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.assistant-answer-row.evidence b {
+  color: #5f736c;
+}
+
+.assistant-answer-row.warning b {
+  color: #9a6a12;
+}
+
+.assistant-answer p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .assistant-bubble em {
@@ -1520,6 +1553,11 @@
   .workflow-step:not(:last-child)::after {
     top: 28px;
     left: 13px;
+  }
+
+  .assistant-answer-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }
 

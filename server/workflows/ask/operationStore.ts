@@ -4,6 +4,7 @@ import { logJson } from "../../observability";
 import * as pgStore from "../../postgresStore";
 import { createAskOperationOutboxEntry, saveAskOperationWithQueueOutbox } from "../../services/queueOutboxStore";
 import { publishRealtimeEvent } from "../../services/realtimeEvents";
+import { plainAskAnswerContent } from "./answerBuilder";
 import type { AskOperationEntry, AskRequest } from "./types";
 
 const askOperations = new Map<string, AskOperationEntry>();
@@ -85,7 +86,7 @@ export function failAskOperation(entry: AskOperationEntry, message: string) {
   entry.response = {
     operation: entry.operation,
     route: "error",
-    answer: message,
+    answerContent: plainAskAnswerContent(message),
     queryPlan: null,
     orchestrationPlan: null,
     knowledgeAnswer: null,
@@ -106,10 +107,23 @@ function patchAskOperation(entry: AskOperationEntry, patch: Partial<Pick<AskOper
 }
 
 export function toAskResponse(entry: AskOperationEntry): AskResponse {
-  return entry.response ?? {
+  if (entry.response) {
+    const response = entry.response;
+    return {
+      operation: entry.operation,
+      route: response.route,
+      answerContent: response.answerContent ?? null,
+      queryPlan: response.queryPlan,
+      orchestrationPlan: response.orchestrationPlan,
+      knowledgeAnswer: response.knowledgeAnswer,
+      results: response.results,
+      warnings: response.warnings
+    };
+  }
+  return {
     operation: entry.operation,
     route: entry.operation.route,
-    answer: null,
+    answerContent: null,
     queryPlan: null,
     orchestrationPlan: null,
     knowledgeAnswer: null,

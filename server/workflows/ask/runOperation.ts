@@ -1,20 +1,23 @@
 import { buildOrchestrationPlan } from "../../orchestrator";
-import { planDomainQueryWithOpenAi } from "../../openaiQueryPlanner";
+import { planDomainQueryWithLlm } from "../../llmQueryPlanner";
 import {
   answerStructuredKnowledgeQuestion,
   disabledStructuredKnowledgeAnswer,
   isDirectKnowledgeAnswerPlan
 } from "../../knowledge/answer";
 import { listAssets, listIndexes } from "../../store";
-import { buildAskAnalysisAnswer, buildAskVideoAnswer } from "./answerBuilder";
+import { buildAskAnalysisAnswerContent, buildAskVideoAnswerContent, plainAskAnswerContent } from "./answerBuilder";
 import { completeAskOperation, failAskOperation, updateAskOperation } from "./operationStore";
 import { executeSearchPipeline, scopeAssetsForQuery } from "./searchPipeline";
 import {
   applyScopeDomainDefaults,
+  buildStatSeedKnowledgePlan,
   buildStatSeededMomentPlan,
+  isKnowledgeSeededMomentPlan,
   shouldContinueWithMomentRetrieval
 } from "./statMomentSeed";
 import { runAskStep, skipAskStep } from "./stepRunner";
+import type { DomainQueryPlan } from "../../../shared/types";
 import type { AskOperationEntry, AskRequest } from "./types";
 
 export async function runAskOperation(entry: AskOperationEntry, request: AskRequest) {
@@ -46,22 +49,23 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       owner: "router",
       input: request.query || "Filtered search"
     }, async () => {
-      const plan = await planDomainQueryWithOpenAi(request.query, planningFilters);
+      const plan = await planDomainQueryWithLlm(request.query, planningFilters);
       return {
         value: plan,
         output: `${plan.route.replace(/_/g, " ")} · ${plan.responseMode.replace(/_/g, " ")} · ${plan.knowledgeMode.replace(/_/g, " ")} · ${Math.round(plan.confidence * 100)}%`
       };
     });
 
-    const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && isDirectKnowledgeAnswerPlan(queryPlan);
+    const seedKnowledgePlan = isKnowledgeSeededMomentPlan(queryPlan) ? buildStatSeedKnowledgePlan(queryPlan) : queryPlan;
+    const shouldRunKnowledgeAnswer = request.useKnowledgeLayer && (isDirectKnowledgeAnswerPlan(queryPlan) || isKnowledgeSeededMomentPlan(queryPlan));
     const knowledgeAnswer = shouldRunKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
           label: "Knowledge answer",
           owner: "knowledge",
-          input: queryPlan.rewrittenQuery
+          input: seedKnowledgePlan.rewrittenQuery
         }, async () => {
-          const answer = answerStructuredKnowledgeQuestion(queryPlan);
+          const answer = answerStructuredKnowledgeQuestion(seedKnowledgePlan);
           return {
             value: answer,
             output: answer.applicable ? `${answer.status} · ${answer.subject.metric ?? "no metric"} · ${Math.round(answer.confidence * 100)}%` : "not applicable",
@@ -69,7 +73,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
           };
         })
       : disabledStructuredKnowledgeAnswer(
-          queryPlan,
+          seedKnowledgePlan,
           request.useKnowledgeLayer
             ? "Knowledge direct answer is skipped for this retrieval workflow."
             : "Knowledge layer is disabled for this search.",
@@ -77,12 +81,12 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
             ? "Knowledge direct answer was skipped because the route is not a knowledge-answer route."
             : "Knowledge layer was disabled by the selected search scope."
         );
-    if (!shouldRunKnowledgeAnswer && isDirectKnowledgeAnswerPlan(queryPlan)) {
+    if (!shouldRunKnowledgeAnswer && (isDirectKnowledgeAnswerPlan(queryPlan) || isKnowledgeSeededMomentPlan(queryPlan))) {
       skipAskStep(entry, {
         id: "knowledge_answer",
         label: "Knowledge answer",
         owner: "knowledge",
-        input: queryPlan.rewrittenQuery,
+        input: seedKnowledgePlan.rewrittenQuery,
         output: request.useKnowledgeLayer ? "Skipped because this route does not need a direct knowledge answer." : "Disabled by selected search scope."
       });
     }
@@ -91,6 +95,27 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
     const continueWithRetrieval = statSeeded;
     if (statSeeded) {
       queryPlan = buildStatSeededMomentPlan(queryPlan, knowledgeAnswer);
+    } else if (isKnowledgeSeededMomentPlan(queryPlan)) {
+      skipAskStep(entry, {
+        id: "retrieve",
+        label: "Moment retrieval",
+        owner: "retrieval",
+        input: queryPlan.semanticQuery,
+        output: "Skipped because related knowledge did not resolve a ranked subject for video retrieval."
+      });
+      const answerContent = plainAskAnswerContent(knowledgeAnswer.answer);
+      const orchestrationPlan = buildOrchestrationPlan(queryPlan, scoped.scopedAssets, scoped.indexes);
+      completeAskOperation(entry, {
+        operation: entry.operation,
+        route: "structured_answer",
+        answerContent,
+        queryPlan,
+        orchestrationPlan,
+        knowledgeAnswer: knowledgeAnswer.applicable ? knowledgeAnswer : null,
+        results: [],
+        warnings: [...queryPlan.warnings, ...knowledgeAnswer.warnings]
+      });
+      return;
     }
 
     const orchestrationPlan = await runAskStep(entry, {
@@ -114,10 +139,11 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
         input: queryPlan.semanticQuery,
         output: "Skipped because this is a direct structured knowledge question."
       });
+      const answerContent = plainAskAnswerContent(knowledgeAnswer.answer);
       completeAskOperation(entry, {
         operation: entry.operation,
         route: "structured_answer",
-        answer: knowledgeAnswer.answer,
+        answerContent,
         queryPlan,
         orchestrationPlan,
         knowledgeAnswer,
@@ -142,26 +168,26 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       useKnowledgeLayer: request.useKnowledgeLayer,
       askEntry: entry
     });
-    const answer = orchestrationPlan.analysis.required
+    const answerContent = orchestrationPlan.analysis.required
       ? await runAskStep(entry, {
           id: "analysis",
           label: "Grounded analysis",
           owner: "analysis",
           input: `${results.length} retrieved assets`
         }, async () => {
-          const nextAnswer = buildAskAnalysisAnswer(results, queryPlan, orchestrationPlan);
+          const nextAnswer = buildAskAnalysisAnswerContent(results, queryPlan, orchestrationPlan);
           return {
             value: nextAnswer,
             output: results.length > 0 ? analysisOutputForMode(queryPlan.responseMode) : "Skipped because retrieval returned no moments.",
             status: results.length > 0 ? "succeeded" : "skipped"
           };
         })
-      : buildAskVideoAnswer(results, queryPlan);
+      : buildAskVideoAnswerContent(results, queryPlan);
     const route = results.length > 0 ? "moment_retrieval" : "empty";
     completeAskOperation(entry, {
       operation: entry.operation,
       route,
-      answer,
+      answerContent,
       queryPlan,
       orchestrationPlan,
       knowledgeAnswer: knowledgeAnswer.applicable ? knowledgeAnswer : null,
@@ -174,7 +200,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
   }
 }
 
-function analysisOutputForMode(responseMode: Parameters<typeof buildAskAnalysisAnswer>[1]["responseMode"]) {
+function analysisOutputForMode(responseMode: DomainQueryPlan["responseMode"]) {
   if (responseMode === "summary") return "Generated a local video summary from retrieved evidence.";
   if (responseMode === "analysis") return "Generated a local pattern analysis from retrieved moments.";
   return "Generated a local grounded answer from retrieved moments.";

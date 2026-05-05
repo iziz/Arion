@@ -604,6 +604,7 @@ export type DomainSearchFilters = {
 
 export type QueryRoute =
   | "asset_evidence"
+  | "knowledge_seeded_asset_evidence"
   | "knowledge_evidence"
   | "asset_catalog"
   | "unsupported";
@@ -618,6 +619,8 @@ export type ResponseMode =
 
 export type KnowledgeMode = "none" | "grounding" | "direct_answer";
 
+export type DomainQueryFilterEvidence = Partial<Record<keyof DomainSearchFilters | "analysisSubject" | "statMode", string[]>>;
+
 export type DomainQueryPlan = {
   originalQuery: string;
   semanticQuery: string;
@@ -626,7 +629,9 @@ export type DomainQueryPlan = {
     textQuery: string;
     visualQuery: string;
     evidenceTerms: string[];
+    requiredEvidence?: RetrievalEvidenceConstraint[];
   };
+  filterEvidence?: DomainQueryFilterEvidence;
   domainFilters: DomainSearchFilters;
   route: QueryRoute;
   responseMode: ResponseMode;
@@ -649,6 +654,8 @@ export type DomainQueryPlan = {
       | "sacks"
       | "interceptions"
       | null;
+    statMode?: "leaderboard" | "player_total" | null;
+    analysisSubject?: string | null;
     eventType: string | null;
     passType: string | null;
     fieldZone: string | null;
@@ -658,10 +665,16 @@ export type DomainQueryPlan = {
   confidence: number;
   warnings: string[];
   planner?: {
-    source: "rules" | "openai";
+    source: "openai" | "vlm" | "unavailable";
     model: string | null;
     fallbackReason?: string;
   };
+};
+
+export type RetrievalEvidenceConstraint = {
+  kind: "visible_text" | "spoken_text";
+  terms: string[];
+  match: "all" | "any";
 };
 
 export type StructuredKnowledgeAnswer = {
@@ -702,6 +715,19 @@ export type StructuredKnowledgeAnswer = {
   warnings: string[];
 };
 
+export type AskAnswerSection = {
+  id: string;
+  label: string | null;
+  body: string;
+  tone: "neutral" | "evidence" | "warning";
+};
+
+export type AskAnswerContent = {
+  format: "plain" | "sections";
+  text: string;
+  sections: AskAnswerSection[];
+};
+
 export type AskRoute = "pending" | "structured_answer" | "moment_retrieval" | "empty" | "error";
 
 export type AskOperationStep = {
@@ -733,7 +759,7 @@ export type AskOperation = {
 export type AskResponse = {
   operation: AskOperation;
   route: AskRoute;
-  answer: string | null;
+  answerContent: AskAnswerContent | null;
   queryPlan: DomainQueryPlan | null;
   orchestrationPlan: OrchestrationPlan | null;
   knowledgeAnswer: StructuredKnowledgeAnswer | null;

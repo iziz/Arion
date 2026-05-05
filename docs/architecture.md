@@ -11,8 +11,10 @@ Primary code references:
 - `src/main.tsx`
 - `src/App.tsx`
 - `src/hooks/useConsoleData.ts`
+- `src/hooks/useConsoleRefreshPolicy.ts`
 - `src/hooks/useSearchController.ts`
 - `src/api.ts`
+- `shared/assetSummary.ts`
 - `server/index.ts`
 - `server/routes/*Routes.ts`
 - `server/workflows/*`
@@ -22,6 +24,7 @@ Primary code references:
 - `server/localModelRuntime.ts`
 - `server/localEmbeddingRuntime.ts`
 - `server/localVisualEmbeddingRuntime.ts`
+- `server/sceneDetection.ts`
 - `server/modelRuntime/pythonRuntimeService.ts`
 - `server/services/redisJobQueue.ts`
 - `server/services/askJobQueue.ts`
@@ -35,6 +38,7 @@ Primary code references:
 - `server/services/mediaLifecycle.ts`
 - `server/observability.ts`
 - `server/vlmWorkerClient.ts`
+- `server/knowledge/*`
 - `scripts/arion_model_runtime_service.py`
 - `scripts/qwen_vlm_worker.py`
 - `shared/types.ts`
@@ -91,7 +95,7 @@ Operational boundary rules:
 - Express can serve `/media` only in local-static mode. In operational deployment, set `MEDIA_SERVING_MODE=disabled` and serve media through object storage, CDN, or a reverse proxy boundary.
 - Asset indexing and ask execution are both queue-backed. The API process persists operation records and queue outbox entries; worker/API publishers dispatch IDs from the outbox to Redis/BullMQ; worker processes execute the long-running work.
 - Asset indexing stores stage checkpoints in `JobRecord.stageCheckpoints`. Worker recovery preserves checkpoint state and resumes from the failed or interrupted stage when persisted stage outputs are reusable.
-- Frontend progress and ask updates use `/api/events/stream` Server-Sent Events. Initial reads still use normal REST endpoints, but continuous progress updates are event-driven rather than interval polling.
+- Frontend progress and ask updates use `/api/events/stream` Server-Sent Events. Initial reads still use normal REST endpoints. The console also keeps a bounded interval refresh only while queued/running jobs exist so stale active state can recover if an SSE event is missed.
 - Python runtime categories can run as one combined service or be split by `ASR_RUNTIME_SERVICE_URL`, `OCR_RUNTIME_SERVICE_URL`, `VISION_RUNTIME_SERVICE_URL`, and `EMBEDDING_RUNTIME_SERVICE_URL`. The VLM worker remains a separate HTTP boundary through `VLM_WORKER_URL`.
 
 ## Detailed Local Development Runtime Topology
@@ -294,17 +298,19 @@ When a selected segment or seek time exists, it is encoded as query parameters:
 
 1. Core operational data:
    - `GET /api/indexes`
-   - `GET /api/assets`
+   - `GET /api/assets/summary`
    - `GET /api/jobs`
    - `GET /api/events?limit=20`
 2. System and knowledge data:
    - `GET /api/metrics`
    - `GET /api/db/status`
    - `GET /api/observability`
-   - `GET /api/knowledge`
-   - `GET /api/knowledge/vector-store`
+   - `GET /api/knowledge/summary` with legacy `/api/knowledge/sports/summary` fallback
+   - `GET /api/knowledge/vector-store` with legacy `/api/knowledge/sports/vector-store` fallback
 
-After initial hydration, it opens `GET /api/events/stream`. The hook schedules a short debounced REST refresh when it receives `asset.updated`, `job.updated`, `event.recorded`, `outbox.updated`, or `ask.operation.updated`. There is no fixed interval polling loop for progress refresh.
+After initial hydration, it opens `GET /api/events/stream`. The hook schedules a short debounced REST refresh when it receives `asset.updated`, `asset.deleted`, `index.deleted`, `job.updated`, `event.recorded`, `outbox.updated`, or `ask.operation.updated`. A second refresh guard uses `getConsoleRefreshIntervalMs(jobs)` and runs only while the job list contains active work.
+
+The asset list is summary-only. `App` loads the selected asset's full `AssetRecord` lazily through `GET /api/assets/:id`, keyed by `selectedAssetId` and the selected summary's `updatedAt`.
 
 The hook uses `Promise.allSettled` and per-payload type guards. Partial failures are surfaced as refresh warnings instead of discarding all successful data.
 
@@ -318,9 +324,9 @@ The hook uses `Promise.allSettled` and per-payload type guards. Partial failures
 - knowledge layer toggle
 - current `AskResponse`
 - query plan and orchestration plan
-- optional structured knowledge answer, currently surfaced through the sports answer payload type
+- optional `StructuredKnowledgeAnswer`
 - raw and trust-filtered results
-- local conversation history
+- local conversation history in `localStorage`
 
 The main search flow is:
 
@@ -353,7 +359,7 @@ sequenceDiagram
   Hook->>Hook: update plan, orchestration, answer, results
 ```
 
-The client performs one immediate `GET /api/ask/:id` read to cover races, then waits for operation-scoped SSE updates and times out after 48 seconds. The SSE route also emits the current operation snapshot on connect when `operationId` is provided.
+The client performs one immediate `GET /api/ask/:id` read to cover races, then waits for operation-scoped SSE updates and times out after 48 seconds. The SSE route emits the current operation snapshot once on connect when `operationId` is provided. Heartbeats are SSE comments only and do not resend the full ask response.
 
 ### Upload And Reindex Controls
 
@@ -470,15 +476,15 @@ The API process also does not execute ask operations. It persists `AskOperation`
 
 | Group | Endpoints | File | Main collaborators |
 | --- | --- | --- | --- |
-| System | `GET /api/health`, `/api/metrics`, `/api/db/status`, `/api/storage/status`, `/api/observability`, `/api/model-capabilities`, `/api/users`, `/api/billing`, `/api/events` | `server/routes/systemRoutes.ts` | `store`, `postgresStore`, `localObjectStorage`, `observability`, `modelCapabilities` |
-| Indexes | `GET /api/indexes`, `POST /api/indexes`, `GET /api/indexes/:id`, `PATCH /api/indexes/:id` | `server/routes/indexRoutes.ts` | `store`, `domainConfig`, `localEmbeddingRuntime`, `events` |
-| Assets | `GET /api/assets`, `GET /api/assets/:id`, `POST /api/assets`, `POST /api/indexes/:id/assets`, clip endpoints, tracking endpoints, `POST /api/indexes/:id/analyze`, reindex/domain refinement endpoints | `server/routes/assetRoutes.ts` | `indexingWorkflow`, `redisJobQueue`, `jobState`, `intelligence`, `trackingStore`, `events` |
+| System | `GET /api/health`, `/api/metrics`, `/api/db/status`, `/api/storage/status`, `/api/observability`, `/api/model-capabilities`, `/api/users`, `/api/billing`, `/api/events`, `/api/events/stream` | `server/routes/systemRoutes.ts` | `store`, `postgresStore`, `localObjectStorage`, `observability`, `modelCapabilities`, `realtimeEvents` |
+| Indexes | `GET /api/indexes`, `POST /api/indexes`, `GET /api/indexes/:id`, `DELETE /api/indexes/:id`, `PATCH /api/indexes/:id` | `server/routes/indexRoutes.ts` | `store`, `domainConfig`, `localEmbeddingRuntime`, `events`, `mediaLifecycle` |
+| Assets | `GET /api/assets`, `GET /api/assets/summary`, `GET /api/assets/:id`, `DELETE /api/assets/:id`, `POST /api/assets`, `POST /api/indexes/:id/assets`, clip endpoints, tracking endpoints, `POST /api/indexes/:id/analyze`, reindex/domain refinement endpoints | `server/routes/assetRoutes.ts` | `indexingWorkflow`, `jobState`, `intelligence`, `trackingStore`, `events`, `mediaLifecycle` |
 | Jobs | `GET /api/jobs`, `GET /api/jobs/:id`, `POST /api/jobs/:id/retry` | `server/routes/jobRoutes.ts` | `store`, `jobState`, `redisJobQueue` |
-| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `openaiQueryPlanner`, structured knowledge answer dispatcher, `vlmWorkerClient` |
-| Knowledge | snapshot, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `knowledgeSnapshot`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
+| Ask/search | `POST /api/ask`, `GET /api/ask/:id`, `GET /api/search`, `GET /api/search/plan`, `GET /api/knowledge/answer`, `GET /api/models/vlm/health` | `server/routes/askRoutes.ts` | `askWorkflow`, `askJobQueue`, `queryPlanner`, `llmQueryPlanner`, structured knowledge answer dispatcher, `vlmWorkerClient` |
+| Knowledge | generic `/api/knowledge/*` plus legacy `/api/knowledge/sports/*` aliases for snapshot, summary, vector status/rebuild/search, provider imports, player CRUD | `server/routes/knowledgeRoutes.ts` | `knowledge/registry`, provider importers, `localKnowledgeVectorStore`, `localEmbeddingRuntime` |
 | Vectors | `GET /api/vector-search`, `GET /api/visual-search`, `POST /api/vector-store/rebuild` | `server/routes/vectorRoutes.ts` | `localEmbeddingRuntime`, `localVisualEmbeddingRuntime`, vector stores, `vectorMaintenance` |
 | Orchestration | `GET /api/orchestrate/plan` | `server/routes/orchestrationRoutes.ts` | `orchestrator`, query planning, asset scoping |
-| Analysis | `POST /api/analyze`, `POST /api/assets/:id/analyze` | `server/routes/analysisRoutes.ts` | `analysisWorkflow` |
+| Analysis | `POST /api/analyze`, `POST /api/assets/:id/analyze`, plus `POST /api/indexes/:id/analyze` in asset routes | `server/routes/analysisRoutes.ts`, `server/routes/assetRoutes.ts` | `analysisWorkflow`, `intelligence` |
 | Webhooks | `GET /api/webhooks`, `POST /api/webhooks`, `POST /api/webhooks/:id/test`, `POST /api/webhooks/:id/retry` | `server/routes/webhookRoutes.ts` | `store`, `events` |
 | Video aliases | `GET /api/videos`, `GET /api/videos/:id`, `POST /api/videos`, `POST /api/videos/:id/analyze` | `server/routes/videoRoutes.ts` | asset storage and analysis compatibility wrappers |
 
@@ -509,6 +515,8 @@ An asset is an uploaded media item. It contains:
 - keyframes
 - local intelligence output
 - error and timestamps
+
+`AssetSummaryRecord` is the bounded list-view DTO used by the frontend console and realtime asset updates. It omits `timeline`, `keyframes`, `technicalMetadata`, and `intelligence`, while keeping counts and status fields needed for lists and side navigation.
 
 ### TimelineSegment
 
@@ -554,9 +562,10 @@ Jobs track async work:
 - type: `asset.index`, `asset.reindex`, `asset.domain-vlm.refine`, or `webhook.test`
 - status: queued, running, succeeded, failed
 - stage and progress
-- optional parameters, currently used for retry stage recovery
+- optional parameters for retry, resume, rebuild, and invalidation state
 - optional asset/index IDs
 - per-runtime stage records
+- per-indexing-stage checkpoints
 - logs, error, and timestamps
 
 ### AskOperation And AskResponse
@@ -576,9 +585,9 @@ Ask operations are server-side async operation records. They are kept in an in-m
 
 Search results bundle:
 
-- full asset
+- asset summary, not the full asset record
 - matching index
-- selected timeline segments
+- selected timeline segments with embedding vectors stripped from the response payload
 - generated clips
 - ranking scores
 - explanation strings
@@ -587,9 +596,11 @@ Search results bundle:
 - match reasons
 - verification checks
 
+`searchAssets` still ranks against full in-memory `AssetRecord` objects on the server. Only the returned `SearchResult` is converted into a payload-safe DTO so ask/search responses and browser search history do not retain full timelines or vector arrays.
+
 ### Knowledge And Tracking
 
-Sports knowledge includes competitions, teams, players, match activities, and facts. Tracking records are derived from timeline vision evidence and connect ball/player/link track IDs to segment ranges.
+Related knowledge currently includes competitions, teams, players, match activities, and facts from the sports adapter. Tracking records are derived from timeline vision evidence and connect ball/player/link track IDs to segment ranges.
 
 ## Ingestion And Indexing
 
@@ -672,17 +683,17 @@ flowchart TD
   VisionHeuristic --> VisionTracks["Detect tracks if visionTracker enabled\napply tracks"]
   VisionTracks -.->|required unavailable| Failure
   VisionTracks --> Classify["Apply event classification"]
-  Classify --> SoccerNet{"sports.football index\nand SoccerNet enabled\nand configured or required?"}
-  SoccerNet -->|yes| SoccerNetRun["Action spotting\nSoccerNet runtime"]
-  SoccerNetRun -.->|required unavailable| Failure
-  SoccerNet -->|no| DomainIndex
-  SoccerNetRun --> DomainIndex{"domainIndexing enabled?"}
-  DomainIndex -->|yes| Domain["Domain timeline enrichment\nsports events and scope"]
+  Classify --> KnowledgeAction{"knowledgeActionSpotting enabled\nand selected source supports it?"}
+  KnowledgeAction -->|yes| KnowledgeActionRun["Adapter action spotting\ncurrent sports.football -> SoccerNet"]
+  KnowledgeActionRun -.->|required unavailable| Failure
+  KnowledgeAction -->|no| DomainIndex
+  KnowledgeActionRun --> DomainIndex{"domainIndexing enabled?"}
+  DomainIndex -->|yes| Domain["Domain timeline enrichment\nrelated knowledge events and scope"]
   DomainIndex -->|no| TextEmbed
   Domain --> DomainVlm{"domainVlmRefinement enabled?"}
   DomainVlm -->|no| TextEmbed
   DomainVlm -->|yes| DomainVlmWorker{"VLM_WORKER_URL configured?"}
-  DomainVlmWorker -->|yes| DomainVlmRun["Refine sports events\nVLM worker"]
+  DomainVlmWorker -->|yes| DomainVlmRun["Refine related knowledge events\nVLM worker"]
   DomainVlmWorker -->|no and optional| TextEmbed
   DomainVlmWorker -->|no and required| Failure
   DomainVlmRun --> TextEmbed["Text embeddings\nsentence-transformers script"]
@@ -708,8 +719,9 @@ Stage details:
    - Cached runtime outputs are reused unless a retry stage forces a rerun.
    - Runtime stages report progress into `JobRecord.runtimeStages`.
 3. `scene-detection`
-   - Attempts Python scene detection through the Vision runtime service.
-   - Falls back to FFmpeg scene detection if Python scene detection returns no boundaries.
+   - Uses FFmpeg scene detection by default.
+   - PySceneDetect remains opt-in through `SCENE_DETECTION_ENGINE=pyscenedetect` or `SCENE_DETECTION_ENGINE=py-scene-detect`.
+   - When PySceneDetect is selected, an empty PySceneDetect result falls back to FFmpeg.
 4. `timeline`
    - Calls `buildLocalIndex` to create searchable segments from local intelligence and scene windows.
 5. `keyframes`
@@ -724,12 +736,13 @@ Stage details:
    - The output is merged into timeline `sceneData.vision`.
 8. Event classification
    - `applyEventClassification` derives event labels from text and vision features.
-9. `soccernet-action`
-   - Optional football action spotting when index domain includes `sports.football` and the capability is enabled/configured.
+9. `knowledge-action`
+   - Optional adapter-provided action spotting when the selected related-knowledge source supports it.
+   - The current implementation maps `sports.football` to the SoccerNet action spotting adapter.
 10. `domain-index`
-   - Sports indexes enrich segments with domain captions, labels, events, scope, and search text.
+   - Related-knowledge-enabled indexes enrich segments with domain captions, labels, events, scope, and search text.
 11. `domain-vlm`
-   - Optional VLM refinement of sports event metadata.
+   - Optional VLM refinement of related-knowledge event metadata.
 12. `embed`
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
@@ -856,14 +869,15 @@ Operation steps are appended with owner, input, output, status, timings, and err
 Query planning has two layers:
 
 1. `server/queryPlanner.ts`
-   - Rule-based Korean/English parsing.
-   - Detects competitions, players, seasons, structured knowledge questions, event types, pass types, field zones, grounded-answer questions, summary/analysis requests, and player inventory queries.
-   - Produces a `DomainQueryPlan`.
-2. `server/openaiQueryPlanner.ts`
-   - Optional refinement through OpenAI Responses API.
+   - Legacy local parser used only by older direct callers and regression tests.
+   - It is not the Ask/search planner fallback.
+2. `server/llmQueryPlanner.ts`
+   - Primary Ask/search planner boundary.
+   - Requests a structured `DomainQueryPlan` from OpenAI first.
+   - Falls back to the configured VLM worker `/plan/query` endpoint when OpenAI planning fails.
+   - Returns an unavailable plan when neither model planner is configured or reachable.
    - Runs only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off.
-   - Merges LLM output into the rule plan with allow-lists for routes, response modes, knowledge modes, metrics, roles, event types, pass types, and field zones.
-   - Falls back to the rule plan on error and adds a warning.
+   - Merges model output into a neutral plan with allow-lists for routes, response modes, knowledge modes, metrics, stat modes, roles, event types, pass types, and field zones.
 
 The query plan contract deliberately separates source routing from answer shape and related-knowledge usage:
 
@@ -953,13 +967,15 @@ The ask/query architecture treats related knowledge as an asset-group capability
 
 ### Knowledge Registry
 
-The generic knowledge facade lives in:
+The generic knowledge facade names live in:
 
 - `server/knowledge/registry.ts`
 - `server/knowledge/documents.ts`
 - `server/knowledge/answer.ts`
 
-The current adapter implementation lives under `server/knowledge/adapters/sports/*` because the only configured domain groups today are football and American football. This adapter contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
+The current code still binds that facade directly to the sports adapter. `registry.ts` re-exports sports store functions, `answer.ts` calls `answerSportsKnowledgeQuestion`, and `documents.ts` builds documents from the same sports snapshot. This means the names are domain-generic, but adapter dispatch is not yet pluggable.
+
+The concrete adapter implementation lives under `server/knowledge/adapters/sports/*` because the only configured domain groups today are football and American football. This adapter contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
 
 - competition matching
 - player alias matching
@@ -1024,9 +1040,7 @@ The result becomes both retrieval text and structured `KnowledgeEvidence`.
 
 ### Domain Indexing
 
-Sports domain indexing is configured on `IndexRecord.domainIndexing`.
-
-Supported domain groups:
+Related-knowledge domain indexing is configured on `IndexRecord.domainIndexing`. The current configured source IDs are sports-specific:
 
 - `sports.football`
 - `sports.american_football`
@@ -1042,7 +1056,7 @@ When enabled, timeline segments can receive:
 - searchable domain text
 - optional domain VLM quality metadata
 
-Capability policies control whether VLM, detector, tracker, SoccerNet, and diarization steps are disabled, optional, or required.
+Capability policies control whether VLM, detector, tracker, adapter action spotting, domain VLM, and diarization steps are disabled, optional, or required.
 
 ## Storage Architecture
 
@@ -1197,7 +1211,7 @@ The Node side is split by runtime category:
 
 - ASR service: Whisper and WhisperX through `ASR_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
 - OCR service: PaddleOCR through `OCR_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
-- Vision service: scene detection, object detection, tracking, and SoccerNet action spotting through `VISION_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
+- Vision service: object detection, tracking, adapter action spotting, and optional PySceneDetect through `VISION_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
 - Embedding service: text and visual embeddings through `EMBEDDING_RUNTIME_SERVICE_URL` or `PYTHON_RUNTIME_SERVICE_URL`.
 - VLM service: Qwen/LLaVA-style video and domain refinement through `VLM_WORKER_URL`.
 
@@ -1220,6 +1234,8 @@ Important scripts include:
 
 `PYTHON_RUNTIME_MODE=service` routes model work through HTTP runtime services. `PYTHON_RUNTIME_MODE=direct` keeps local script execution available for development and migration checks. `PYTHON_RUNTIME_SERVICE_ATTEMPTS` controls transient HTTP call retries before the workflow records the runtime stage as failed.
 
+Scene detection is the exception to the general "Python first" model-runtime pattern. `server/sceneDetection.ts` uses FFmpeg by default to avoid loading both PyAV and OpenCV FFmpeg dylibs in the common path. Set `SCENE_DETECTION_ENGINE=pyscenedetect` to opt into PySceneDetect; when that opt-in path returns no boundaries, FFmpeg remains the fallback.
+
 ### Capability Policy
 
 Capability modes are:
@@ -1234,7 +1250,7 @@ Capabilities:
 - `videoVlmAnalysis`
 - `visionDetector`
 - `visionTracker`
-- `soccerNetActionSpotting`
+- `knowledgeActionSpotting`
 - `domainVlmRefinement`
 
 Optional unavailable capabilities are recorded in traces/logs where applicable. Required unavailable capabilities throw `RequiredCapabilityUnavailableError` and fail the job.
@@ -1249,14 +1265,14 @@ Optional unavailable capabilities are recorded in traces/logs where applicable. 
 
 It is enabled when `VLM_WORKER_URL` is configured. The local `dev:full` command starts `scripts/qwen_vlm_worker.py` through the `.venv-ai` Python path.
 
-### OpenAI Query Planner
+### LLM Query Planner
 
-`server/openaiQueryPlanner.ts` optionally calls the OpenAI Responses API for query plan refinement. The implementation is guarded by:
+`server/llmQueryPlanner.ts` is the model-backed query planner boundary. It calls the OpenAI Responses API first, then the configured VLM worker `/plan/query` endpoint when OpenAI planning fails. The OpenAI implementation is guarded by:
 
 - `OPENAI_API_KEY`
 - `OPENAI_QUERY_PLANNER` not being `off` or `false`
 
-It uses a rules-first plan, then merges an allow-listed LLM plan. If the remote call fails, the rules plan is returned with a fallback warning.
+It starts from a neutral unsupported plan and merges allow-listed model output into the structured plan contract. If neither model planner is available, it returns an unavailable planner result instead of using local query rules.
 
 ## Observability
 
@@ -1309,7 +1325,7 @@ On worker startup, `recoverDurableWorkerJobs` scans queued or running jobs left 
 - Supported queued asset jobs are reconciled into Redis/BullMQ through `redisJobQueue`.
 - Supported job types are `asset.index`, `asset.reindex`, and `asset.domain-vlm.refine`.
 - Reindex retry stage is recovered from `JobRecord.parameters.retryStage`; older log-only records are still parsed as a compatibility fallback.
-- Running jobs are reset to `queued` and rerun from the beginning of the matching workflow.
+- Running jobs are reset to `queued`, `parameters.resumeFromStage` is set from the failed/running/current checkpoint, and `runIndexingJob` skips completed checkpoints only when persisted stage output is reusable.
 - BullMQ jobs are keyed by `JobRecord.id`, so reconciliation is idempotent for already-enqueued jobs.
 
 ### Ask Operation Durability
@@ -1330,15 +1346,21 @@ Implications from the code:
 
 ### Realtime Event Push
 
-`server/services/realtimeEvents.ts` implements the local Server-Sent Events bus. `GET /api/events/stream` keeps a same-origin SSE connection open and emits typed events:
+`server/services/realtimeEvents.ts` implements the Server-Sent Events bus. `GET /api/events/stream` keeps a same-origin SSE connection open and emits typed events:
 
 - `asset.updated`
+- `asset.deleted`
+- `index.deleted`
 - `job.updated`
 - `ask.operation.updated`
 - `event.recorded`
 - `outbox.updated`
 
-The frontend still performs an initial REST read for full state hydration. Continuous console refresh is driven by SSE events in `src/hooks/useConsoleData.ts`, and ask completion waits on operation-scoped SSE events in `src/hooks/useSearchController.ts`. This replaces interval polling for progress and ask result updates. The SSE bus is in-process; production deployments that run multiple API instances should back this event fanout with shared pub/sub or route clients consistently to the publishing instance.
+Events are emitted to in-process subscribers immediately. When `REALTIME_REDIS_ENABLED` is not `false` and `REALTIME_REDIS_URL` or `REDIS_URL` is configured, the same events are also published to a Redis pub/sub channel so separate API/worker processes can fan out updates. Each event carries an origin ID so a process does not replay its own Redis echo.
+
+The SSE route supports optional `jobId`, `assetId`, and `operationId` filters. When `operationId` is provided, the route writes the current ask operation snapshot once on connect. Later heartbeats are comments only, not repeated full ask responses.
+
+The frontend still performs an initial REST read for full state hydration. Continuous console refresh is driven by SSE-triggered debounced refreshes in `src/hooks/useConsoleData.ts`, with an active-job interval refresh as a fallback. Ask completion waits on operation-scoped SSE events in `src/hooks/useSearchController.ts`.
 
 ## Concurrency And Durability Characteristics
 
@@ -1353,7 +1375,7 @@ The frontend still performs an initial REST read for full state hydration. Conti
 | Vector durability | PostgreSQL + pgvector in Docker development/operations. |
 | Tracking durability | PostgreSQL in Docker development/operations. |
 | Runtime parallelism | Asset job worker concurrency is controlled by `JOB_WORKER_CONCURRENCY`; some local model stages can also run concurrently based on `LOCAL_MODEL_HEAVY_CONCURRENCY`. |
-| Frontend refresh | SSE event push through `/api/events/stream`; initial hydration remains REST. |
+| Frontend refresh | SSE event push through `/api/events/stream`; initial hydration remains REST; active jobs enable a bounded interval fallback. |
 
 ## Environment-Driven Behavior
 
@@ -1394,7 +1416,7 @@ Selected environment variables used by the implementation:
 | `PYTHON_RUNTIME_SERVICE_ATTEMPTS` | Number of transient runtime-service call attempts, default `1`. |
 | `ASR_RUNTIME_SERVICE_URL` | Optional ASR service override for Whisper and WhisperX. |
 | `OCR_RUNTIME_SERVICE_URL` | Optional OCR service override for PaddleOCR. |
-| `VISION_RUNTIME_SERVICE_URL` | Optional vision service override for scene detection, object detection, tracking, and SoccerNet action spotting. |
+| `VISION_RUNTIME_SERVICE_URL` | Optional vision service override for object detection, tracking, and adapter action spotting. PySceneDetect uses this service only when explicitly selected by `SCENE_DETECTION_ENGINE`. |
 | `EMBEDDING_RUNTIME_SERVICE_URL` | Optional embedding service override for text and visual embeddings. |
 | `WHISPER_MODEL` | Whisper model, default `large-v3`. |
 | `WHISPER_BACKEND` | Whisper backend mode. |
@@ -1408,6 +1430,7 @@ Selected environment variables used by the implementation:
 | `VISUAL_EMBEDDING_PRETRAINED` | Visual model pretrained weights, default `datacomp_xl_s13b_b90k`. |
 | `VISUAL_EMBEDDING_DIMENSIONS` | Visual vector dimensions, default `768`. |
 | `VLM_WORKER_URL` | Enables VLM worker calls. |
+| `SCENE_DETECTION_ENGINE` | Scene detection engine. Defaults to `ffmpeg`; `pyscenedetect` or `py-scene-detect` opts into PySceneDetect with FFmpeg fallback. |
 | `OPENAI_API_KEY` | Enables optional OpenAI query planner. |
 | `OPENAI_QUERY_PLANNER` | Disables OpenAI planner when `off` or `false`. |
 | `CAPABILITY_*` | Sets capability modes for runtime stages. |
@@ -1455,6 +1478,7 @@ The code is already organized around replaceable adapters:
 - VLM worker is already a separate HTTP boundary.
 - Query planning can run rules-only or rules plus remote OpenAI refinement.
 - Webhook delivery is isolated in `server/services/events.ts`.
+- The knowledge facade has generic names, but the current adapter dispatch is still wired directly to `server/knowledge/adapters/sports/*`.
 
 ## Current Implementation Constraints
 
@@ -1464,10 +1488,10 @@ These are direct consequences of the code shape:
 - Redis is required for execution dispatch, while persisted operation records and queue outbox entries remain the source of truth for recovery and status.
 - Ask operations are worker-backed and durable at the operation-record level, but ask execution is not checkpoint-resume based; interrupted running ask operations are reset to queued and rerun from the beginning.
 - Local `/media` serving is explicit and configurable. Production-style deployments should set `MEDIA_SERVING_MODE=disabled` and serve media outside the API process.
-- Frontend progress and ask updates are pushed through in-process SSE. Multi-instance production deployments need shared pub/sub or sticky routing for cross-process fanout.
+- Frontend progress and ask updates are pushed through SSE. The bus is in-process plus optional Redis pub/sub; multi-instance deployments need Redis realtime enabled or sticky routing.
 - PostgreSQL/pgvector is the required durable metadata/vector storage boundary.
 - API key auth is optional and disabled when `API_KEYS` is unset.
 - CORS is enabled globally.
 - Several model/runtime stages are optional by default; unavailable optional capabilities are recorded, while required capabilities fail jobs.
 - Visual embedding failures do not necessarily fail indexing; they are logged and traced as unavailable unless policy requires downstream capabilities elsewhere.
-- Direct structured answers come from selected related knowledge adapters. The current sports adapter answers aggregate stat questions from imported related knowledge, not from video moment counts.
+- Direct structured answers come from the current sports related-knowledge adapter. It answers aggregate stat questions from imported related knowledge, not from video moment counts.

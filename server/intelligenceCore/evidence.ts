@@ -92,8 +92,24 @@ export function scoreVlmQuality(segment: TimelineSegment) {
 }
 
 export function hasActiveDomainFilters(filters?: DomainSearchFilters) {
-  return Boolean(filters && Object.values(filters).some((value) => typeof value === "string" && value.trim().length > 0));
+  return Boolean(
+    filters &&
+      Object.entries(filters).some(([key, value]) => {
+        if (typeof value !== "string" || value.trim().length === 0) return false;
+        return !(key === "role" && value === "any");
+      })
+  );
 }
+
+type DomainFilterConstraint = keyof DomainSearchFilters;
+
+export type SegmentDomainFilterEvaluation = {
+  accepted: boolean;
+  trust: "trusted" | "weak" | "failed";
+  matchedFilters: DomainFilterConstraint[];
+  weakMatches: DomainFilterConstraint[];
+  failures: DomainFilterConstraint[];
+};
 
 export function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearchFilters) {
   if (!filters) return true;
@@ -127,8 +143,68 @@ export function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearc
 }
 
 export function matchesSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters) {
-  if (!filters || !hasActiveDomainFilters(filters)) return true;
-  const fullSegmentText = normalizeSearchValue(
+  return evaluateSegmentDomainFilters(asset, segment, filters).accepted;
+}
+
+export function evaluateSegmentDomainFilters(asset: AssetRecord, segment: TimelineSegment, filters?: DomainSearchFilters): SegmentDomainFilterEvaluation {
+  const evaluation: SegmentDomainFilterEvaluation = {
+    accepted: true,
+    trust: "trusted",
+    matchedFilters: [],
+    weakMatches: [],
+    failures: []
+  };
+  if (!filters || !hasActiveDomainFilters(filters)) return evaluation;
+  const fullSegmentText = segmentDomainFilterText(asset, segment);
+  const trust = (constraint: DomainFilterConstraint) => {
+    if (!evaluation.matchedFilters.includes(constraint)) evaluation.matchedFilters.push(constraint);
+  };
+  const weaken = (constraint: DomainFilterConstraint) => {
+    if (!evaluation.weakMatches.includes(constraint)) evaluation.weakMatches.push(constraint);
+  };
+  const fail = (constraint: DomainFilterConstraint) => {
+    if (!evaluation.failures.includes(constraint)) evaluation.failures.push(constraint);
+  };
+
+  const applyScopeFilter = (field: "competition" | "season", value?: string) => {
+    if (splitFilterValues(value).length === 0) return;
+    if (scopeFilterAllows(segment, field, value)) {
+      trust(field);
+      return;
+    }
+    if (textAllowsFilter(fullSegmentText, value) || missingScopeCanStaySoft(segment, field, filters, fullSegmentText)) {
+      weaken(field);
+      return;
+    }
+    fail(field);
+  };
+
+  applyScopeFilter("competition", filters.competition);
+  applyScopeFilter("season", filters.season);
+
+  if (filters.player) {
+    if (hasTrustedPlayerIdentity(segment, filters.player)) {
+      trust("player");
+    } else if (textAllowsFilter(fullSegmentText, filters.player)) {
+      weaken("player");
+    } else {
+      fail("player");
+    }
+  }
+
+  applyEventFilters(segment, filters, fullSegmentText, { trust, weaken, fail });
+
+  if (evaluation.failures.length > 0) {
+    return { ...evaluation, accepted: false, trust: "failed" };
+  }
+  if (evaluation.weakMatches.length > 0) {
+    return { ...evaluation, trust: "weak" };
+  }
+  return evaluation;
+}
+
+function segmentDomainFilterText(asset: AssetRecord, segment: TimelineSegment) {
+  return normalizeSearchValue(
     [
       asset.title,
       asset.description,
@@ -151,26 +227,28 @@ export function matchesSegmentDomainFilters(asset: AssetRecord, segment: Timelin
       ])
     ].join(" ")
   );
-  if (!scopeFilterAllows(segment, "competition", filters.competition) && !textAllowsFilter(fullSegmentText, filters.competition)) {
-    if (!missingScopeCanStaySoft(segment, "competition", filters, fullSegmentText)) return false;
-  }
-  if (!scopeFilterAllows(segment, "season", filters.season) && !textAllowsFilter(fullSegmentText, filters.season)) {
-    if (!missingScopeCanStaySoft(segment, "season", filters, fullSegmentText)) return false;
-  }
-  const textTerms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
-  if (textTerms.length > 0) {
-    if (!textTerms.every((term) => fullSegmentText.includes(normalizeSearchValue(term)))) return false;
-  }
+}
 
+function applyEventFilters(
+  segment: TimelineSegment,
+  filters: DomainSearchFilters,
+  fullSegmentText: string,
+  record: {
+    trust: (constraint: DomainFilterConstraint) => void;
+    weaken: (constraint: DomainFilterConstraint) => void;
+    fail: (constraint: DomainFilterConstraint) => void;
+  }
+) {
   const eventFilters = {
     eventType: filters.eventType?.trim(),
     passType: filters.passType?.trim(),
     fieldZone: filters.fieldZone?.trim(),
-    role: filters.role?.trim()
+    role: filters.role && filters.role !== "any" ? filters.role.trim() : undefined
   };
   const needsEventMatch = Object.values(eventFilters).some(Boolean);
-  if (!needsEventMatch) return true;
-  const structuredMatch = trustedDomainEvents(segment).some((event) => {
+  if (!needsEventMatch) return;
+  const events = trustedDomainEvents(segment);
+  const structuredMatch = events.some((event) => {
     if (eventFilters.eventType && event.eventType !== eventFilters.eventType) return false;
     if (eventFilters.passType && event.football?.passType !== eventFilters.passType) return false;
     if (eventFilters.fieldZone && event.football?.fieldZone !== eventFilters.fieldZone) return false;
@@ -179,9 +257,25 @@ export function matchesSegmentDomainFilters(asset: AssetRecord, segment: Timelin
     if (filters.role === "shooter" && event.eventType !== "shot") return false;
     return true;
   });
-  if (structuredMatch) return true;
-  if (eventFilters.passType || eventFilters.fieldZone) return false;
-  return false;
+  const activeConstraints = Object.entries(eventFilters)
+    .filter(([, value]) => Boolean(value))
+    .map(([key]) => key as DomainFilterConstraint);
+  if (structuredMatch) {
+    activeConstraints.forEach(record.trust);
+    return;
+  }
+  if (eventFilters.passType || eventFilters.fieldZone || eventFilters.role === "receiver" || eventFilters.role === "passer" || events.length > 0) {
+    activeConstraints.forEach(record.fail);
+    return;
+  }
+  if (eventFilters.eventType) {
+    if (textAllowsEventFilter(fullSegmentText, eventFilters.eventType)) record.weaken("eventType");
+    else record.fail("eventType");
+  }
+  if (eventFilters.role) {
+    if (eventFilters.role === "shooter" && textAllowsEventFilter(fullSegmentText, "shot")) record.weaken("role");
+    else record.fail("role");
+  }
 }
 
 function textAllowsFilter(haystack: string, value?: string) {
@@ -239,7 +333,7 @@ function missingScopeCanStaySoft(segment: TimelineSegment, field: "competition" 
   if (field === "competition" && splitFilterValues(filters.competition).some((value) => normalizeSearchValue(value) === "nfl") && segment.domain?.groups.includes("sports.american_football")) return true;
   if (!filters.player || !textAllowsFilter(fullSegmentText, filters.player)) return false;
   if (hasTrustedPlayerIdentity(segment, filters.player)) return true;
-  const hasEventConstraint = Boolean(filters.eventType || filters.passType || filters.fieldZone || filters.role);
+  const hasEventConstraint = Boolean(filters.eventType || filters.passType || filters.fieldZone || (filters.role && filters.role !== "any"));
   if (!hasEventConstraint) return false;
   return trustedDomainEvents(segment).length > 0 || (isTrustedVisionEvidence(segment.sceneData?.vision) && Boolean(segment.sceneData?.vision?.eventClassification));
 }
@@ -306,6 +400,16 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
         confidence: 0.5,
         evidence: ["Matched NFL default through american-football domain scope."]
       });
+    } else if ((constraint === "competition" || constraint === "season") && missingScopeCanStaySoft(segment, constraint, filters, segmentText)) {
+      checks.push({
+        segmentId: segment.id,
+        constraint,
+        expected,
+        observed: "weak scope context",
+        status: "soft_pass",
+        confidence: 0.42,
+        evidence: ["Matched weak scope context through player and event evidence."]
+      });
     } else {
       checks.push({ segmentId: segment.id, constraint, expected, observed: observed ?? "missing", status: "unknown", confidence: 0, evidence: ["No indexed evidence for this constraint."] });
     }
@@ -355,7 +459,7 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
   const firstMatchingEvent = events[0];
   if (filters.eventType) {
     const match = events.find((event) => event.eventType === filters.eventType);
-    const textMatch = !match && textAllowsEventFilter(segmentText, filters.eventType);
+    const textMatch = !match && events.length === 0 && textAllowsEventFilter(segmentText, filters.eventType);
     checks.push({
       segmentId: segment.id,
       constraint: "eventType",
@@ -405,7 +509,7 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
       if (filters.role === "shooter") return event.eventType === "shot";
       return false;
     });
-    const textMatch = !match && filters.role === "shooter" && textAllowsEventFilter(segmentText, "shot");
+    const textMatch = !match && events.length === 0 && filters.role === "shooter" && textAllowsEventFilter(segmentText, "shot");
     checks.push({
       segmentId: segment.id,
       constraint: "role",

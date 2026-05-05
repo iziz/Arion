@@ -2,7 +2,7 @@ import type { Express, RequestHandler } from "express";
 import { analyzeAssetGroup, buildClipDetail, listAssetClips } from "../intelligence";
 import { sendNotFound } from "../http/middleware";
 import { logJson } from "../observability";
-import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
+import { planDomainQueryWithLlm } from "../llmQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { createQueuedAssetJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
@@ -58,7 +58,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
   app.get("/api/assets/:id/clips", async (req, res) => {
     const asset = await getAsset(String(req.params.id));
     if (!asset) return sendNotFound(res, "Asset not found");
-    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
+    const queryPlan = await planDomainQueryWithLlm(String(req.query.q ?? ""), parseDomainFilters(req.query));
     const clips = listAssetClips(asset, queryPlan.domainFilters, queryPlan);
     res.json(clips);
   });
@@ -66,7 +66,7 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
   app.get("/api/assets/:id/clips/:segmentId", async (req, res) => {
     const asset = await getAsset(String(req.params.id));
     if (!asset) return sendNotFound(res, "Asset not found");
-    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), parseDomainFilters(req.query));
+    const queryPlan = await planDomainQueryWithLlm(String(req.query.q ?? ""), parseDomainFilters(req.query));
     const detail = await buildClipDetail(asset, String(req.params.segmentId), queryPlan.domainFilters, queryPlan);
     if (!detail) return sendNotFound(res, "Clip segment not found");
     res.json(detail);

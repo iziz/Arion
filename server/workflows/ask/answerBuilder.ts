@@ -1,7 +1,7 @@
-import type { DomainQueryPlan, OrchestrationPlan, SearchResult, TimelineSegment } from "../../../shared/types";
+import type { AskAnswerContent, AskAnswerSection, DomainQueryPlan, OrchestrationPlan, SearchResult, TimelineSegment } from "../../../shared/types";
 import { buildEmptySearchAnswer } from "../../../shared/searchAnswerCopy";
 import { trustedDomainEvents } from "../../evidenceTrust";
-import { isPlayerInventoryQuery } from "../../queryPlanner";
+import { getKnowledgePlayer, matchKnowledgePlayer } from "../../knowledge/registry";
 import type { AskRequest } from "./types";
 
 export function formatSearchScope({ indexId, assetId, domainGroup, tag, modality }: Pick<AskRequest, "indexId" | "assetId" | "domainGroup" | "tag" | "modality">) {
@@ -13,14 +13,14 @@ export function formatSearchScope({ indexId, assetId, domainGroup, tag, modality
   ].filter(Boolean).join(" · ");
 }
 
-export function buildAskVideoAnswer(results: SearchResult[], queryPlan: DomainQueryPlan) {
+export function buildAskVideoAnswerContent(results: SearchResult[], queryPlan: DomainQueryPlan): AskAnswerContent {
   const korean = isKoreanQuery(queryPlan.originalQuery);
   if (results.length === 0) {
-    return buildEmptySearchAnswer(queryPlan);
+    return plainAskAnswerContent(buildEmptySearchAnswer(queryPlan));
   }
   const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
-  if (isPlayerInventoryQuery(queryPlan.originalQuery)) {
-    return buildPlayerInventoryAnswer(results, segmentCount, korean);
+  if (isPlayerInventoryPlan(queryPlan)) {
+    return plainAskAnswerContent(buildPlayerInventoryAnswer(results, segmentCount, korean));
   }
   const player = queryPlan.intent.player ? ` for ${queryPlan.intent.player}` : "";
   const event = queryPlan.intent.eventType ? ` matching ${queryPlan.intent.eventType.replace(/_/g, " ")}` : "";
@@ -29,9 +29,9 @@ export function buildAskVideoAnswer(results: SearchResult[], queryPlan: DomainQu
       queryPlan.intent.player ? `player=${queryPlan.intent.player}` : "",
       queryPlan.intent.eventType ? `event=${queryPlan.intent.eventType}` : ""
     ].filter(Boolean).join(" · ");
-    return `${results.length}개 asset에서 ${segmentCount}개의 indexed moment를 찾았습니다${focus ? ` (${focus})` : ""}.`;
+    return plainAskAnswerContent(`${results.length}개 asset에서 ${segmentCount}개의 indexed moment를 찾았습니다${focus ? ` (${focus})` : ""}.`);
   }
-  return `Found ${segmentCount} indexed moments across ${results.length} assets${player}${event}.`;
+  return plainAskAnswerContent(`Found ${segmentCount} indexed moments across ${results.length} assets${player}${event}.`);
 }
 
 function buildPlayerInventoryAnswer(results: SearchResult[], segmentCount: number, korean: boolean) {
@@ -47,8 +47,8 @@ function buildPlayerInventoryAnswer(results: SearchResult[], segmentCount: numbe
   return `Indexed video evidence exposes these player names: ${playerNames.join(", ")}. I found ${playerNames.length} players across ${results.length} assets and ${segmentCount} indexed moments.`;
 }
 
-export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, orchestrationPlan: OrchestrationPlan) {
-  if (results.length === 0) return buildAskVideoAnswer(results, queryPlan);
+export function buildAskAnalysisAnswerContent(results: SearchResult[], queryPlan: DomainQueryPlan, orchestrationPlan: OrchestrationPlan): AskAnswerContent {
+  if (results.length === 0) return buildAskVideoAnswerContent(results, queryPlan);
   const korean = isKoreanQuery(queryPlan.originalQuery);
   const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
   const top = results[0];
@@ -57,89 +57,81 @@ export function buildAskAnalysisAnswer(results: SearchResult[], queryPlan: Domai
   if (isGenericVideoSummaryRequest(queryPlan)) {
     return buildGenericVideoSummaryAnswer(results, queryPlan, topMoments, sourceProfile, korean);
   }
-  if (queryPlan.knowledgeMode === "none") {
+  if (queryPlan.knowledgeMode === "none" && queryPlan.responseMode !== "analysis") {
     return buildGenericGroundedAnswer(results, queryPlan, topMoments, sourceProfile, korean);
   }
   const features = collectMomentFeatures(results);
-  const subject = queryPlan.intent.player ?? topGroup(features.map((feature) => feature.player).filter(Boolean) as string[])?.value ?? "the requested player";
+  const subject = resolveAnalysisSubject(queryPlan, features, korean);
   const headline = korean ? buildStyleHeadlineKo(features) : buildStyleHeadlineEn(features);
   const patternSentences = korean ? buildPatternSentencesKo(features) : buildPatternSentencesEn(features);
   const evidenceLine = korean
     ? `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거이며, 전체 분석은 ${segmentCount}개 moment/${results.length}개 asset에 한정됩니다.`
     : `The strongest source asset is "${top.asset.title}" with key moments around ${topMoments || "the retrieved timeline"}, and the analysis is limited to ${segmentCount} moments across ${results.length} assets.`;
   if (korean) {
-    return [
-      `${subject}의 플레이 스타일은 현재 검색된 영상 기준으로 "${headline}"으로 요약됩니다.`,
-      patternSentences.join(" "),
-      evidenceLine,
-      sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
-      orchestrationPlan.analysis.required ? "주의: 이 결론은 최종 검색된 indexed moments만 분석한 결과이며, 영상 전체나 외부 통계로 일반화하지 않습니다." : ""
-    ].filter(Boolean).join(" ");
+    return sectionedAskAnswerContent([
+      answerSection("summary", "요약", `${subject}의 플레이 스타일은 현재 검색된 영상 기준으로 "${headline}"으로 요약됩니다.`),
+      answerSection("patterns", "패턴", patternSentences.join(" ")),
+      answerSection("evidence", "근거", evidenceLine, "evidence"),
+      sourceProfile ? answerSection("sources", "소스", `${sourceProfile}.`, "evidence") : null,
+      orchestrationPlan.analysis.required
+        ? answerSection("note", "주의", "이 결론은 최종 검색된 indexed moments만 분석한 결과이며, 영상 전체나 외부 통계로 일반화하지 않습니다.", "warning")
+        : null
+    ]);
   }
   const focus = [
     queryPlan.intent.player ? `player=${queryPlan.intent.player}` : "",
     queryPlan.intent.eventType ? `event=${queryPlan.intent.eventType}` : "",
     queryPlan.intent.fieldZone ? `zone=${queryPlan.intent.fieldZone}` : ""
   ].filter(Boolean).join(" · ");
-  return [
-    `${subject}'s play style from the retrieved indexed video is best summarized as "${headline}".`,
-    patternSentences.join(" "),
-    `I analyzed ${segmentCount} indexed moments across ${results.length} assets${focus ? ` (${focus})` : ""}.`,
-    evidenceLine,
-    sourceProfile ? `Sources: ${sourceProfile}.` : "",
-    orchestrationPlan.analysis.required ? "This conclusion is grounded only in the retrieved indexed moments and should not be generalized to all games or external statistics." : ""
-  ].filter(Boolean).join(" ");
+  return sectionedAskAnswerContent([
+    answerSection("summary", "Summary", `${subject}'s play style from the retrieved indexed video is best summarized as "${headline}".`),
+    answerSection("patterns", "Patterns", patternSentences.join(" ")),
+    answerSection("scope", "Scope", `I analyzed ${segmentCount} indexed moments across ${results.length} assets${focus ? ` (${focus})` : ""}.`),
+    answerSection("evidence", "Evidence", evidenceLine, "evidence"),
+    sourceProfile ? answerSection("sources", "Sources", `${sourceProfile}.`, "evidence") : null,
+    orchestrationPlan.analysis.required
+      ? answerSection("note", "Note", "This conclusion is grounded only in the retrieved indexed moments and should not be generalized to all games or external statistics.", "warning")
+      : null
+  ]);
 }
 
 function isGenericVideoSummaryRequest(queryPlan: DomainQueryPlan) {
-  if (queryPlan.responseMode === "summary") return true;
-  return /요약|정리|summari[sz]e|summary|recap/i.test(queryPlan.originalQuery) && queryPlan.knowledgeMode === "none";
+  return queryPlan.responseMode === "summary";
 }
 
-function buildGenericGroundedAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean) {
+function buildGenericGroundedAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean): AskAnswerContent {
   const top = results[0];
   const segmentCount = results.reduce((sum, result) => sum + result.segments.length, 0);
   const snippets = collectGroundedSnippets(results);
   const evidenceScope = korean
     ? `${segmentCount}개 moment/${results.length}개 asset`
     : `${segmentCount} moments across ${results.length} assets`;
-  const clothingStyle = inferClothingStyle(queryPlan.originalQuery, snippets.join(" "), korean);
   if (korean) {
-    if (clothingStyle) {
-      return [
-        `검색된 영상 근거 기준으로 답하면, 남자의 옷 스타일은 "${clothingStyle}"에 가깝습니다.`,
-        snippets.length > 0 ? `근거: ${joinSummarySnippetsKo(snippets.slice(0, 4))}.` : "",
-        `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거입니다.`,
-        sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
-        `주의: 이 답변은 최종 검색된 ${evidenceScope}의 ASR/OCR/visual evidence에 한정됩니다.`
-      ].filter(Boolean).join(" ");
-    }
-    return [
+    return sectionedAskAnswerContent([
+      answerSection(
+        "answer",
+        "답변",
+        snippets.length > 0
+          ? `검색된 영상 근거 기준으로 ${joinSummarySnippetsKo(snippets.slice(0, 4))}로 확인됩니다.`
+          : "검색된 구간에는 이 질문에 답할 충분한 ASR/OCR/visual evidence가 제한적입니다."
+      ),
+      answerSection("evidence", "근거", `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거입니다.`, "evidence"),
+      sourceProfile ? answerSection("sources", "소스", `${sourceProfile}.`, "evidence") : null,
+      answerSection("note", "주의", `이 답변은 최종 검색된 ${evidenceScope}에 한정됩니다.`, "warning")
+    ]);
+  }
+  return sectionedAskAnswerContent([
+    answerSection(
+      "answer",
+      "Answer",
       snippets.length > 0
-        ? `검색된 영상 근거 기준으로 답하면, ${joinSummarySnippetsKo(snippets.slice(0, 4))}로 확인됩니다.`
-        : "검색된 구간에는 이 질문에 답할 충분한 ASR/OCR/visual evidence가 제한적입니다.",
-      `"${top.asset.title}"의 ${topMoments || "retrieved timeline"} 구간이 가장 강한 근거입니다.`,
-      sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
-      `주의: 이 답변은 최종 검색된 ${evidenceScope}에 한정됩니다.`
-    ].filter(Boolean).join(" ");
-  }
-  if (clothingStyle) {
-    return [
-      `From the retrieved video evidence, the man's clothing style is closest to "${clothingStyle}".`,
-      snippets.length > 0 ? `Evidence: ${joinSummarySnippetsEn(snippets.slice(0, 4))}.` : "",
-      `The strongest retrieved source is "${top.asset.title}" around ${topMoments || "the retrieved timeline"}.`,
-      sourceProfile ? `Sources: ${sourceProfile}.` : "",
-      `This answer is limited to the retrieved ${evidenceScope} and their ASR/OCR/visual evidence.`
-    ].filter(Boolean).join(" ");
-  }
-  return [
-    snippets.length > 0
-      ? `From the retrieved video evidence, the answer is grounded in these observations: ${joinSummarySnippetsEn(snippets.slice(0, 4))}.`
-      : "The retrieved moments do not contain enough ASR/OCR/visual evidence to answer this precisely.",
-    `The strongest retrieved source is "${top.asset.title}" around ${topMoments || "the retrieved timeline"}.`,
-    sourceProfile ? `Sources: ${sourceProfile}.` : "",
-    `This answer is limited to the retrieved ${evidenceScope}.`
-  ].filter(Boolean).join(" ");
+        ? `From the retrieved video evidence, the answer is grounded in these observations: ${joinSummarySnippetsEn(snippets.slice(0, 4))}.`
+        : "The retrieved moments do not contain enough ASR/OCR/visual evidence to answer this precisely."
+    ),
+    answerSection("evidence", "Evidence", `The strongest retrieved source is "${top.asset.title}" around ${topMoments || "the retrieved timeline"}.`, "evidence"),
+    sourceProfile ? answerSection("sources", "Sources", `${sourceProfile}.`, "evidence") : null,
+    answerSection("note", "Note", `This answer is limited to the retrieved ${evidenceScope}.`, "warning")
+  ]);
 }
 
 function collectGroundedSnippets(results: SearchResult[]) {
@@ -170,22 +162,7 @@ function collectGroundedSnippets(results: SearchResult[]) {
   return snippets;
 }
 
-function inferClothingStyle(query: string, evidenceText: string, korean: boolean) {
-  const isClothingQuery = /옷|의상|복장|스타일|입고|착용|clothing|outfit|style|wearing|worn|dress/i.test(query);
-  if (!isClothingQuery) return null;
-  const text = evidenceText.toLowerCase();
-  const traits = [
-    /suit|blazer|dress shirt|tie|formal|business|정장|블레이저|셔츠|타이|격식/.test(text) ? (korean ? "포멀한" : "formal") : "",
-    /hoodie|sweatshirt|t-?shirt|jeans|sneakers|casual|후드|티셔츠|청바지|스니커즈|캐주얼/.test(text) ? (korean ? "캐주얼한" : "casual") : "",
-    /jacket|coat|outerwear|재킷|자켓|코트|아우터/.test(text) ? (korean ? "아우터 중심의" : "outerwear-led") : "",
-    /black|dark|navy|어두운|검정|검은|네이비/.test(text) ? (korean ? "어두운 톤의" : "dark-toned") : "",
-    /white|light|bright|흰|하얀|밝은/.test(text) ? (korean ? "밝은 톤의" : "light-toned") : ""
-  ].filter(Boolean);
-  if (traits.length === 0) return korean ? "구체적 단정이 어려운 영상 기반 스타일" : "not specific enough to classify confidently";
-  return korean ? `${traits.join(" ")} 스타일` : `${traits.join(" ")} style`;
-}
-
-function buildGenericVideoSummaryAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean) {
+function buildGenericVideoSummaryAnswer(results: SearchResult[], queryPlan: DomainQueryPlan, topMoments: string, sourceProfile: string, korean: boolean): AskAnswerContent {
   const top = results[0];
   const totalSegments = results.reduce((sum, result) => sum + result.segments.length, 0);
   const snippets = collectSummarySnippets(top);
@@ -193,25 +170,33 @@ function buildGenericVideoSummaryAnswer(results: SearchResult[], queryPlan: Doma
     ? `${totalSegments}개 moment/${results.length}개 asset`
     : `${totalSegments} moments across ${results.length} assets`;
   if (korean) {
-    return [
-      `"${top.asset.title}" 요약입니다.`,
-      snippets.length > 0
-        ? `검색된 indexed moments 기준 핵심 흐름은 ${joinSummarySnippetsKo(snippets)}입니다.`
-        : "현재 index에는 제목/metadata 중심의 근거만 있고, 요약에 쓸 충분한 ASR/OCR 문장이 제한적입니다.",
-      `주요 근거 구간은 ${topMoments || "retrieved timeline"}입니다.`,
-      sourceProfile ? `근거 소스: ${sourceProfile}.` : "",
-      `주의: 이 요약은 최종 검색된 ${evidenceScope}의 ASR/OCR/visual evidence에 한정됩니다.`
-    ].filter(Boolean).join(" ");
+    return sectionedAskAnswerContent([
+      answerSection("summary", "요약", `"${top.asset.title}"`),
+      answerSection(
+        "key-flow",
+        "핵심 흐름",
+        snippets.length > 0
+          ? `검색된 indexed moments 기준 ${joinSummarySnippetsKo(snippets)}입니다.`
+          : "현재 index에는 제목/metadata 중심의 근거만 있고, 요약에 쓸 충분한 ASR/OCR 문장이 제한적입니다."
+      ),
+      answerSection("evidence", "근거", `주요 구간은 ${topMoments || "retrieved timeline"}입니다.`, "evidence"),
+      sourceProfile ? answerSection("sources", "소스", `${sourceProfile}.`, "evidence") : null,
+      answerSection("note", "주의", `이 요약은 최종 검색된 ${evidenceScope}의 ASR/OCR/visual evidence에 한정됩니다.`, "warning")
+    ]);
   }
-  return [
-    `Summary for "${top.asset.title}".`,
-    snippets.length > 0
-      ? `From the retrieved indexed moments, the main evidence says: ${joinSummarySnippetsEn(snippets)}.`
-      : "The current index has title/metadata evidence, but limited ASR/OCR text for a fuller summary.",
-    `The strongest retrieved moments are ${topMoments || "the retrieved timeline"}.`,
-    sourceProfile ? `Sources: ${sourceProfile}.` : "",
-    `This summary is limited to the retrieved ${evidenceScope} and their ASR/OCR/visual evidence.`
-  ].filter(Boolean).join(" ");
+  return sectionedAskAnswerContent([
+    answerSection("summary", "Summary", `"${top.asset.title}".`),
+    answerSection(
+      "key-flow",
+      "Key flow",
+      snippets.length > 0
+        ? `From the retrieved indexed moments, the main evidence says: ${joinSummarySnippetsEn(snippets)}.`
+        : "The current index has title/metadata evidence, but limited ASR/OCR text for a fuller summary."
+    ),
+    answerSection("evidence", "Evidence", `The strongest retrieved moments are ${topMoments || "the retrieved timeline"}.`, "evidence"),
+    sourceProfile ? answerSection("sources", "Sources", `${sourceProfile}.`, "evidence") : null,
+    answerSection("note", "Note", `This summary is limited to the retrieved ${evidenceScope} and their ASR/OCR/visual evidence.`, "warning")
+  ]);
 }
 
 function collectSummarySnippets(result: SearchResult) {
@@ -289,6 +274,28 @@ function collectMomentFeatures(results: SearchResult[]): MomentFeature[] {
       };
     })
   );
+}
+
+function resolveAnalysisSubject(queryPlan: DomainQueryPlan, features: MomentFeature[], korean: boolean) {
+  const featureSubject = topGroup(features.map((feature) => feature.player).filter(Boolean) as string[])?.value ?? "";
+  const plannedText = [
+    queryPlan.intent.analysisSubject,
+    queryPlan.intent.player,
+    queryPlan.retrieval?.evidenceTerms.join(" "),
+    queryPlan.semanticQuery,
+    queryPlan.rewrittenQuery
+  ].filter(Boolean).join(" ");
+  const plannedMatch = matchKnowledgePlayer(plannedText)?.value;
+  const canonical = queryPlan.intent.analysisSubject ?? queryPlan.intent.player ?? plannedMatch?.canonical ?? featureSubject;
+  const matchedPlayer = plannedMatch ?? (canonical ? getKnowledgePlayer(canonical) ?? matchKnowledgePlayer(canonical)?.value : null);
+  if (matchedPlayer && korean) {
+    return matchedPlayer.aliases.find((alias) => /[가-힣]/.test(alias)) ?? canonical;
+  }
+  return canonical || (korean ? "요청한 대상" : "the requested subject");
+}
+
+function isPlayerInventoryPlan(queryPlan: DomainQueryPlan) {
+  return queryPlan.route === "asset_catalog" || queryPlan.responseMode === "asset_lookup";
 }
 
 function roleForSegment(segment: TimelineSegment, eventType?: string) {
@@ -512,4 +519,31 @@ function summarizeResultSources(results: SearchResult[]) {
     .sort((a, b) => b[1] - a[1])
     .map(([source, count]) => `${source}=${count}`)
     .join(", ");
+}
+
+export function plainAskAnswerContent(text: string): AskAnswerContent {
+  const trimmed = text.trim();
+  return {
+    format: "plain",
+    text: trimmed,
+    sections: trimmed ? [answerSection("answer", null, trimmed)] : []
+  };
+}
+
+function sectionedAskAnswerContent(items: Array<AskAnswerSection | null | undefined>): AskAnswerContent {
+  const sections = items.filter((item): item is AskAnswerSection => Boolean(item && item.body.trim()));
+  return {
+    format: "sections",
+    text: sections.map((section) => (section.label ? `${section.label}: ${section.body}` : section.body)).join("\n"),
+    sections
+  };
+}
+
+function answerSection(id: string, label: string | null, body: string, tone: AskAnswerSection["tone"] = "neutral"): AskAnswerSection {
+  return {
+    id,
+    label,
+    body: body.trim(),
+    tone
+  };
 }

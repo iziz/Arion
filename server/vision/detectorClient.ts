@@ -4,7 +4,7 @@ import type { KeyframeRecord, TimelineSegment } from "../../shared/types";
 import { getPublicMediaRoot } from "../localObjectStorage";
 import { parsePythonJson } from "../modelRuntime/pythonProcess";
 import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRuntime/pythonRuntimeService";
-import { allowHeuristicDetectorFallback, detectorBackend, detectorConfidence, detectorModel, detectorScript, pythonBin, rfDetrModel } from "./runtimeConfig";
+import { detectorBackend, detectorConfidence, detectorModel, detectorScript, pythonBin, rfDetrModel } from "./runtimeConfig";
 import type { DetectorResult } from "./types";
 
 export async function detectTimelineObjects(timeline: TimelineSegment[], keyframes: KeyframeRecord[]) {
@@ -36,8 +36,7 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
           backend: detectorBackend,
           model: detectorModel,
           rfDetrModel,
-          confidence: detectorConfidence,
-          allowHeuristicFallback: allowHeuristicDetectorFallback
+          confidence: detectorConfidence
         },
         {
           metricKey: "model.vision.detector.service"
@@ -56,7 +55,6 @@ export async function detectTimelineObjects(timeline: TimelineSegment[], keyfram
         "--conf",
         detectorConfidence
       ];
-      if (allowHeuristicDetectorFallback) args.push("--allow-heuristic-fallback");
       const child = spawn(pythonBin, args, {
         stdio: ["pipe", "pipe", "pipe"]
       });

@@ -1,6 +1,6 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AskOperation, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
+import type { AskAnswerContent, AskOperation, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import {
@@ -15,7 +15,7 @@ import { ClipStrip, KnowledgeEvidenceRow, SearchSceneEvidence, TrustBadge } from
 export type SearchConversationTurn = {
   id: string;
   query: string;
-  answer: string;
+  answerContent: AskAnswerContent | null;
   route: "structured_answer" | "moment_retrieval" | "empty" | "error";
   knowledgeAnswer: StructuredKnowledgeAnswer | null;
   results: SearchResult[];
@@ -407,7 +407,7 @@ export function SearchConversation({
             </div>
             <div className={`assistant-bubble ${turn.route} ${turn.results.length > 0 ? "has-results" : ""}`}>
               <span>{turn.route === "structured_answer" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
-              {turn.answer && !running && <p>{turn.answer}</p>}
+              {turn.answerContent && !running && <AssistantAnswerText content={turn.answerContent} />}
               {running && (
                 <div className="assistant-search-status" aria-live="polite">
                   <div>
@@ -452,8 +452,25 @@ export function SearchConversation({
   );
 }
 
+function AssistantAnswerText({ content }: { content: AskAnswerContent }) {
+  return (
+    <div className="assistant-answer">
+      {content.sections.map((section) =>
+        section.label ? (
+          <div key={section.id} className={`assistant-answer-row ${section.tone}`}>
+            <b>{section.label}</b>
+            <p>{section.body}</p>
+          </div>
+        ) : (
+          <p key={section.id} className="assistant-answer-plain">{section.body}</p>
+        )
+      )}
+    </div>
+  );
+}
+
 function isSearchTurnRunning(turn: SearchConversationTurn) {
-  return turn.operation?.status === "queued" || turn.operation?.status === "running" || (!turn.operation && turn.answer === "Searching indexed moments.");
+  return turn.operation?.status === "queued" || turn.operation?.status === "running" || (!turn.operation && turn.route === "moment_retrieval" && !turn.answerContent);
 }
 
 function AssistantResultDisclosure({
@@ -741,6 +758,7 @@ function buildQueryPlanDetails(queryPlan: DomainQueryPlan, step: AskOperation["s
     retrieval?.textQuery ? { label: "Vector text query", value: retrieval.textQuery } : null,
     retrieval?.visualQuery ? { label: "Visual query", value: retrieval.visualQuery } : null,
     retrieval?.evidenceTerms?.length ? { label: "Evidence terms", value: retrieval.evidenceTerms.join(", ") } : null,
+    retrieval?.requiredEvidence?.length ? { label: "Required evidence", value: retrieval.requiredEvidence.map((item) => `${item.kind}:${item.terms.join("|")} (${item.match})`).join(", ") } : null,
     Object.keys(filters).length > 0 ? { label: "Filters", value: formatDetailRecord(filters) } : null,
     Object.keys(intent).length > 0 ? { label: "Intent", value: formatDetailRecord(intent) } : null,
     queryPlan.warnings.length > 0 ? { label: "Warnings", value: queryPlan.warnings.join(" ") } : null,

@@ -1,10 +1,9 @@
 import { summarizeAssetRecord } from "../../shared/assetSummary";
-import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, SearchMatchReason, SearchResult, SearchResultSegment, TimelineSegment } from "../../shared/types";
+import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, RetrievalEvidenceConstraint, SearchMatchReason, SearchResult, SearchResultSegment, TimelineSegment } from "../../shared/types";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
 import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
-import { isPlayerInventoryQuery } from "../queryPlanner";
 import { matchKnowledgePlayer, matchKnowledgePlayers } from "../knowledge/registry";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
 import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
@@ -14,6 +13,7 @@ import { buildSearchMatchReasons, buildVerificationChecks, clipFromSegment, form
 const ASSET_LEXICAL_WEIGHT = 24;
 const ASSET_KNOWLEDGE_WEIGHT = 8;
 const SEGMENT_LEXICAL_WEIGHT = 3;
+const REQUIRED_EVIDENCE_WEIGHT = 12;
 
 export function searchAssets(
   assets: AssetRecord[],
@@ -35,13 +35,14 @@ export function searchAssets(
 ): SearchResult[] {
   if (options.queryPlan?.route === "unsupported") return [];
 
-  if (isPlayerInventoryQuery(query)) {
+  if (isPlayerInventoryPlan(options.queryPlan)) {
     return searchPlayerInventoryResults(assets, indexes, options);
   }
 
   const retrievalPlan = resolveQueryRetrievalPlan(options.queryPlan, query);
   const domainProfile = expandDomainQuery(retrievalPlan.textQuery);
-  const queryTerms = retrievalPlan.evidenceTerms;
+  const requiredEvidence = retrievalPlan.requiredEvidence;
+  const queryTerms = requiredEvidence.length > 0 ? unique(requiredEvidence.flatMap((constraint) => constraint.terms)) : retrievalPlan.evidenceTerms;
   const lexicalMatchThreshold = options.queryPlan?.retrieval?.evidenceTerms.length ? 1 : queryTerms.length >= 3 ? 2 : 1;
   const knowledgeProfile = buildKnowledgeSearchProfile(options.knowledgeEvidence ?? []);
   const knowledgeTerms = extractKeywords(knowledgeProfile.searchText);
@@ -70,6 +71,7 @@ export function searchAssets(
         .map((segment) => {
           const segmentText = segmentSearchText(segment);
           const lexicalScore = scoreText(segmentText, queryTerms);
+          const requiredEvidenceMatch = scoreRequiredEvidence(segment, requiredEvidence);
           const knowledgeScore = scoreText([assetText, segmentText, isTrustedDomainSegment(segment.domain) ? segment.domain?.searchText : ""].filter(Boolean).join(" "), knowledgeTerms);
           const domainScore = scoreDomainMatch(segment, domainProfile);
           const filterScore = scoreDomainFilterMatch(asset, segment, options.domainFilters);
@@ -85,6 +87,8 @@ export function searchAssets(
             lexicalScore,
             semanticScore,
             visualScore,
+            requiredEvidenceScore: requiredEvidenceMatch.score,
+            requiredEvidenceSatisfied: requiredEvidenceMatch.satisfied,
             sourceScore,
             confidenceScore,
             vlmQualityScore,
@@ -96,6 +100,7 @@ export function searchAssets(
               assetMetadataScore * 1.2 +
               domainScore * 5 +
               filterScore * 6 +
+              requiredEvidenceMatch.score * REQUIRED_EVIDENCE_WEIGHT +
               knowledgeScore * 4.5 +
               semanticScore * 8 +
               visualScore * 6 +
@@ -105,14 +110,16 @@ export function searchAssets(
           };
         })
         .filter((item) =>
-          hasDomainFilters
-            ? item.filterScore > 0
-            : suppressBroadMatches
-              ? false
-              : item.lexicalScore >= lexicalMatchThreshold ||
-                item.domainScore > 0 ||
-                item.knowledgeScore > 0 ||
-                (allowSemanticOnlyMatches && (item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD))
+          requiredEvidence.length > 0 && !item.requiredEvidenceSatisfied
+            ? false
+            : hasDomainFilters
+              ? item.filterScore > 0
+              : suppressBroadMatches
+                ? false
+                : item.lexicalScore >= lexicalMatchThreshold ||
+                  item.domainScore > 0 ||
+                  item.knowledgeScore > 0 ||
+                  (allowSemanticOnlyMatches && (item.semanticScore >= SEMANTIC_ONLY_THRESHOLD || item.visualScore >= VISUAL_ONLY_THRESHOLD))
         );
       const lexicalSegmentMatches = segmentCandidates.filter((item) => item.lexicalScore >= lexicalMatchThreshold);
       const domainSegmentMatches = segmentCandidates.filter((item) => item.domainScore > 0);
@@ -127,7 +134,7 @@ export function searchAssets(
         .sort((a, b) => b.score - a.score);
 
       const selectedSegments = matchingSegments.slice(0, 5);
-      const lexical = assetLexicalScore * ASSET_LEXICAL_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * SEGMENT_LEXICAL_WEIGHT;
+      const lexical = assetLexicalScore * ASSET_LEXICAL_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.lexicalScore, 0) * SEGMENT_LEXICAL_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.requiredEvidenceScore, 0) * REQUIRED_EVIDENCE_WEIGHT;
       const domain = selectedSegments.reduce((sum, item) => sum + item.domainScore, 0) * 5;
       const filters = selectedSegments.reduce((sum, item) => sum + item.filterScore, 0) * 6;
       const knowledge = assetKnowledgeScore * ASSET_KNOWLEDGE_WEIGHT + selectedSegments.reduce((sum, item) => sum + item.knowledgeScore, 0) * 4.5;
@@ -198,6 +205,44 @@ export function searchAssets(
     .filter((result) => result.score > 0 && result.segments.length > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+function isPlayerInventoryPlan(queryPlan: DomainQueryPlan | undefined) {
+  return queryPlan?.route === "asset_catalog" || queryPlan?.responseMode === "asset_lookup";
+}
+
+function scoreRequiredEvidence(segment: TimelineSegment, constraints: RetrievalEvidenceConstraint[]) {
+  let score = 0;
+  for (const constraint of constraints) {
+    const matchedTerms = countRequiredEvidenceMatches(segment, constraint);
+    const satisfied = constraint.match === "any" ? matchedTerms > 0 : matchedTerms === constraint.terms.length;
+    if (!satisfied) return { score, satisfied: false };
+    score += matchedTerms;
+  }
+  return { score, satisfied: true };
+}
+
+function countRequiredEvidenceMatches(segment: TimelineSegment, constraint: RetrievalEvidenceConstraint) {
+  const evidenceText = requiredEvidenceText(segment, constraint.kind);
+  return constraint.terms.reduce((score, term) => score + scoreText(evidenceText, [term]), 0);
+}
+
+function requiredEvidenceText(segment: TimelineSegment, kind: RetrievalEvidenceConstraint["kind"]) {
+  if (kind === "spoken_text") {
+    return [
+      segment.transcript,
+      segment.sceneData?.text.speech ?? "",
+      ...(segment.sceneData?.text.subtitles ?? []),
+      ...(segment.sceneData?.vlm?.visibleText ?? [])
+    ].join(" ");
+  }
+  return [
+    ...(segment.sceneData?.text.subtitles ?? []),
+    ...(segment.sceneData?.text.screenText ?? []),
+    ...(segment.sceneData?.text.overlays ?? []),
+    ...(segment.sceneData?.text.watermarks ?? []),
+    ...(segment.sceneData?.vlm?.visibleText ?? [])
+  ].join(" ");
 }
 
 function searchPlayerInventoryResults(

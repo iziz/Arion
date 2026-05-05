@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
+  AskAnswerContent,
   AskResponse,
   AssetSummaryRecord,
   DomainQueryPlan,
@@ -14,14 +15,14 @@ import { api } from "../api";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import { buildConsoleUrl } from "../navigation";
 import {
-  buildSearchAssistantAnswer,
   filterSearchResultsByTrust,
   TRUST_PRESETS,
   type SearchTrustFilters
 } from "../searchTrust";
 import type { SearchConversationTurn } from "../components/SearchPanels";
 
-const SEARCH_HISTORY_STORAGE_KEY = "arion.search.history.v1";
+const SEARCH_HISTORY_STORAGE_KEY = "arion.search.history.v2";
+const LEGACY_SEARCH_HISTORY_STORAGE_KEYS = ["arion.search.history.v1"];
 const SEARCH_HISTORY_LIMIT = 30;
 
 export function useSearchController({
@@ -52,6 +53,7 @@ export function useSearchController({
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
+    for (const key of LEGACY_SEARCH_HISTORY_STORAGE_KEYS) window.localStorage.removeItem(key);
     const storedHistory = readStoredSearchHistory();
     setSearchConversation(storedHistory);
     setSearchHistoryReady(true);
@@ -149,7 +151,7 @@ export function useSearchController({
     upsertSearchTurn({
       id: turnId,
       query: submittedQuery || "Filtered search",
-      answer: "Searching indexed moments.",
+      answerContent: null,
       route: "moment_retrieval",
       knowledgeAnswer: null,
       results: [],
@@ -163,11 +165,12 @@ export function useSearchController({
         q: submittedQuery,
         indexId: searchScope.indexId,
         assetId: searchScope.assetId,
+        domainGroup: searchKnowledgeContext.domainGroup,
         useKnowledgeLayer
       });
       latestResponse = started;
       setAskResponse(started);
-      upsertSearchTurn(buildSearchTurnFromResponse(turnId, submittedQuery, started, "Searching indexed moments."));
+      upsertSearchTurn(buildSearchTurnFromResponse(turnId, submittedQuery, started));
       const completed = await waitForAskOperation(started.operation.id, (response) => {
         latestResponse = response;
         setQueryPlan(response.queryPlan);
@@ -175,7 +178,7 @@ export function useSearchController({
         upsertSearchTurn(
           isTerminalAskResponse(response)
             ? buildCompletedSearchTurnFromResponse(turnId, submittedQuery, response)
-            : buildSearchTurnFromResponse(turnId, submittedQuery, response, response.answer ?? "Searching indexed moments.")
+            : buildSearchTurnFromResponse(turnId, submittedQuery, response)
         );
       });
       latestResponse = completed;
@@ -191,7 +194,7 @@ export function useSearchController({
       upsertSearchTurn({
         id: activeTurnId ?? `${Date.now()}-${searchConversation.length}`,
         query: submittedQuery || "Filtered search",
-        answer: errorMessage,
+        answerContent: plainClientAnswerContent(errorMessage),
         route: "error",
         knowledgeAnswer: null,
         results: [],
@@ -265,7 +268,7 @@ export function useSearchController({
   function applyStoredAskResponse(turn: SearchConversationTurn, response: AskResponse, syncActiveState: boolean) {
     const nextTurn = isTerminalAskResponse(response)
       ? buildCompletedSearchTurnFromResponse(turn.id, turn.query, response)
-      : buildSearchTurnFromResponse(turn.id, turn.query, response, response.answer ?? "Searching indexed moments.");
+      : buildSearchTurnFromResponse(turn.id, turn.query, response);
     upsertSearchTurn(nextTurn);
     if (!syncActiveState) return;
     setAskResponse(response);
@@ -371,21 +374,36 @@ function writeStoredSearchHistory(turns: SearchConversationTurn[]) {
 function isStoredSearchTurn(value: unknown): value is SearchConversationTurn {
   if (!value || typeof value !== "object") return false;
   const turn = value as Partial<SearchConversationTurn>;
-  return typeof turn.id === "string" && typeof turn.query === "string" && typeof turn.answer === "string" && Array.isArray(turn.results);
+  return (
+    typeof turn.id === "string" &&
+    typeof turn.query === "string" &&
+    "answerContent" in turn &&
+    (turn.answerContent === null || isAskAnswerContent(turn.answerContent)) &&
+    Array.isArray(turn.results)
+  );
+}
+
+function isAskAnswerContent(value: unknown): value is AskAnswerContent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ((value as { format?: unknown }).format === "plain" || (value as { format?: unknown }).format === "sections") &&
+    typeof (value as { text?: unknown }).text === "string" &&
+    Array.isArray((value as { sections?: unknown }).sections)
+  );
 }
 
 function buildSearchTurnFromResponse(
   id: string,
   submittedQuery: string,
   response: AskResponse,
-  answer: string,
   overrides: Partial<Pick<SearchConversationTurn, "route" | "knowledgeAnswer" | "results">> = {}
 ): SearchConversationTurn {
   const results = overrides.results ?? response.results;
   return {
     id,
     query: submittedQuery || "Filtered search",
-    answer,
+    answerContent: response.answerContent,
     route: overrides.route ?? conversationRouteFor(response),
     knowledgeAnswer: overrides.knowledgeAnswer ?? (response.knowledgeAnswer?.applicable ? response.knowledgeAnswer : null),
     results,
@@ -397,7 +415,7 @@ function buildSearchTurnFromResponse(
 
 function buildCompletedSearchTurnFromResponse(id: string, submittedQuery: string, response: AskResponse): SearchConversationTurn {
   if (response.route === "structured_answer" && response.knowledgeAnswer) {
-    return buildSearchTurnFromResponse(id, submittedQuery, response, response.answer ?? response.knowledgeAnswer.answer, {
+    return buildSearchTurnFromResponse(id, submittedQuery, response, {
       route: "structured_answer",
       knowledgeAnswer: response.knowledgeAnswer,
       results: []
@@ -407,13 +425,30 @@ function buildCompletedSearchTurnFromResponse(id: string, submittedQuery: string
     id,
     submittedQuery,
     response,
-    response.answer ?? (response.queryPlan ? buildSearchAssistantAnswer(response.results, response.queryPlan) : "The ask operation completed without a readable answer."),
     {
       route: response.results.length > 0 ? "moment_retrieval" : response.route === "error" ? "error" : "empty",
       knowledgeAnswer: null,
       results: response.results
     }
   );
+}
+
+function plainClientAnswerContent(answer: string): AskAnswerContent {
+  const trimmed = answer.trim();
+  return {
+    format: "plain",
+    text: trimmed,
+    sections: trimmed
+      ? [
+          {
+            id: "answer",
+            label: null,
+            body: trimmed,
+            tone: "neutral"
+          }
+        ]
+      : []
+  };
 }
 
 function conversationRouteFor(response: AskResponse): SearchConversationTurn["route"] {
@@ -431,8 +466,7 @@ function shouldReconnectStoredAskTurn(turn: SearchConversationTurn) {
   return Boolean(
     turn.operation?.id &&
       (turn.operation.status === "queued" ||
-        turn.operation.status === "running" ||
-        (!turn.operation.completedAt && turn.answer === "Searching indexed moments."))
+        turn.operation.status === "running")
   );
 }
 
@@ -490,6 +524,7 @@ function describeIndexKnowledge(index: IndexRecord | null, scope: "group" | "ass
     enabled: true,
     label: "Knowledge-bound",
     detail: `${index.name} · ${formatDomainGroups(index.domainIndexing.groups)}`,
+    domainGroup: index.domainIndexing.groups.length === 1 ? index.domainIndexing.groups[0] : undefined,
     tone: "domain"
   };
 }

@@ -2,7 +2,7 @@ import type { AnalysisResult, AssetRecord, ClipDetailResult, ClipResult, DomainQ
 import { createAnalysisGenerator } from "../analysisGenerator";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { trustedDomainEvents } from "../evidenceTrust";
-import { planDomainQuery } from "../queryPlanner";
+import { planDomainQueryWithLlm } from "../llmQueryPlanner";
 import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
 import { listTrackingRecords } from "../trackingStore";
 import { segmentSearchText, withSceneData } from "./sceneTimeline";
@@ -27,7 +27,7 @@ type ScoredAnalysisMoment = AnalysisMoment & {
 };
 
 export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<AnalysisResult> {
-  const queryPlan = planDomainQuery(question);
+  const queryPlan = await planDomainQueryWithLlm(question);
   const retrievalPlan = resolveQueryRetrievalPlan(queryPlan, question);
   const domainProfile = expandDomainQuery(retrievalPlan.textQuery);
   const queryTerms = retrievalPlan.evidenceTerms;
@@ -117,7 +117,7 @@ export async function analyzeAsset(asset: AssetRecord, question = ""): Promise<A
 
 export async function analyzeAssetGroup(assets: AssetRecord[], indexes: IndexRecord[], index: IndexRecord, question = ""): Promise<AnalysisResult> {
   const scopedAssets = assets.filter((asset) => asset.indexId === index.id && (asset.status === "indexed" || asset.timeline.length > 0));
-  const queryPlan = planDomainQuery(question);
+  const queryPlan = await planDomainQueryWithLlm(question);
   const searchResults = searchAssets(scopedAssets, indexes, question, {
     indexId: index.id,
     domainFilters: queryPlan.domainFilters,

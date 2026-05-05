@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 import { searchAssets } from "../server/intelligenceCore/search";
-import { buildSearchMatchReasons, scoreText } from "../server/intelligenceCore/evidence";
+import { buildSearchMatchReasons, buildVerificationChecks, evaluateSegmentDomainFilters, scoreText } from "../server/intelligenceCore/evidence";
 import { segmentSearchText } from "../server/intelligenceCore/sceneTimeline";
 import { vectorRecordText } from "../server/postgres/vectorUtils";
 import { planDomainQuery } from "../server/queryPlanner";
-import { planDomainQueryWithOpenAi } from "../server/openaiQueryPlanner";
+import { planDomainQueryWithLlm } from "../server/llmQueryPlanner";
 import { buildOrchestrationPlan } from "../server/orchestrator";
-import { buildAskVideoAnswer } from "../server/workflows/ask/answerBuilder";
+import { answerSportsKnowledgeQuestion } from "../server/knowledge/adapters/sports/answer";
+import { buildStatSeedKnowledgePlan, buildStatSeededMomentPlan, shouldContinueWithMomentRetrieval } from "../server/workflows/ask/statMomentSeed";
+import { buildAskAnalysisAnswerContent, buildAskVideoAnswerContent } from "../server/workflows/ask/answerBuilder";
 import { buildSearchAssistantAnswer } from "../src/searchTrust";
-import type { AssetRecord, DomainQueryPlan, IndexRecord, TimelineSegment } from "../shared/types";
+import type { AssetRecord, DomainEvent, DomainQueryPlan, IndexRecord, StructuredKnowledgeAnswer, TimelineSegment } from "../shared/types";
 
 test("planned semantic query is used as the lexical retrieval anchor", () => {
   const queryPlan = queryPlanForBirthday();
@@ -66,6 +69,99 @@ test("generic Korean object search does not rank scenes from request words", () 
 
   assert.equal(results.length, 1);
   assert.deepEqual(results[0]?.segments.map((segment) => segment.id), ["ring-evidence"]);
+});
+
+test("visible text search requires the literal text inside OCR/subtitle/logo evidence", () => {
+  const queryPlan = queryPlanForKoreanVisibleText();
+  const results = searchAssets(
+    [
+      assetWithSegments([
+        segment({
+          id: "generic-ocr",
+          transcript: "A subtitle appears on screen.",
+          subtitles: ["다른 자막"],
+          embedding: [1, 0]
+        }),
+        segment({
+          id: "literal-ocr",
+          transcript: "The requested text is visible.",
+          subtitles: ["미소"],
+          embedding: [0, 1]
+        }),
+        segment({
+          id: "literal-logo",
+          transcript: "A logo is visible on screen.",
+          vlm: {
+            ...birthdayVlmEvidence(),
+            caption: "A logo appears on screen.",
+            description: "The visible logo text reads 미소.",
+            visibleText: ["logo: 미소"],
+            evidence: ["logo text reads 미소"]
+          },
+          embedding: [0, 1]
+        })
+      ])
+    ],
+    [indexRecord()],
+    "미소라는 한글이 노출된 장면 찾아줘",
+    {
+      queryPlan,
+      queryVector: [1, 0]
+    }
+  );
+
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0]?.segments.map((segment) => segment.id).sort(), ["literal-logo", "literal-ocr"]);
+});
+
+test("spoken phrase search requires the phrase inside speech evidence", () => {
+  const queryPlan = queryPlanForSpokenThanks();
+  const results = searchAssets(
+    [
+      assetWithSegments([
+        segment({
+          id: "generic-speaking",
+          transcript: "A person is speaking during the interview.",
+          embedding: [1, 0]
+        }),
+        segment({
+          id: "visible-only-thanks",
+          transcript: "No dialogue here.",
+          screenText: ["thank you"],
+          embedding: [1, 0]
+        }),
+        segment({
+          id: "vlm-caption-thanks",
+          transcript: "People laugh while the caption is shown.",
+          vlm: {
+            ...birthdayVlmEvidence(),
+            visibleText: ["고마워~"],
+            caption: "People are smiling during a behind-the-scenes moment."
+          },
+          embedding: [0, 1]
+        }),
+        segment({
+          id: "spoken-korean-thanks",
+          transcript: "정말 고마워. 덕분에 살았어.",
+          embedding: [0, 1]
+        }),
+        segment({
+          id: "spoken-english-thanks",
+          transcript: "Thank you for coming today.",
+          embedding: [0, 1]
+        })
+      ])
+    ],
+    [indexRecord()],
+    "고마워 라고 말하는 장면 찾아줘",
+    {
+      queryPlan,
+      queryVector: [1, 0]
+    }
+  );
+
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0]?.segments.map((segment) => segment.id).sort(), ["spoken-english-thanks", "spoken-korean-thanks", "vlm-caption-thanks"]);
 });
 
 test("text match reasons include matched term and evidence source", () => {
@@ -213,7 +309,7 @@ test("OpenAI generic route can override related-knowledge false positives", asyn
       confidence: 0.83,
       warnings: []
     },
-    () => planDomainQueryWithOpenAi("business goal video")
+    () => planDomainQueryWithLlm("business goal video")
   );
 
   assert.equal(plan.route, "asset_evidence");
@@ -222,6 +318,83 @@ test("OpenAI generic route can override related-knowledge false positives", asyn
   assert.deepEqual(plan.domainFilters, {});
   assert.equal(plan.semanticQuery, "business objective video");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["business objective"]);
+});
+
+test("OpenAI visible text plans carry literal OCR constraints separately from source labels", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "none",
+      semanticQuery: "Find a scene where the Korean text '미소' appears on screen.",
+      retrieval: {
+        textQuery: "미소 Korean text on screen OCR subtitle sign logo",
+        visualQuery: "screen with Korean text '미소' visible",
+        evidenceTerms: ["미소", "korean text", "ocr", "subtitle", "logo"],
+        requiredEvidence: [{ kind: "visible_text", terms: ["미소"], match: "all" }]
+      },
+      confidence: 0.92,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("미소라는 한글이 노출된 장면 찾아줘")
+  );
+
+  assert.deepEqual(plan.retrieval?.requiredEvidence, [{ kind: "visible_text", terms: ["미소"], match: "all" }]);
+});
+
+test("OpenAI spoken phrase plans carry literal speech constraints separately from action labels", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "none",
+      semanticQuery: "scene where someone says thank you",
+      retrieval: {
+        textQuery: "고마워 thank you spoken dialogue",
+        visualQuery: "person speaking",
+        evidenceTerms: ["고마워", "thank you", "saying thank you", "speaking"],
+        requiredEvidence: [{ kind: "spoken_text", terms: ["고마워", "thank you"], match: "any" }]
+      },
+      confidence: 0.86,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("고마워 라고 말하는 장면 찾아줘")
+  );
+
+  assert.deepEqual(plan.retrieval?.requiredEvidence, [{ kind: "spoken_text", terms: ["고마워", "thank you"], match: "any" }]);
+});
+
+test("VLM planner is used when OpenAI planning fails", async () => {
+  const plan = await withMockedOpenAiFailureAndVlmPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "none",
+      semanticQuery: "Find a scene where the Korean text '테스트미소' appears on screen.",
+      retrieval: {
+        textQuery: "테스트미소 Korean text on screen OCR subtitle logo",
+        visualQuery: "screen with Korean text '테스트미소' visible",
+        evidenceTerms: ["테스트미소", "korean text", "ocr", "subtitle", "logo"],
+        requiredEvidence: [{ kind: "visible_text", terms: ["테스트미소"], match: "all" }]
+      },
+      confidence: 0.91,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("테스트미소라는 한글이 노출된 장면 찾아줘")
+  );
+
+  assert.equal(plan.planner?.source, "vlm");
+  assert.match(plan.planner?.fallbackReason ?? "", /OpenAI planner fallback/);
+  assert.deepEqual(plan.retrieval?.requiredEvidence, [{ kind: "visible_text", terms: ["테스트미소"], match: "all" }]);
+});
+
+test("planner unavailability does not fall back to local query rules", async () => {
+  const plan = await withoutConfiguredModelPlanners(() => planDomainQueryWithLlm("로컬규칙반지 나오는 장면 찾아줘"));
+
+  assert.equal(plan.planner?.source, "unavailable");
+  assert.equal(plan.route, "unsupported");
+  assert.deepEqual(plan.retrieval?.evidenceTerms, []);
+  assert.deepEqual(plan.retrieval?.requiredEvidence, []);
 });
 
 test("OpenAI unsupported route is preserved instead of forced into search", async () => {
@@ -233,7 +406,7 @@ test("OpenAI unsupported route is preserved instead of forced into search", asyn
       confidence: 0.81,
       warnings: ["unsupported"]
     },
-    () => planDomainQueryWithOpenAi("unsupported non-video request")
+    () => planDomainQueryWithLlm("unsupported non-video request")
   );
 
   assert.equal(plan.route, "unsupported");
@@ -255,7 +428,7 @@ test("OpenAI unsupported grounded video answer is normalized to asset evidence",
       confidence: 0.18,
       warnings: ["visual evidence may be limited"]
     },
-    () => planDomainQueryWithOpenAi("이 남자의 옷스타일은 뭐야?")
+    () => planDomainQueryWithLlm("이 남자의 옷스타일은 뭐야?")
   );
 
   assert.equal(plan.route, "asset_evidence");
@@ -278,12 +451,181 @@ test("OpenAI object moment retrieval is not treated as unsupported when retrieva
       confidence: 0.24,
       warnings: ["broad visual query"]
     },
-    () => planDomainQueryWithOpenAi("반지 나오는 장면 찾아줘")
+    () => planDomainQueryWithLlm("반지 나오는 장면 찾아줘")
   );
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "moment_retrieval");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["반지", "ring"]);
+});
+
+test("non-structured knowledge evidence plans are normalized to asset retrieval", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "knowledge_evidence",
+      responseMode: "analysis",
+      knowledgeMode: "grounding",
+      analysisSubject: "Son Heung-min",
+      semanticQuery: "Analyze Son Heung-min playing style from indexed video evidence.",
+      retrieval: {
+        textQuery: "Son Heung-min playing style dribbling shooting runs positioning",
+        visualQuery: "Son Heung-min match footage dribbling shooting runs positioning",
+        evidenceTerms: ["손흥민", "son heung-min", "dribbling", "shooting", "runs", "positioning"]
+      },
+      confidence: 0.8,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("손흥민의 플레이 스타일을 분석해줘")
+  );
+
+  assert.equal(plan.route, "asset_evidence");
+  assert.equal(plan.responseMode, "analysis");
+  assert.equal(plan.knowledgeMode, "grounding");
+  assert.match(plan.warnings.join(" "), /Normalized non-structured knowledge route/);
+});
+
+test("OpenAI stat plans use statMode and filterEvidence instead of query leaderboard rules", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      metric: "goals",
+      statMode: "leaderboard",
+      competition: "Premier League",
+      season: "2025-26",
+      semanticQuery: "Premier League goals leader 2025-26",
+      filterEvidence: {
+        competition: ["Premier League"],
+        season: ["2025-26"],
+        statMode: ["goals leader"]
+      },
+      confidence: 0.88,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("득점 현황 알려줘")
+  );
+
+  assert.equal(plan.route, "knowledge_evidence");
+  assert.equal(plan.responseMode, "structured_answer");
+  assert.equal(plan.knowledgeMode, "direct_answer");
+  assert.equal(plan.intent.metric, "goals");
+  assert.equal(plan.intent.statMode, "leaderboard");
+  assert.deepEqual(plan.domainFilters, { competition: "Premier League", season: "2025-26" });
+});
+
+test("OpenAI stat moment plans become explicit knowledge-seeded retrieval routes", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      metric: "goals",
+      statMode: "leaderboard",
+      competition: "Premier League",
+      season: "2025-26",
+      semanticQuery: "Premier League goals leader goal moments 2025-26",
+      retrieval: {
+        textQuery: "Premier League goals leader goal scenes",
+        visualQuery: "football goal scoring scenes",
+        evidenceTerms: ["goal", "scoring", "shot"]
+      },
+      filterEvidence: {
+        competition: ["Premier League"],
+        season: ["2025-26"],
+        statMode: ["goals leader"]
+      },
+      confidence: 0.88,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("득점 1위 골 장면 찾아줘")
+  );
+
+  assert.equal(plan.route, "knowledge_seeded_asset_evidence");
+  assert.equal(plan.responseMode, "moment_retrieval");
+  assert.equal(plan.knowledgeMode, "grounding");
+  assert.equal(plan.intent.metric, "goals");
+  assert.equal(plan.intent.statMode, "leaderboard");
+});
+
+test("knowledge-seeded retrieval resolves the stat subject before building moment filters", () => {
+  const queryPlan: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    route: "knowledge_seeded_asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
+    domainFilters: {
+      competition: "Premier League",
+      season: "2025-26"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      metric: "goals",
+      statMode: "leaderboard"
+    }
+  };
+  const knowledgePlan = buildStatSeedKnowledgePlan(queryPlan);
+  const answer: StructuredKnowledgeAnswer = {
+    applicable: true,
+    route: "stat_qa",
+    answer: "Son Heung-min leads Premier League 2025-26 with 12 goals.",
+    confidence: 0.86,
+    subject: {
+      player: "Son Heung-min",
+      competition: "Premier League",
+      season: "2025-26",
+      metric: "goals"
+    },
+    value: 12,
+    status: "answered",
+    evidence: [
+      {
+        provider: "test",
+        season: "2025-26",
+        competition: "Premier League",
+        team: "Tottenham Hotspur",
+        sourceText: "Son Heung-min 12 goals"
+      }
+    ],
+    fallback: null,
+    warnings: []
+  };
+  const retrievalPlan = buildStatSeededMomentPlan(queryPlan, answer);
+
+  assert.equal(knowledgePlan.route, "knowledge_evidence");
+  assert.equal(knowledgePlan.responseMode, "structured_answer");
+  assert.equal(knowledgePlan.domainFilters.player, undefined);
+  assert.equal(shouldContinueWithMomentRetrieval(queryPlan, answer), true);
+  assert.equal(retrievalPlan.route, "knowledge_seeded_asset_evidence");
+  assert.equal(retrievalPlan.domainFilters.player, "Son Heung-min");
+  assert.equal(retrievalPlan.domainFilters.eventType, "shot");
+  assert.equal(retrievalPlan.domainFilters.role, "shooter");
+  assert.ok(retrievalPlan.retrieval?.evidenceTerms.includes("goal"));
+});
+
+test("planner-inferred filters without filterEvidence are rejected", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      competition: "Premier League",
+      player: "Son Heung-min",
+      semanticQuery: "sports video moment",
+      retrieval: {
+        textQuery: "sports video moment",
+        visualQuery: "soccer match footage",
+        evidenceTerms: ["soccer"]
+      },
+      confidence: 0.77,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("스포츠 장면 찾아줘")
+  );
+
+  assert.deepEqual(plan.domainFilters, {});
+  assert.equal(plan.intent.player, null);
 });
 
 test("unsupported query plans do not return search results", () => {
@@ -358,6 +700,53 @@ test("moment search can return strong semantic evidence without literal query te
 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.segments[0]?.id, "cake-candles");
+});
+
+test("unstructured event text is weak evidence only when structured event evidence is absent", () => {
+  const queryPlan: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
+    domainFilters: {
+      eventType: "shot",
+      role: "shooter"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      eventType: "shot",
+      role: "shooter"
+    }
+  };
+  const textOnlyGoal = segment({
+    id: "text-only-goal",
+    transcript: "Son scores a goal from close range after a quick move.",
+    embedding: [0, 1]
+  });
+  const structuredConflict = withDomainEvents(
+    segment({
+      id: "structured-pass",
+      transcript: "The commentary mentions a goal, but the indexed event is a pass receive.",
+      embedding: [0, 1]
+    }),
+    [domainEvent("pass_receive")]
+  );
+  const asset = assetWithSegments([textOnlyGoal, structuredConflict]);
+  const results = searchAssets([asset], [indexRecord()], "goal shot", {
+    queryPlan,
+    domainFilters: queryPlan.domainFilters,
+    queryVector: [1, 0]
+  });
+  const weakChecks = results[0]?.verification ?? [];
+  const conflictChecks = buildVerificationChecks(asset, structuredConflict, queryPlan.domainFilters);
+
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0]?.segments.map((item) => item.id), ["text-only-goal"]);
+  assert.equal(evaluateSegmentDomainFilters(asset, textOnlyGoal, queryPlan.domainFilters).trust, "weak");
+  assert.equal(evaluateSegmentDomainFilters(asset, structuredConflict, queryPlan.domainFilters).accepted, false);
+  assert.deepEqual(weakChecks.map((check) => check.status), ["soft_pass", "soft_pass"]);
+  assert.deepEqual(conflictChecks.map((check) => check.status), ["fail", "fail"]);
 });
 
 test("birthday moment search keeps scenes with direct birthday evidence", () => {
@@ -496,7 +885,7 @@ test("match reasons use the same vector thresholds as search inclusion", () => {
 
 test("empty generic Korean answer does not expose domain-specific guidance", () => {
   const queryPlan = queryPlanForBirthday();
-  const serverAnswer = buildAskVideoAnswer([], queryPlan);
+  const serverAnswer = buildAskVideoAnswerContent([], queryPlan).text;
   const clientFallback = buildSearchAssistantAnswer([], queryPlan);
 
   assert.match(serverAnswer, /검색 범위/);
@@ -505,10 +894,10 @@ test("empty generic Korean answer does not expose domain-specific guidance", () 
 });
 
 test("unsupported Korean answer does not expose domain-specific copy", () => {
-  const serverAnswer = buildAskVideoAnswer([], {
+  const serverAnswer = buildAskVideoAnswerContent([], {
     ...queryPlanForBirthday(),
     route: "unsupported"
-  });
+  }).text;
 
   assert.match(serverAnswer, /asset evidence|related knowledge/);
   assert.doesNotMatch(serverAnswer, /sports|스포츠/);
@@ -530,7 +919,101 @@ test("empty related-knowledge Korean answer keeps constraint guidance", () => {
     }
   };
 
-  assert.match(buildAskVideoAnswer([], queryPlan), /이벤트, 선수, 시즌/);
+  assert.match(buildAskVideoAnswerContent([], queryPlan).text, /이벤트, 선수, 시즌/);
+});
+
+test("analysis answer follows planner mode instead of local style-word heuristics", () => {
+  const queryPlan = queryPlanForPlayStyleAnalysis();
+  const results = searchAssets(
+    [
+      assetWithSegments([
+        segment({
+          id: "son-finish",
+          transcript: "Son gets in behind 1v1 and finishes into the far corner.",
+          vlm: {
+            ...birthdayVlmEvidence(),
+            caption: "A soccer player in white dribbles the ball on a green field.",
+            description: "The player is in motion and controls the ball before a finish.",
+            labels: ["soccer", "attack"],
+            actions: ["dribbling", "shooting"],
+            objects: ["soccer ball", "green field"]
+          },
+          embedding: [1, 0]
+        })
+      ])
+    ],
+    [indexRecord()],
+    "영상 기준 손흥민의 플레이 스타일을 분석해줘",
+    {
+      queryPlan,
+      queryVector: [1, 0]
+    }
+  );
+  const answerContent = buildAskAnalysisAnswerContent(results, queryPlan, buildOrchestrationPlan(queryPlan, [assetWithSegments([])], [indexRecord()]));
+
+  assert.doesNotMatch(answerContent.text, /옷 스타일|clothing style|포멀|캐주얼/);
+  assert.match(answerContent.text, /플레이 스타일|검색된 영상 기준/);
+  assert.match(answerContent.text, /^요약:/);
+  assert.match(answerContent.text, /\n패턴:/);
+  assert.match(answerContent.text, /\n근거:/);
+  assert.equal(answerContent.format, "sections");
+  assert.deepEqual(answerContent.sections.slice(0, 3).map((section) => section.label), ["요약", "패턴", "근거"]);
+});
+
+test("sports direct answers use planner player and statMode instead of original query matching", () => {
+  const queryPlan: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    originalQuery: "이 기록 알려줘",
+    route: "knowledge_evidence",
+    responseMode: "structured_answer",
+    knowledgeMode: "direct_answer",
+    domainFilters: {
+      competition: "Premier League",
+      player: "Son Heung-min"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      questionType: "structured_answer",
+      metric: "goals",
+      statMode: "player_total",
+      player: "Son Heung-min"
+    }
+  };
+  const answer = answerSportsKnowledgeQuestion(queryPlan);
+
+  assert.equal(answer.subject.player, "Son Heung-min");
+  assert.notEqual(answer.status, "needs_clarification");
+  assert.doesNotMatch(answer.answer, /identify the player/i);
+});
+
+test("sports leaderboard answers require planner statMode", () => {
+  const withoutStatMode: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    originalQuery: "득점 1위 알려줘",
+    route: "knowledge_evidence",
+    responseMode: "structured_answer",
+    knowledgeMode: "direct_answer",
+    domainFilters: {
+      competition: "Premier League"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      questionType: "structured_answer",
+      metric: "goals"
+    }
+  };
+  const withStatMode: DomainQueryPlan = {
+    ...withoutStatMode,
+    intent: {
+      ...withoutStatMode.intent,
+      statMode: "leaderboard"
+    }
+  };
+
+  assert.equal(answerSportsKnowledgeQuestion(withoutStatMode).status, "needs_clarification");
+  assert.notEqual(answerSportsKnowledgeQuestion(withStatMode).status, "needs_clarification");
 });
 
 test("generic orchestration does not expose related-knowledge identity or scope decisions", () => {
@@ -628,6 +1111,108 @@ function queryPlanForRing(): DomainQueryPlan {
   };
 }
 
+function queryPlanForKoreanVisibleText(): DomainQueryPlan {
+  return {
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "none",
+    originalQuery: "미소라는 한글이 노출된 장면 찾아줘",
+    rewrittenQuery: "Find a scene where the Korean text '미소' appears on screen.",
+    semanticQuery: "Find a scene where the Korean text '미소' appears on screen.",
+    retrieval: {
+      textQuery: "미소 Korean text on screen OCR subtitle sign logo",
+      visualQuery: "screen with Korean text '미소' visible",
+      evidenceTerms: ["미소", "korean text", "on screen", "ocr", "subtitle", "sign", "logo", "miso"],
+      requiredEvidence: [{ kind: "visible_text", terms: ["미소"], match: "all" }]
+    },
+    confidence: 0.92,
+    domainFilters: {},
+    warnings: [],
+    intent: {
+      domain: null,
+      questionType: "moment_retrieval",
+      player: null,
+      metric: null,
+      eventType: null,
+      passType: null,
+      fieldZone: null,
+      role: null
+    },
+    planner: {
+      source: "openai",
+      model: "test"
+    }
+  };
+}
+
+function queryPlanForSpokenThanks(): DomainQueryPlan {
+  return {
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "none",
+    originalQuery: "고마워 라고 말하는 장면 찾아줘",
+    rewrittenQuery: "Find a scene where someone says thank you.",
+    semanticQuery: "scene where someone says thank you",
+    retrieval: {
+      textQuery: "고마워 thank you spoken dialogue",
+      visualQuery: "person speaking",
+      evidenceTerms: ["고마워", "thank you", "saying thank you", "speaking"],
+      requiredEvidence: [{ kind: "spoken_text", terms: ["고마워", "thank you"], match: "any" }]
+    },
+    confidence: 0.86,
+    domainFilters: {},
+    warnings: [],
+    intent: {
+      domain: null,
+      questionType: "moment_retrieval",
+      player: null,
+      metric: null,
+      eventType: null,
+      passType: null,
+      fieldZone: null,
+      role: null
+    },
+    planner: {
+      source: "openai",
+      model: "test"
+    }
+  };
+}
+
+function queryPlanForPlayStyleAnalysis(): DomainQueryPlan {
+  return {
+    route: "asset_evidence",
+    responseMode: "analysis",
+    knowledgeMode: "none",
+    originalQuery: "영상 기준 손흥민의 플레이 스타일을 분석해줘",
+    rewrittenQuery: "Analyze Son Heung-min's playing style from the selected video evidence.",
+    semanticQuery: "Analyze Son Heung-min's playing style from the selected video evidence.",
+    retrieval: {
+      textQuery: "Son Heung-min playing style dribbling shooting runs positioning",
+      visualQuery: "Son Heung-min in match footage dribbling shooting runs positioning",
+      evidenceTerms: ["손흥민", "son heung-min", "son", "dribbling", "shooting", "runs", "positioning"]
+    },
+    confidence: 0.86,
+    domainFilters: {},
+    warnings: [],
+    intent: {
+      domain: null,
+      questionType: "analysis",
+      analysisSubject: "Son Heung-min",
+      player: null,
+      metric: null,
+      eventType: null,
+      passType: null,
+      fieldZone: null,
+      role: null
+    },
+    planner: {
+      source: "openai",
+      model: "test"
+    }
+  };
+}
+
 function assetWithSegments(timeline: TimelineSegment[]): AssetRecord {
   return {
     id: "asset-1",
@@ -675,13 +1260,19 @@ function segment({
   transcript,
   embedding = [0, 1],
   vision,
-  vlm
+  vlm,
+  subtitles = [],
+  screenText = [],
+  overlays = []
 }: {
   id: string;
   transcript: string;
   embedding?: number[];
   vision?: NonNullable<TimelineSegment["sceneData"]>["vision"];
   vlm?: NonNullable<TimelineSegment["sceneData"]>["vlm"];
+  subtitles?: string[];
+  screenText?: string[];
+  overlays?: string[];
 }): TimelineSegment {
   return {
     id,
@@ -707,9 +1298,9 @@ function segment({
       },
       text: {
         speech: transcript,
-        subtitles: [],
-        screenText: [],
-        overlays: [],
+        subtitles,
+        screenText,
+        overlays,
         watermarks: [],
         comparisons: []
       },
@@ -719,7 +1310,50 @@ function segment({
   };
 }
 
-function birthdayVlmEvidence(): NonNullable<TimelineSegment["sceneData"]>["vlm"] {
+function withDomainEvents(source: TimelineSegment, events: DomainEvent[]): TimelineSegment {
+  return {
+    ...source,
+    sources: [...source.sources, "domain"],
+    domain: {
+      groups: ["sports.football"],
+      captions: events.map((event) => event.caption),
+      labels: events.flatMap((event) => event.labels),
+      events,
+      scope: {
+        competition: null,
+        season: null,
+        teams: [],
+        players: []
+      },
+      searchText: events.map((event) => [event.caption, ...event.labels].join(" ")).join(" "),
+      confidence: 0.84,
+      generatedBy: "test-domain-events",
+      trust: "detected"
+    }
+  };
+}
+
+function domainEvent(eventType: string): DomainEvent {
+  return {
+    id: `event-${eventType}`,
+    domain: "sports.football",
+    ontologyVersion: "test",
+    caption: `Structured ${eventType} event`,
+    eventType,
+    labels: [eventType],
+    confidence: 0.84,
+    trust: "detected",
+    evidence: {
+      asr: [],
+      ocr: [],
+      visual: [],
+      metadata: [],
+      heuristics: []
+    }
+  };
+}
+
+function birthdayVlmEvidence(): NonNullable<NonNullable<TimelineSegment["sceneData"]>["vlm"]> {
   return {
     provider: "qwen2.5-vl:mlx",
     model: "test-vlm",
@@ -832,8 +1466,10 @@ function knowledgeIndexRecord(): IndexRecord {
 
 async function withMockedOpenAiPlanner<T>(plannerResponse: Record<string, unknown>, action: () => Promise<T>) {
   const originalApiKey = process.env.OPENAI_API_KEY;
+  const originalVlmWorkerUrl = process.env.VLM_WORKER_URL;
   const originalFetch = globalThis.fetch;
   process.env.OPENAI_API_KEY = "test-key";
+  delete process.env.VLM_WORKER_URL;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ output_text: JSON.stringify(plannerResponse) }), {
       status: 200,
@@ -844,6 +1480,59 @@ async function withMockedOpenAiPlanner<T>(plannerResponse: Record<string, unknow
   } finally {
     if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = originalApiKey;
+    if (originalVlmWorkerUrl === undefined) delete process.env.VLM_WORKER_URL;
+    else process.env.VLM_WORKER_URL = originalVlmWorkerUrl;
     globalThis.fetch = originalFetch;
+  }
+}
+
+async function withMockedOpenAiFailureAndVlmPlanner<T>(plannerResponse: Record<string, unknown>, action: () => Promise<T>) {
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  const originalVlmWorkerUrl = process.env.VLM_WORKER_URL;
+  const originalFetch = globalThis.fetch;
+  const server = http.createServer((request, response) => {
+    if (request.method !== "POST" || request.url !== "/plan/query") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+    request.resume();
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ provider: "test-vlm", model: "test-vlm-model", ...plannerResponse }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Test VLM server did not expose a TCP address.");
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.VLM_WORKER_URL = `http://127.0.0.1:${address.port}`;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: "forced OpenAI planner failure" } }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    })) as typeof fetch;
+  try {
+    return await action();
+  } finally {
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
+    if (originalVlmWorkerUrl === undefined) delete process.env.VLM_WORKER_URL;
+    else process.env.VLM_WORKER_URL = originalVlmWorkerUrl;
+    globalThis.fetch = originalFetch;
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
+async function withoutConfiguredModelPlanners<T>(action: () => Promise<T>) {
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  const originalVlmWorkerUrl = process.env.VLM_WORKER_URL;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.VLM_WORKER_URL;
+  try {
+    return await action();
+  } finally {
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
+    if (originalVlmWorkerUrl === undefined) delete process.env.VLM_WORKER_URL;
+    else process.env.VLM_WORKER_URL = originalVlmWorkerUrl;
   }
 }

@@ -11,7 +11,6 @@ def main():
     parser.add_argument("--backend", default=os.environ.get("VISION_DETECTOR_BACKEND", "auto"))
     parser.add_argument("--rfdetr-model", default=os.environ.get("VISION_RFDETR_MODEL", "RFDETRNano"))
     parser.add_argument("--conf", type=float, default=float(os.environ.get("VISION_DETECTOR_CONF", "0.25")))
-    parser.add_argument("--allow-heuristic-fallback", action="store_true", default=os.environ.get("VISION_ALLOW_OPENCV_HEURISTIC", "").lower() == "true")
     args = parser.parse_args()
     payload = json.load(sys.stdin)
     images = payload.get("images", [])
@@ -29,17 +28,15 @@ def run_detector(images, args):
             return run_yolo(images, args.model, args.conf)
         except Exception as error:
             errors.append(f"ultralytics:{type(error).__name__}: {error}")
-            if requested == "ultralytics" and not args.allow_heuristic_fallback:
+            if requested == "ultralytics":
                 return unavailable("ultralytics", args.model, errors)
     if requested in {"auto", "rfdetr"}:
         try:
             return run_rfdetr(images, args.rfdetr_model, args.conf)
         except Exception as error:
             errors.append(f"rfdetr:{type(error).__name__}: {error}")
-            if requested == "rfdetr" and not args.allow_heuristic_fallback:
+            if requested == "rfdetr":
                 return unavailable("rfdetr", args.rfdetr_model, errors)
-    if args.allow_heuristic_fallback:
-        return run_opencv_heuristic(images, "; ".join(errors) or "Detector backend unavailable")
     return unavailable("vision-detector", f"{args.model}|{args.rfdetr_model}", errors or [f"Unsupported detector backend: {args.backend}"])
 
 
@@ -192,71 +189,6 @@ def normalize_detection_label(class_name, class_id):
     if name in {"sports ball", "ball"} or int(class_id) == 32:
         return "sports_ball"
     return "unknown"
-
-
-def run_opencv_heuristic(images, yolo_error):
-    import cv2
-
-    hog = cv2.HOGDescriptor()
-    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-    frames = []
-    for item in images:
-        image = cv2.imread(item["path"])
-        if image is None:
-            frames.append(frame_result(item, 0, 0, [], "opencv-heuristic", False, "image read failed"))
-            continue
-        height, width = image.shape[:2]
-        boxes = []
-        resized = resize_for_detection(image, 960)
-        scale_x = width / resized.shape[1]
-        scale_y = height / resized.shape[0]
-        people, weights = hog.detectMultiScale(resized, winStride=(8, 8), padding=(8, 8), scale=1.08)
-        for (x, y, w, h), weight in zip(people[:16], weights[:16]):
-            confidence = max(0.18, min(0.72, float(weight) / 2.8))
-            boxes.append(normalized_box("person", x * scale_x, y * scale_y, w * scale_x, h * scale_y, width, height, confidence, "opencv-hog"))
-        for circle in detect_ball_candidates(image)[:3]:
-            x, y, radius, confidence = circle
-            boxes.append(normalized_box("sports_ball", x - radius, y - radius, radius * 2, radius * 2, width, height, confidence, "opencv-hough"))
-        frames.append(frame_result(item, width, height, boxes, "opencv-heuristic", False, yolo_error))
-    return {"available": False, "provider": "opencv-heuristic", "model": "hog+hough", "frames": frames, "warning": yolo_error, "error": yolo_error}
-
-
-def detect_ball_candidates(image):
-    import cv2
-    import numpy as np
-
-    height, width = image.shape[:2]
-    small = resize_for_detection(image, 720)
-    scale_x = width / small.shape[1]
-    scale_y = height / small.shape[0]
-    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-    green_mask = cv2.inRange(hsv, np.array([35, 35, 20]), np.array([95, 255, 235]))
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    gray = cv2.medianBlur(gray, 5)
-    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1.2, minDist=24, param1=80, param2=18, minRadius=2, maxRadius=12)
-    if circles is None:
-      return []
-    candidates = []
-    for x, y, radius in np.round(circles[0, :]).astype("int"):
-        if x < 0 or y < 0 or x >= small.shape[1] or y >= small.shape[0]:
-            continue
-        green_context = green_mask[max(0, y - 18) : min(small.shape[0], y + 18), max(0, x - 18) : min(small.shape[1], x + 18)]
-        green_ratio = float(np.count_nonzero(green_context)) / max(1, green_context.size)
-        if green_ratio < 0.18:
-            continue
-        confidence = round(min(0.45, 0.2 + green_ratio * 0.25), 3)
-        candidates.append((float(x * scale_x), float(y * scale_y), float(radius * (scale_x + scale_y) / 2), confidence))
-    return sorted(candidates, key=lambda item: item[3], reverse=True)
-
-
-def resize_for_detection(image, max_width):
-    import cv2
-
-    height, width = image.shape[:2]
-    if width <= max_width:
-        return image
-    scale = max_width / width
-    return cv2.resize(image, (max_width, max(1, int(height * scale))))
 
 
 def normalized_box(label, x, y, width_box, height_box, width, height, confidence, source):

@@ -445,6 +445,8 @@ function routeLabel(route: DomainQueryPlan["route"]) {
   switch (route) {
     case "asset_evidence":
       return "Asset evidence";
+    case "knowledge_seeded_asset_evidence":
+      return "Knowledge-seeded asset evidence";
     case "knowledge_evidence":
       return "Knowledge evidence";
     case "asset_catalog":

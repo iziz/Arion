@@ -1,14 +1,16 @@
 import type { Express } from "express";
 import { isKnownKnowledgeSourceId } from "../../shared/knowledgeSources";
 import { sendNotFound } from "../http/middleware";
-import { answerStructuredKnowledgeQuestion } from "../knowledge/answer";
-import { planDomainQueryWithOpenAi } from "../openaiQueryPlanner";
+import { answerStructuredKnowledgeQuestion, disabledStructuredKnowledgeAnswer, isDirectKnowledgeAnswerPlan } from "../knowledge/answer";
+import { planDomainQueryWithLlm } from "../llmQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
 import { checkVlmWorkerHealth } from "../vlmWorkerClient";
-import { executeSearchPipeline, getAskOperationResponse, parseAskRequest, scopeAssetsForQuery, startAskOperation } from "../workflows/askWorkflow";
+import { executeSearchPipeline, getAskOperationResponse, parseAskRequest, startAskOperation } from "../workflows/askWorkflow";
 import {
   applyScopeDomainDefaults,
+  buildStatSeedKnowledgePlan,
   buildStatSeededMomentPlan,
+  isKnowledgeSeededMomentPlan,
   shouldContinueWithMomentRetrieval
 } from "../workflows/ask/statMomentSeed";
 import { listAssets, listIndexes } from "../store";
@@ -34,20 +36,16 @@ export function registerAskRoutes(app: Express) {
     const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
     const useKnowledgeLayer = req.query.useKnowledgeLayer !== "false";
     const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
-    const queryPlan = await planDomainQueryWithOpenAi(query, explicitFilters);
-    if (useKnowledgeLayer && queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.knowledgeMode === "direct_answer") {
-      const knowledgeAnswer = answerStructuredKnowledgeQuestion(queryPlan);
-      const scopedAssets = scopeAssetsForQuery(assets, {
-        query,
-        explicitFilters,
-        indexId,
-        assetId,
-        domainGroup,
-        tag: req.query.tag ? String(req.query.tag) : undefined,
-        modality: req.query.modality ? String(req.query.modality) : undefined,
-        limit: req.query.limit ? Number(req.query.limit) : undefined,
-        useKnowledgeLayer
-      }, indexes);
+    const queryPlan = await planDomainQueryWithLlm(query, explicitFilters);
+    if (isKnowledgeSeededMomentPlan(queryPlan)) {
+      const seedKnowledgePlan = buildStatSeedKnowledgePlan(queryPlan);
+      const knowledgeAnswer = useKnowledgeLayer
+        ? answerStructuredKnowledgeQuestion(seedKnowledgePlan)
+        : disabledStructuredKnowledgeAnswer(
+            seedKnowledgePlan,
+            "Knowledge layer is disabled for this search.",
+            "Knowledge layer was disabled by the selected search scope."
+          );
       const retrievalPlan = shouldContinueWithMomentRetrieval(queryPlan, knowledgeAnswer)
         ? buildStatSeededMomentPlan(queryPlan, knowledgeAnswer)
         : null;
@@ -70,6 +68,15 @@ export function registerAskRoutes(app: Express) {
         );
         return;
       }
+      res.status(409).json({
+        error: "This query needs related knowledge to resolve a ranked subject before video moment retrieval.",
+        route: "knowledge_seeded_asset_evidence",
+        answer: knowledgeAnswer
+      });
+      return;
+    }
+    if (useKnowledgeLayer && isDirectKnowledgeAnswerPlan(queryPlan)) {
+      const knowledgeAnswer = answerStructuredKnowledgeQuestion(queryPlan);
       res.status(409).json({
         error: "This query asks for a direct structured knowledge answer. Use the related knowledge answer endpoint instead of /api/search.",
         route: "structured_answer",
@@ -107,7 +114,7 @@ export function registerAskRoutes(app: Express) {
     const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
     const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
     const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
-    res.json(await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters));
+    res.json(await planDomainQueryWithLlm(String(req.query.q ?? ""), explicitFilters));
   });
 
   app.get(["/api/knowledge/answer", "/api/knowledge/sports/answer"], async (req, res) => {
@@ -117,8 +124,8 @@ export function registerAskRoutes(app: Express) {
     const assetId = req.query.assetId ? String(req.query.assetId) : undefined;
     const assetScopeIndexId = assetId ? assets.find((asset) => asset.id === assetId)?.indexId : undefined;
     const explicitFilters = applyScopeDomainDefaults(parseDomainFilters(req.query), { indexId: indexId ?? assetScopeIndexId, domainGroup }, indexes);
-    const queryPlan = await planDomainQueryWithOpenAi(String(req.query.q ?? ""), explicitFilters);
-    res.json(answerStructuredKnowledgeQuestion(queryPlan));
+    const queryPlan = await planDomainQueryWithLlm(String(req.query.q ?? ""), explicitFilters);
+    res.json(answerStructuredKnowledgeQuestion(isKnowledgeSeededMomentPlan(queryPlan) ? buildStatSeedKnowledgePlan(queryPlan) : queryPlan));
   });
 }
 

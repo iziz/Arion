@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import type { AssetRecord, DomainVlmQuality, IndexRecord, TimelineSegment, VideoVlmEvidence } from "../shared/types";
+import type { AssetRecord, DomainSearchFilters, DomainVlmQuality, IndexRecord, TimelineSegment, VideoVlmEvidence } from "../shared/types";
 import { getPublicMediaRoot } from "./localObjectStorage";
 import { markVlmQuality, mergeVlmResponse, type VlmSportsEventResponse } from "./vlm/domainMapper";
 
@@ -80,6 +80,21 @@ export type VlmVideoSegmentResponse = {
   rawResponse?: string;
 };
 
+export type VlmQueryPlanRequest = {
+  query: string;
+  explicitFilters: DomainSearchFilters;
+  allowed: Record<string, unknown>;
+  knownCompetitions: string[];
+  knownPlayers: Array<{ canonical: string; aliases: string[]; league: string }>;
+  currentDate: string;
+  defaultFootballSeasonRule: string;
+};
+
+export type VlmQueryPlanResult = {
+  model: string;
+  plan: Record<string, unknown>;
+};
+
 export function isVlmWorkerEnabled() {
   return Boolean(getVlmWorkerUrl());
 }
@@ -107,6 +122,23 @@ export async function checkVlmWorkerHealth() {
   } catch (error) {
     return { enabled: true, ok: false, model: getVlmWorkerModelName(), error: error instanceof Error ? error.message : "VLM worker health check failed." };
   }
+}
+
+export async function planQueryWithVlmWorker(request: VlmQueryPlanRequest): Promise<VlmQueryPlanResult> {
+  const url = getVlmWorkerUrl();
+  if (!url) throw new Error("VLM_WORKER_URL is not configured.");
+  const response = await postJson<Record<string, unknown>>(`${url}/plan/query`, {
+    ...request,
+    model: getVlmWorkerModelName()
+  });
+  const error = normalizeString(response.error);
+  if (error) throw new Error(error);
+  const nestedPlan = response.plan;
+  const plan = nestedPlan && typeof nestedPlan === "object" && !Array.isArray(nestedPlan) ? (nestedPlan as Record<string, unknown>) : response;
+  return {
+    model: normalizeString(response.model) || getVlmWorkerModelName(),
+    plan
+  };
 }
 
 export async function analyzeTimelineWithVlm(
