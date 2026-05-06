@@ -2,6 +2,7 @@ import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search,
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
 import type { AssetRecord, AssetSummaryRecord, IndexRecord, JobRecord } from "../../../shared/types";
 import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
+import { knowledgeTemplateDescriptors, sportsBaseTemplateContract, type KnowledgeTemplateDescriptor } from "../../../shared/knowledgeTemplates";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
 import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
 import { EmptyState } from "../common/ConsolePrimitives";
@@ -255,7 +256,7 @@ export function AssetFlow({
     },
     {
       label: "4. Domain evidence",
-      detail: "Apply detector, tracker, trusted action spotting, related knowledge event construction, and optional event-level VLM refinement.",
+      detail: "Apply detector, tracker, template action generation, related knowledge event construction, and optional event-level VLM refinement.",
       steps: flow.filter((step) => step.id === "detector" || step.id === "tracker" || step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
     },
     {
@@ -284,7 +285,7 @@ export function AssetFlow({
         <span style={{ width: `${overallProgress}%` }} />
       </div>
       <div className="node-canvas">
-        {stageGroups.map((group, index) => (
+        {stageGroups.map((group, stageIndex) => (
           <Fragment key={group.label}>
             <section className="workflow-stage">
               <div className="workflow-stage-header">
@@ -302,12 +303,12 @@ export function AssetFlow({
                     onRetry={retryNode}
                   >
                     <WorkflowRunDetails job={job} step={step} />
-                    <WorkflowResultContent asset={asset} step={step} onOpenMoment={onOpenMoment} />
+                    <WorkflowResultContent asset={asset} index={index} step={step} onOpenMoment={onOpenMoment} />
                   </FlowNode>
                 ))}
               </div>
             </section>
-            {index < stageGroups.length - 1 && <FlowConnector />}
+            {stageIndex < stageGroups.length - 1 && <FlowConnector />}
           </Fragment>
         ))}
       </div>
@@ -631,7 +632,7 @@ function searchImpactForStep(step: FlowStep) {
   return getWorkflowSearchImpact(step.id, step.state);
 }
 
-function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+function WorkflowResultContent({ asset, index, step, onOpenMoment }: { asset: AssetRecord; index: IndexRecord | null; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const stepId = step.id;
   if (stepId === "input" || stepId === "probe") return <TechnicalResult asset={asset} step={step} />;
   if (stepId === "audio" || stepId === "vad") return <AudioResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
@@ -641,7 +642,7 @@ function WorkflowResultContent({ asset, step, onOpenMoment }: { asset: AssetReco
   if (stepId === "visual" || stepId === "keyframes") return <VisualResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "videoVlm") return <VideoVlmResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
-  if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} step={step} />;
+  if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} index={index} step={step} />;
   if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
@@ -1218,7 +1219,7 @@ function TimelineResult({ asset, step, onOpenMoment }: { asset: AssetRecord; ste
   );
 }
 
-function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+function ModelTraceResult({ asset, index, step }: { asset: AssetRecord; index: IndexRecord | null; step: FlowStep }) {
   const stepId = step.id;
   const prefixes =
     stepId === "detector"
@@ -1243,9 +1244,27 @@ function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep 
   }).length;
   const averageTrackCoverage = averageNumber(visionSegments.map((segment) => segment.sceneData?.vision?.tracking?.trackCoverage ?? null).filter((value): value is number => typeof value === "number"));
   const calibratedFields = visionSegments.filter((segment) => segment.sceneData?.vision?.fieldCalibration?.status === "calibrated").length;
+  const template = stepId === "knowledgeAction" ? knowledgeTemplateForIndex(index) : null;
+  const templateProduced: NodeMetric[] = template
+    ? [
+        { label: "Base", value: sportsBaseTemplateContract.version, tone: "neutral" },
+        { label: "Template", value: template.manifest.version, tone: "good" },
+        { label: "Generator", value: template.generator.kind, tone: "good" },
+        { label: "Schema fields", value: template.manifest.outputSchema.length.toString(), tone: "neutral" },
+        { label: "Benchmarks", value: template.evaluator.benchmarkCoverage.length.toString(), tone: "neutral" }
+      ]
+    : [];
+  const templateQuality: NodeMetric[] = template
+    ? [
+        { label: "Runtime gates", value: template.manifest.runtimeGates.length.toString(), tone: "neutral" },
+        { label: "Skip conditions", value: template.manifest.skipConditions.length.toString(), tone: "neutral" },
+        { label: "Validation gates", value: template.evaluator.validationGates.length.toString(), tone: "neutral" }
+      ]
+    : [];
   return (
     <WorkflowNodeDetails
       produced={[
+        ...templateProduced,
         { label: "Stored traces", value: traces.length.toString(), tone: traces.length > 0 ? "good" : "warning" },
         { label: "Vision segments", value: visionSegments.length.toString(), tone: visionSegments.length > 0 ? "good" : "warning" },
         { label: "Players", value: formatCoverage(playerDetected, visionSegments.length), tone: playerDetected > 0 ? "good" : "warning" },
@@ -1256,27 +1275,104 @@ function ModelTraceResult({ asset, step }: { asset: AssetRecord; step: FlowStep 
       usedBy={stepId === "knowledgeAction" ? ["adapter action labels", "domain events", "search filters"] : ["domain events", "receiver/passer inference", "pressure/pocket judgment", "visual verification"]}
       quality={[
         { label: "Trace", value: traces.length > 0 ? "stored" : "missing", tone: traces.length > 0 ? "good" : "warning" },
+        ...templateQuality,
         { label: "Player evidence", value: playerDetected > 0 ? "available" : "not detected", tone: playerDetected > 0 ? "good" : "warning" },
         { label: "Ball evidence", value: ballDetected > 0 ? "available" : "not detected", tone: ballDetected > 0 ? "good" : "warning" },
         { label: "Search impact", value: stepId === "tracker" ? "motion/domain evidence" : stepId === "detector" ? "object/domain evidence" : "action spotting", tone: "neutral" }
       ]}
       inspect={
-        <div className="workflow-result-list">
-          {visionSegments.slice(0, 8).map((segment) => (
-            <article key={`${stepId}-${segment.id}`}>
-              <TimelineThumbnail path={segment.thumbnailPath} />
-              <div>
-                <strong>{segment.label}</strong>
-                <span>{formatDuration(segment.start)}-{formatDuration(segment.end)}</span>
-                <SceneDataSummary segment={segment} />
-              </div>
-            </article>
-          ))}
-          {visionSegments.length === 0 && <EmptyState text="No vision-backed timeline segments are stored." />}
-        </div>
+        template ? (
+          <KnowledgeActionWorkflowInspect template={template} traces={traces} visionSegments={visionSegments} />
+        ) : (
+          <VisionWorkflowInspect stepId={stepId} visionSegments={visionSegments} />
+        )
       }
       rawDetails={rawStepDetails(step, traces)}
     />
+  );
+}
+
+function knowledgeTemplateForIndex(index: IndexRecord | null) {
+  const sourceId = index?.domainIndexing?.groups.find((group) => knowledgeTemplateDescriptors[group]);
+  return sourceId ? knowledgeTemplateDescriptors[sourceId] ?? null : null;
+}
+
+function KnowledgeActionWorkflowInspect({
+  template,
+  traces,
+  visionSegments
+}: {
+  template: KnowledgeTemplateDescriptor;
+  traces: string[];
+  visionSegments: AssetRecord["timeline"];
+}) {
+  const action = template.generator.actionSpotting;
+  return (
+    <div className="workflow-result-stack">
+      <div className="workflow-usage-grid">
+        <VisualUsageCard
+          title="Sports base"
+          value={template.strategy.baseTemplateId}
+          detail={`${template.strategy.sharedRules.length} shared rules · ${template.strategy.strategyId}`}
+        />
+        <VisualUsageCard
+          title="Manifest"
+          value={template.manifest.version}
+          detail={`${template.manifest.providerContracts.length} providers · ${template.manifest.requiredEvidence.length} evidence contracts · ${template.manifest.outputSchema.length} output fields`}
+        />
+        <VisualUsageCard
+          title="Generator"
+          value={template.generator.kind}
+          detail={`${template.generator.adapter} · ${template.generator.outputVersion}`}
+        />
+        <VisualUsageCard
+          title="Evaluator"
+          value={`${template.evaluator.benchmarkCoverage.length} coverage items`}
+          detail={template.evaluator.benchmarkCoverage.map((coverage) => `${coverage.name}: ${coverage.status}`).join(" · ")}
+        />
+        <VisualUsageCard
+          title="Runtime source"
+          value={traces.length > 0 ? "trace stored" : "trace missing"}
+          detail={traces[0] ?? template.generator.timing}
+        />
+      </div>
+      <div className="workflow-technical-strip" aria-label="Knowledge action template rules">
+        <span><b>Min confidence</b>{action.minCandidateConfidence}</span>
+        <span><b>Alignment score</b>{action.alignment.minScore}</span>
+        <span><b>Strong score</b>{action.alignment.minStrongScore}</span>
+        <span><b>Provider context</b>{action.alignment.requireProviderContext ? "required" : "not required"}</span>
+      </div>
+      <details className="workflow-raw-details">
+        <summary>Template manifest and evaluator contract</summary>
+        <div>
+          <code>Manifest: {template.manifest.summary}</code>
+          <code>Base rules: {template.strategy.sharedRules.join(" · ")}</code>
+          <code>Specialization: {template.strategy.specializationRules.join(" · ")}</code>
+          <code>Consumes: {template.generator.consumes.join(" · ")}</code>
+          <code>Skip conditions: {template.manifest.skipConditions.join(" · ")}</code>
+          <code>Validation gates: {template.evaluator.validationGates.join(" · ")}</code>
+        </div>
+      </details>
+      <VisionWorkflowInspect stepId="knowledgeAction" visionSegments={visionSegments} />
+    </div>
+  );
+}
+
+function VisionWorkflowInspect({ stepId, visionSegments }: { stepId: string; visionSegments: AssetRecord["timeline"] }) {
+  return (
+    <div className="workflow-result-list">
+      {visionSegments.slice(0, 8).map((segment) => (
+        <article key={`${stepId}-${segment.id}`}>
+          <TimelineThumbnail path={segment.thumbnailPath} />
+          <div>
+            <strong>{segment.label}</strong>
+            <span>{formatDuration(segment.start)}-{formatDuration(segment.end)}</span>
+            <SceneDataSummary segment={segment} />
+          </div>
+        </article>
+      ))}
+      {visionSegments.length === 0 && <EmptyState text="No vision-backed timeline segments are stored." />}
+    </div>
   );
 }
 
@@ -1301,6 +1397,9 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
   const identityCount = domainEvents.filter(({ event }) =>
     Boolean(event.football?.receivingPlayer.identity || event.football?.passingPlayer.identity || event.americanFootball?.quarterback.identity)
   ).length;
+  const matchContextCount = asset.identity?.matchContexts.length ?? asset.timeline.filter((segment) => (segment.identity?.matchContextIds.length ?? 0) > 0).length;
+  const trackAssignmentCount = asset.identity?.trackIdentityAssignments.length ?? asset.timeline.reduce((sum, segment) => sum + (segment.identity?.trackIdentityAssignments.length ?? 0), 0);
+  const clockMappingCount = asset.identity?.matchContexts.reduce((sum, context) => sum + context.clockMappings.length, 0) ?? asset.timeline.reduce((sum, segment) => sum + (segment.identity?.clockMappings.length ?? 0), 0);
   const averageConfidence = averageNumber(domainEvents.map(({ event }) => event.confidence));
   const isVlmNode = step.id === "domainVlm";
   return (
@@ -1317,6 +1416,8 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             { label: "Events", value: domainEvents.length.toString(), tone: domainEvents.length > 0 ? "good" : "warning" },
             { label: "Top event types", value: topTypes.length ? topTypes.map(([type, count]) => `${type} ${count}`).join(" · ") : "None", tone: topTypes.length ? "good" : "warning" },
             { label: "Identity resolved", value: `${identityCount}/${domainEvents.length}`, tone: identityCount > 0 ? "good" : "neutral" },
+            { label: "Match contexts", value: matchContextCount.toString(), tone: matchContextCount > 0 ? "good" : "neutral" },
+            { label: "Track identities", value: trackAssignmentCount.toString(), tone: trackAssignmentCount > 0 ? "good" : "neutral" },
             { label: "Avg confidence", value: averageConfidence === null ? "Unknown" : `${Math.round(averageConfidence * 100)}%`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" },
             { label: "Knowledge VLM checks", value: vlmSegments.length.toString(), tone: vlmSegments.length > 0 ? "good" : "neutral" }
           ]}
@@ -1330,6 +1431,7 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
         : [
             { label: "Knowledge structure", value: domainEvents.length > 0 ? "searchable" : "missing", tone: domainEvents.length > 0 ? "good" : "warning" },
             { label: "Player identity", value: identityCount > 0 ? "resolved candidates" : "not resolved", tone: identityCount > 0 ? "good" : "neutral" },
+            { label: "Match clock mappings", value: clockMappingCount > 0 ? `${clockMappingCount} mapped` : "not mapped", tone: clockMappingCount > 0 ? "good" : "neutral" },
             { label: "Confidence", value: averageConfidence === null ? "unknown" : `${Math.round(averageConfidence * 100)}% avg`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" }
           ]}
       inspect={
@@ -1401,6 +1503,8 @@ function DomainEventRow({
         <div className="domain-structured-grid">
           {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
           {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
+          {segment.identity?.matchContextIds[0] && <span><b>Match context</b>{segment.identity.matchContextIds[0]}</span>}
+          {segment.identity?.clockMappings[0] && <span><b>Match clock</b>{segment.identity.clockMappings[0].period} · {segment.identity.clockMappings[0].clockText ?? `${segment.identity.clockMappings[0].matchMinuteStart}'`}</span>}
           <span><b>Event</b>{event.eventType}</span>
           <span><b>Pass</b>{event.football.passType}</span>
           <span><b>Zone</b>{event.football.fieldZone}</span>
@@ -1414,6 +1518,8 @@ function DomainEventRow({
         <div className="domain-structured-grid">
           {segment.domain?.scope?.competition && <span><b>Competition</b>{segment.domain.scope.competition.value} · {segment.domain.scope.competition.source}</span>}
           {segment.domain?.scope?.season && <span><b>Season</b>{segment.domain.scope.season.value} · {segment.domain.scope.season.source}</span>}
+          {segment.identity?.matchContextIds[0] && <span><b>Match context</b>{segment.identity.matchContextIds[0]}</span>}
+          {segment.identity?.clockMappings[0] && <span><b>Match clock</b>{segment.identity.clockMappings[0].period} · {segment.identity.clockMappings[0].clockText ?? `${segment.identity.clockMappings[0].matchMinuteStart}'`}</span>}
           <span><b>Event</b>{event.eventType}</span>
           <span><b>Play type</b>{event.americanFootball.playType}</span>
           <span><b>Phase</b>{event.americanFootball.phase}</span>
@@ -1431,6 +1537,15 @@ function DomainEventRow({
             {segment.domain.vlm.error ? ` · ${segment.domain.vlm.error}` : ""}
           </p>
         )}
+        {segment.identity?.trackIdentityAssignments.length ? (
+          <p>
+            Track identity:{" "}
+            {segment.identity.trackIdentityAssignments
+              .slice(0, 3)
+              .map((assignment) => `${assignment.trackId} -> ${assignment.canonicalName ?? "unknown"} (${assignment.status}, ${Math.round(assignment.confidence * 100)}%)`)
+              .join(" · ")}
+          </p>
+        ) : null}
         <p>{[...event.evidence.asr, ...event.evidence.ocr, ...event.evidence.visual].filter(Boolean).slice(0, 4).join(" · ") || "No direct evidence text stored."}</p>
         <p>{[...event.evidence.heuristics, ...(event.football?.limitations ?? []), ...(event.americanFootball?.limitations ?? [])].filter(Boolean).slice(0, 5).join(" · ")}</p>
       </details>

@@ -14,6 +14,7 @@ export function groundQueryWithKnowledge(queryPlan: DomainQueryPlan, assets: Ass
     ...groundCompetition(queryPlan),
     ...groundPlayers(queryPlan),
     ...groundMatchActivities(queryPlan),
+    ...groundAmericanFootballPlays(queryPlan),
     ...groundFacts(queryPlan),
     ...groundVideoScope(queryPlan, assets)
   ];
@@ -174,6 +175,40 @@ function groundMatchActivities(queryPlan: DomainQueryPlan): KnowledgeEvidence[] 
     }));
 }
 
+function groundAmericanFootballPlays(queryPlan: DomainQueryPlan): KnowledgeEvidence[] {
+  const snapshot = getKnowledgeSnapshot();
+  const requestedCompetition = queryPlan.domainFilters.competition;
+  const requestedSeason = queryPlan.domainFilters.season;
+  const queryText = normalize(plannedEvidenceText(queryPlan));
+  const wantsNfl =
+    requestedCompetition === "NFL" ||
+    queryPlan.intent.domain === "sports.american_football" ||
+    /\bnfl\b|american football|미식축구|touchdown|passing|rushing|sack|interception|down|yardline|playid|gameid/.test(queryText);
+  if (!wantsNfl && !requestedSeason) return [];
+
+  return (snapshot.americanFootballPlays ?? [])
+    .filter((play) => {
+      if (requestedCompetition && play.competition !== requestedCompetition) return false;
+      if (requestedSeason && !seasonMatches([play.season], requestedSeason)) return false;
+      if (!requestedCompetition && !requestedSeason && !wantsNfl) return false;
+      return true;
+    })
+    .slice(0, 80)
+    .map((play) => ({
+      id: `knowledge:play:${play.id}`,
+      kind: "play_metadata" as const,
+      entityType: "event" as const,
+      entityName: `${play.gameId} play ${play.playId}`,
+      source: "nflverse" as const,
+      confidence: 0.82,
+      evidenceText: play.sourceText,
+      competition: "NFL",
+      season: play.season,
+      team: play.possessionTeam ?? undefined,
+      matchTime: [play.quarter ? `Q${play.quarter}` : "", play.clock].filter(Boolean).join(" ") || undefined
+    }));
+}
+
 function groundVideoScope(queryPlan: DomainQueryPlan, assets: AssetRecord[]): KnowledgeEvidence[] {
   if (!isPlayerInventoryPlan(queryPlan) && !queryPlan.domainFilters.player && !queryPlan.intent.player) return [];
 
@@ -260,6 +295,7 @@ function scoreKnowledgeEvidence(item: KnowledgeEvidence, queryText: string, term
   if (item.team && queryText.includes(normalize(item.team))) score += 3;
   if (item.entityName && queryText.includes(normalize(item.entityName))) score += 3;
   if (item.kind === "match_activity" && /(minute|time|activity|event|시간|분|활동|기록|이벤트)/.test(queryText)) score += 2;
+  if (item.kind === "play_metadata" && /(play|playid|gameid|down|distance|yardline|touchdown|pass|rush|sack|interception|플레이|다운|터치다운|야드)/.test(queryText)) score += 2.5;
   if ((item.kind === "roster" || item.kind === "player_profile") && /(roster|lineup|squad|player|선수|명단|출전|스쿼드)/.test(queryText)) score += 2;
   if ((item.kind === "team_stat" || item.kind === "attendance") && /(table|standing|stat|points|goals|touchdowns?|passing|rushing|receiving|sacks?|interceptions?|attendance|순위|통계|승점|득점|실점|관중|터치다운|야드)/.test(queryText)) score += 2;
   score += terms.reduce((sum, term) => sum + (evidenceText.includes(term) ? 0.35 : 0), 0);

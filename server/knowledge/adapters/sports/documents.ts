@@ -28,6 +28,7 @@ export type BuildKnowledgeDocumentOptions = {
   maxPlayers?: number;
   maxActivities?: number;
   maxFacts?: number;
+  maxAmericanFootballPlays?: number;
 };
 
 export function buildKnowledgeDocuments(
@@ -133,7 +134,39 @@ export function buildKnowledgeDocuments(
     };
   });
 
-  return dedupeDocuments([...competitionDocs, ...teamDocs, ...playerDocs, ...factDocs, ...activityDocs]);
+  const playDocs = (snapshot.americanFootballPlays ?? []).slice(0, options.maxAmericanFootballPlays ?? snapshot.americanFootballPlays?.length ?? 0).map((play) => {
+    const matchTime = [play.quarter ? `Q${play.quarter}` : "", play.clock].filter(Boolean).join(" ") || undefined;
+    const participants = [
+      play.passerPlayerName ? `passer ${play.passerPlayerName}${play.passerPlayerId ? ` (${play.passerPlayerId})` : ""}` : "",
+      play.rusherPlayerName ? `rusher ${play.rusherPlayerName}${play.rusherPlayerId ? ` (${play.rusherPlayerId})` : ""}` : "",
+      play.receiverPlayerName ? `receiver ${play.receiverPlayerName}${play.receiverPlayerId ? ` (${play.receiverPlayerId})` : ""}` : ""
+    ].filter(Boolean).join("; ");
+    const downDistance = play.down && play.distance !== null ? `${play.down} down, ${play.distance} yards to go` : "down-distance unknown";
+    const sourceText = play.sourceText || `${play.gameId}/${play.playId}: ${play.description}`;
+    return {
+      id: `knowledge:play:sports.american_football:${play.provider}:${play.gameId}:${play.playId}`,
+      domainGroup: "sports.american_football" as const,
+      provider: "nflverse" as const,
+      kind: "play_metadata" as const,
+      entityType: "event" as const,
+      entityName: `${play.gameId} play ${play.playId}`,
+      competition: "NFL",
+      season: play.season,
+      team: play.possessionTeam ?? undefined,
+      matchTime,
+      text: [
+        sourceText,
+        `Play metadata: gameId=${play.gameId}, playId=${play.playId}, season=${play.season}, week=${play.week ?? "unknown"}, ${downDistance}, yardline=${play.yardline ?? "unknown"}, yardline100=${play.yardline100 ?? "unknown"}, playType=${play.playType}.`,
+        `Teams: ${play.awayTeam} at ${play.homeTeam}. Possession: ${play.possessionTeam ?? "unknown"}. Defense: ${play.defensiveTeam ?? "unknown"}.`,
+        participants ? `Participants: ${participants}.` : "",
+        play.touchdown ? "Outcome: touchdown." : "",
+        play.turnover ? "Outcome: turnover." : ""
+      ].filter(Boolean).join(" "),
+      sourceText
+    };
+  });
+
+  return dedupeDocuments([...competitionDocs, ...teamDocs, ...playerDocs, ...factDocs, ...activityDocs, ...playDocs]);
 }
 
 export function knowledgeVectorHitToEvidence(hit: KnowledgeVectorHit): KnowledgeEvidence {

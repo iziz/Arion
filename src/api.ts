@@ -61,6 +61,7 @@ export type FootballDataImportResult = {
   players: number;
   matchActivities: number;
   facts: number;
+  plays: number;
   warnings: string[];
   snapshot: KnowledgeSnapshot;
 };

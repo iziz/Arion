@@ -208,6 +208,22 @@ async def soccernet_action_spotting(request: Request) -> JSONResponse:
     return await run_script_response(request, args, body, stdin_payload=stdin_payload)
 
 
+@app.post("/v1/american-football-action-spotting")
+async def american_football_action_spotting(request: Request) -> JSONResponse:
+    body = await request.json()
+    args = [
+        "american_football_action_spotting.py",
+        require_string(body, "mediaPath"),
+        "--model",
+        str(body.get("model") or os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTTING_MODEL") or os.environ.get("NFL_ACTION_SPOTTING_MODEL") or "external"),
+    ]
+    spots_dir = body.get("spotsDir") or os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTS_DIR") or os.environ.get("NFL_ACTION_SPOTS_DIR")
+    if spots_dir:
+        args.extend(["--spots-dir", str(spots_dir)])
+    stdin_payload = {"duration": body.get("duration"), "segments": body.get("segments") or []}
+    return await run_script_response(request, args, body, stdin_payload=stdin_payload)
+
+
 async def run_cached_response(request: Request, task: Callable[[], Any]) -> JSONResponse:
     request_id = request.headers.get("x-request-id") or ""
     started = time.perf_counter()

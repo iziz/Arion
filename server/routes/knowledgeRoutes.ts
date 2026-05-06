@@ -27,7 +27,8 @@ export function registerKnowledgeRoutes(app: Express) {
     const documents = buildKnowledgeDocuments(undefined, {
       maxPlayers: req.body.all ? undefined : optionalNumber(req.body.maxPlayers, 5000),
       maxFacts: req.body.all ? undefined : optionalNumber(req.body.maxFacts, 5000),
-      maxActivities: req.body.all ? undefined : optionalNumber(req.body.maxActivities, 5000)
+      maxActivities: req.body.all ? undefined : optionalNumber(req.body.maxActivities, 5000),
+      maxAmericanFootballPlays: req.body.all ? undefined : optionalNumber(req.body.maxAmericanFootballPlays, 5000)
     });
     const result = await rebuildKnowledgeVectorStore(documents, {
       batchSize: optionalNumber(req.body.batchSize, 128)
@@ -113,7 +114,9 @@ export function registerKnowledgeRoutes(app: Express) {
       .filter((item) => Number.isInteger(item));
     const result = await importNflverseKnowledge({
       seasons: seasons.length > 0 ? seasons : undefined,
-      includePlayers: req.body.includePlayers !== false
+      includePlayers: req.body.includePlayers !== false,
+      includePlays: req.body.includePlays !== false,
+      maxPlaysPerSeason: req.body.maxPlaysPerSeason ? optionalNumber(req.body.maxPlaysPerSeason, 0) : undefined
     });
     res.json(result);
   });

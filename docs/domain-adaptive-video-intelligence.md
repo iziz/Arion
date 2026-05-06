@@ -19,7 +19,7 @@ Arion implements this as an application-layer orchestration system rather than a
 | Pegasus-style generation | Local grounded analysis generator in `server/analysisGenerator.ts` and pattern aggregation in `server/intelligence.ts` |
 | Domain knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
 | Query orchestrator | `/api/ask` operation pipeline in `server/workflows/ask/*`, model-backed planning in `server/llmQueryPlanner.ts`, and decision plans in `server/orchestrator.ts` |
-| Domain event indexing | `server/domainIndex.ts` football and American-football event structures |
+| Domain event indexing | `server/domainIndex/*` football and American-football event builders, plus `server/domainIndex/matchIdentityResolver.ts` for sports context and identity resolution |
 | Optional visual and planning model | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` for video/domain reasoning and `/plan/query` fallback |
 
 ## Design Changes Applied
@@ -33,7 +33,17 @@ Arion now models sports domains explicitly:
 
 This prevents a Premier League asset group from being treated as sufficient coverage for NFL/Mahomes queries. The route decision now checks the requested domain before marking a query as ready.
 
-### 2. American Football Structured Events
+### 2. Sports Base Template and Domain Strategies
+
+Sports indexing now uses a shared base contract plus domain-specific strategies:
+
+- `sports.base` defines common evidence rules, context output, clock mappings, identity candidates, skip policy, and evaluator expectations.
+- `sports.football` specializes the contract with match activities, lineup windows, SoccerNet-style action spots, and football match clocks.
+- `sports.american_football` specializes the contract with nflverse play metadata, `gameId`, `playId`, quarter clock, down-distance, yardline, participants, and MOT/helmet/contact evidence hooks.
+
+This keeps common sports rules stable while preventing domain-specific semantics from leaking across sports.
+
+### 3. American Football Structured Events
 
 American football event output now has sport-specific fields:
 
@@ -42,14 +52,32 @@ American football event output now has sport-specific fields:
 - `pocket`
 - `decision`
 - `playType`
+- `playMetadata`
+- `participants`
+- `tracking`
 
 This supports queries such as:
 
 > Find Patrick Mahomes scramble plays under pressure, then generate a breakdown of his decision-making pattern.
 
-The first version is intentionally heuristic: it uses text, OCR, coarse vision cues, and optional VLM output. It does not claim route concepts, down-distance, defensive pressure attribution, or stable player tracking.
+The first version is still evidence-gated: it uses text, OCR, coarse vision cues, optional VLM output, nflverse play metadata, and MOT hooks. It exposes down-distance and play metadata when aligned evidence exists, but it does not fabricate route concepts, calibrated pressure attribution, contact detections, or stable helmet identity when those detectors are not connected.
 
-### 3. Confidence-Aware Scope Handling
+### 4. Match/Game Context Identity Resolution
+
+Sports identity resolution runs after domain event enrichment and before embedding/vector upsert.
+
+It writes:
+
+- `matchContexts[]`
+- `matchContexts[].videoRanges[]`
+- `matchContexts[].clockMappings[]`
+- `activeRosterWindows[]`
+- `playerIdentityCandidates[]`
+- `trackIdentityAssignments[]`
+
+This supports edited videos where one asset contains clips from multiple matches or games. Each segment can carry its own context ids and clock mappings.
+
+### 5. Confidence-Aware Scope Handling
 
 The retrieval filter now evaluates domain filters as `trusted`, `weak`, or `failed`. It no longer drops a candidate only because `competition` or `season` scope is missing when stronger player and event evidence exists. Instead:
 
@@ -61,7 +89,7 @@ The retrieval filter now evaluates domain filters as `trusted`, `weak`, or `fail
 
 This is important for partially indexed historical footage where old clips often lack clean season metadata.
 
-### 4. Season Window Interpretation
+### 6. Season Window Interpretation
 
 The planner now distinguishes:
 
@@ -75,11 +103,11 @@ The second form expands to current season plus the previous three seasons. For P
 - `2023-24`
 - `2022-23`
 
-### 5. Domain-Aware VLM Routing
+### 7. Domain-Aware VLM Routing
 
 The VLM worker accepts both supported sports domains. The TypeScript client sends the domain selected by the asset group or segment, and merges VLM output back into the correct event schema.
 
-### 6. Knowledge-Seeded Stat Moment Retrieval
+### 8. Knowledge-Seeded Stat Moment Retrieval
 
 Ranking/stat questions that ask for matching video moments use an explicit hybrid route:
 
@@ -123,11 +151,13 @@ The ask workflow first builds a temporary structured knowledge plan, resolves th
 
 ## Remaining Gaps
 
-- Stable player identity still needs jersey/roster tracking, not just text or VLM inference.
+- Stable player identity still needs stronger jersey/helmet assignment, ReID, and contact/track models. Current identity output is candidate-first unless domain context, clock, participant/roster evidence, and track evidence agree.
 - Field zone and pocket state remain heuristic until sport-specific calibration/tracking is added.
 - Multi-camera game synchronization is not implemented.
 - Large-scale ingestion already has Redis/BullMQ dispatch and persisted job/ask records, but multi-region scheduling, autoscaling, and cross-cluster queue ownership are not implemented.
 - Provider knowledge should be versioned by weekly roster snapshots and transfer windows.
+
+See [sports-domain-indexing.md](sports-domain-indexing.md) for the implementation and operation details.
 
 ## MVP Execution Order
 

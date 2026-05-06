@@ -42,6 +42,8 @@ Arion is a local TwelveLabs-like service prototype for video ingest, index manag
 
 ## Architecture
 
+Sports-domain indexing details live in [docs/sports-domain-indexing.md](docs/sports-domain-indexing.md).
+
 ```text
 React Console
   -> Express API Process
@@ -65,26 +67,24 @@ The indexing, search, and analysis logic is adapter-friendly. Production-oriente
 
 ## Commands
 
+The full npm script reference lives in [docs/npm-scripts.md](docs/npm-scripts.md).
+
 ```bash
 npm install
-npm run infra:up
 npm run dev
 npm run dev:full
+npm test
 npm run build
-npm run db:check
-npm run legacy:migrate
-npm run db:seed
-npm run db:reset
-npm run embeddings:rebuild
-npm run text:repair
-npm run models:doctor
 npm run models:doctor:ai
-npm run models:runtime
 npm run models:runtime:ai
+npm run infra:check
+npm run db:check
+npm run indexes:rebuild -- --all
 npm run docker:up
 npm run docker:full
 ```
 
+Use `npm run dev` for the standard local stack and `npm run dev:full` when local AI runtime services should be started with the app.
 The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
 Asset job execution, ask operation execution, and application persistence require Docker-managed Redis and PostgreSQL in the standard development path. `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` run `dev:infra` first, which starts `redis` and `postgres` through Docker Compose and waits for readiness.
 `REDIS_URL` defaults to `redis://127.0.0.1:16379` for Docker-backed host development, and Docker app services use `redis://redis:6379`.
@@ -151,6 +151,7 @@ Local environment values are loaded from `.env` automatically when present.
 - Set `VISION_DETECTOR_BACKEND=auto|ultralytics|rfdetr` to choose the person/ball detector. YOLO uses `VISION_DETECTOR_MODEL`, RF-DETR uses `VISION_RFDETR_MODEL`, and missing detector backends are marked unavailable.
 - Set `VISION_TRACKER=bytetrack.yaml` to run Ultralytics ByteTrack/BoT-SORT tracking when `ultralytics` is installed.
 - Set `SOCCERNET_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `SOCCERNET_ACTION_SPOTS_JSON=/path/to/predictions.json` to import SoccerNet-style action spotting results as trusted sports domain evidence.
+- Set `AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `AMERICAN_FOOTBALL_ACTION_SPOTS_JSON=/path/to/predictions.json` to import American-football action spotting results as trusted sports domain evidence. Legacy `NFL_ACTION_*` names are also accepted.
 - Set `CAPABILITY_*` values or the asset-group capability policy to `disabled|optional|required`. Required capabilities fail the indexing job when unavailable; optional capabilities only record unavailable traces.
 - Set `EMBEDDING_MODEL=intfloat/multilingual-e5-base` and `EMBEDDING_DIMENSIONS=768` to choose the local semantic embedding model.
 - Set `VISUAL_EMBEDDING_MODEL=ViT-L-14`, `VISUAL_EMBEDDING_PRETRAINED=datacomp_xl_s13b_b90k`, and `VISUAL_EMBEDDING_DIMENSIONS=768` to choose the local visual embedding model.

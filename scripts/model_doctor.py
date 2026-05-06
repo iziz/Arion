@@ -33,8 +33,20 @@ def default_whisper_cpp_bin():
     return shutil.which("whisper-cli")
 
 
+def has_json(directory):
+    try:
+        return os.path.isdir(directory) and any(name.endswith(".json") for name in os.listdir(directory))
+    except OSError:
+        return False
+
+
 whisper_cpp_bin = executable(os.environ.get("WHISPER_CPP_BIN")) or default_whisper_cpp_bin()
 whisper_cpp_model = os.environ.get("WHISPER_CPP_MODEL")
+american_football_spots_dir = (
+    os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTS_DIR")
+    or os.environ.get("NFL_ACTION_SPOTS_DIR")
+    or os.path.join(os.getcwd(), ".data", "american-football-action-spots")
+)
 
 result = {
     "python": sys.version.split()[0],
@@ -55,6 +67,15 @@ result = {
     "ultralytics": present("ultralytics"),
     "rfdetr": present("rfdetr"),
     "soccernet": present("SoccerNet") or present("soccerNet") or present("soccernet"),
+    "american_football_action_spotting": bool(
+        os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTTING_ENABLED") == "true"
+        or os.environ.get("NFL_ACTION_SPOTTING_ENABLED") == "true"
+        or os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND")
+        or os.environ.get("AMERICAN_FOOTBALL_ACTION_SPOTS_JSON")
+        or os.environ.get("NFL_ACTION_SPOTTING_COMMAND")
+        or os.environ.get("NFL_ACTION_SPOTS_JSON")
+        or has_json(american_football_spots_dir)
+    ),
     "cv2": present("cv2"),
     "nltk": present("nltk"),
     "omegaconf": present("omegaconf"),

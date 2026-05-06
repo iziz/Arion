@@ -23,7 +23,7 @@ export const KNOWLEDGE_SOURCES: KnowledgeSourceMetadata[] = [
     label: "American football",
     adapter: "sports",
     capabilities: {
-      knowledgeActionSpotting: false
+      knowledgeActionSpotting: true
     }
   }
 ];

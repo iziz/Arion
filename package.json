@@ -40,6 +40,7 @@
     "knowledge:football-data": "tsx scripts/import_football_data.ts",
     "knowledge:football-data-uk": "tsx scripts/import_football_data_uk.ts",
     "knowledge:nflverse": "tsx scripts/import_nflverse.ts",
+    "knowledge:american-football-action-spots": "tsx scripts/build_american_football_action_spots.ts",
     "knowledge:sync-current": "tsx scripts/sync_current_sports_knowledge.ts",
     "knowledge:statsbomb": "tsx scripts/import_statsbomb_open_data.ts",
     "knowledge:statbunker": "tsx scripts/import_statbunker.ts",

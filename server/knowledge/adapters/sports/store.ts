@@ -20,10 +20,12 @@ export type SportsKnowledgePlayer = {
 
 export type SportsKnowledgeMatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
 export type SportsKnowledgeFact = NonNullable<KnowledgeSnapshot["facts"]>[number];
+export type AmericanFootballPlayMetadata = NonNullable<KnowledgeSnapshot["americanFootballPlays"]>[number];
 export type KnowledgeSnapshotSummaryOptions = {
   maxPlayersPerDomain?: number;
   maxActivitiesPerDomain?: number;
   maxFactsPerDomain?: number;
+  maxAmericanFootballPlays?: number;
 };
 
 export type KnowledgeMatch<T> = {
@@ -41,6 +43,7 @@ type ExternalSportsKnowledge = {
   players?: SportsKnowledgePlayer[];
   matchActivities?: SportsKnowledgeMatchActivity[];
   facts?: SportsKnowledgeFact[];
+  americanFootballPlays?: AmericanFootballPlayMetadata[];
   deletedPlayerIds?: string[];
   deletedPlayerKeys?: string[];
 };
@@ -162,13 +165,15 @@ export function getKnowledgeSnapshot() {
   const players = getSportsPlayers();
   const matchActivities = getMatchActivities();
   const facts = getFacts();
+  const americanFootballPlays = getAmericanFootballPlays();
   return {
-    domains: buildKnowledgeDomains({ competitions, teams, players, matchActivities, facts }),
+    domains: buildKnowledgeDomains({ competitions, teams, players, matchActivities, facts, americanFootballPlays }),
     competitions,
     teams,
     players,
     matchActivities,
-    facts
+    facts,
+    americanFootballPlays
   };
 }
 
@@ -177,11 +182,13 @@ export function getKnowledgeSnapshotSummary(options: KnowledgeSnapshotSummaryOpt
   const maxPlayersPerDomain = boundedLimit(options.maxPlayersPerDomain, 300);
   const maxActivitiesPerDomain = boundedLimit(options.maxActivitiesPerDomain, 120);
   const maxFactsPerDomain = boundedLimit(options.maxFactsPerDomain, 160);
+  const maxAmericanFootballPlays = boundedLimit(options.maxAmericanFootballPlays, 200);
   return {
     ...snapshot,
     players: limitByDomain(snapshot.players, (player) => domainGroupForSport(player.sport), maxPlayersPerDomain),
     matchActivities: limitByDomain(snapshot.matchActivities ?? [], (activity) => domainGroupForLeague(activity.competition), maxActivitiesPerDomain),
-    facts: limitByDomain(snapshot.facts ?? [], (fact) => domainGroupForLeague(fact.competition), maxFactsPerDomain)
+    facts: limitByDomain(snapshot.facts ?? [], (fact) => domainGroupForLeague(fact.competition), maxFactsPerDomain),
+    americanFootballPlays: (snapshot.americanFootballPlays ?? []).slice(0, maxAmericanFootballPlays)
   };
 }
 
@@ -238,6 +245,7 @@ export function mergeSportsKnowledge(input: {
   players?: SportsKnowledgePlayer[];
   matchActivities?: SportsKnowledgeMatchActivity[];
   facts?: SportsKnowledgeFact[];
+  americanFootballPlays?: AmericanFootballPlayMetadata[];
 }, options: {
   replaceProviders?: Array<NonNullable<SportsKnowledgePlayer["provider"]>>;
   replaceDomainGroups?: KnowledgeDomainGroup[];
@@ -248,6 +256,10 @@ export function mergeSportsKnowledge(input: {
   const externalPlayers = replaceProviders.size > 0 ? (external.players ?? []).filter((item) => !shouldReplaceProviderRecord(item.provider, domainGroupForSport(item.sport), replaceProviders, replaceDomainGroups)) : external.players ?? [];
   const externalActivities = replaceProviders.size > 0 ? (external.matchActivities ?? []).filter((item) => !shouldReplaceProviderRecord(item.provider, domainGroupForLeague(item.competition), replaceProviders, replaceDomainGroups)) : external.matchActivities ?? [];
   const externalFacts = replaceProviders.size > 0 ? (external.facts ?? []).filter((item) => !shouldReplaceProviderRecord(item.provider, domainGroupForLeague(item.competition), replaceProviders, replaceDomainGroups)) : external.facts ?? [];
+  const externalAmericanFootballPlays =
+    replaceProviders.size > 0
+      ? (external.americanFootballPlays ?? []).filter((item) => !shouldReplaceProviderRecord(item.provider, "sports.american_football", replaceProviders, replaceDomainGroups))
+      : external.americanFootballPlays ?? [];
   const competitions = [...(input.competitions ?? []), ...(external.competitions ?? [])].map(normalizeCompetitionRecord);
   const teams = [...(input.teams ?? []), ...(external.teams ?? [])].map(normalizeTeamRecord);
   const next = {
@@ -256,6 +268,7 @@ export function mergeSportsKnowledge(input: {
     players: mergePlayers([...(input.players ?? []), ...externalPlayers]),
     matchActivities: dedupeByValue([...(input.matchActivities ?? []), ...externalActivities], activityMergeKey),
     facts: dedupeByValue([...(input.facts ?? []), ...externalFacts], factMergeKey),
+    americanFootballPlays: dedupeByValue([...(input.americanFootballPlays ?? []), ...externalAmericanFootballPlays], americanFootballPlayMergeKey),
     deletedPlayerIds: external.deletedPlayerIds,
     deletedPlayerKeys: external.deletedPlayerKeys
   };
@@ -290,18 +303,25 @@ function getFacts() {
   return external.facts ?? [];
 }
 
+function getAmericanFootballPlays() {
+  const external = loadExternalKnowledge();
+  return external.americanFootballPlays ?? [];
+}
+
 function buildKnowledgeDomains({
   competitions,
   teams,
   players,
   matchActivities,
-  facts
+  facts,
+  americanFootballPlays
 }: {
   competitions: SportsCompetitionRecord[];
   teams: SportsTeamRecord[];
   players: SportsKnowledgePlayer[];
   matchActivities: SportsKnowledgeMatchActivity[];
   facts: SportsKnowledgeFact[];
+  americanFootballPlays: AmericanFootballPlayMetadata[];
 }): KnowledgeSnapshot["domains"] {
   return [
     { id: "sports.football" as const, label: "Football", sport: "football" as const },
@@ -312,7 +332,8 @@ function buildKnowledgeDomains({
     teams: teams.filter((item) => domainGroupForTeam(item) === domain.id).length,
     players: players.filter((player) => domainGroupForSport(player.sport) === domain.id).length,
     matchActivities: matchActivities.filter((activity) => domainGroupForLeague(activity.competition) === domain.id).length,
-    facts: facts.filter((fact) => domainGroupForLeague(fact.competition) === domain.id).length
+    facts: facts.filter((fact) => domainGroupForLeague(fact.competition) === domain.id).length,
+    plays: domain.id === "sports.american_football" ? americanFootballPlays.length : 0
   }));
 }
 
@@ -383,8 +404,17 @@ function factMergeKey(fact: SportsKnowledgeFact) {
   return `${domainGroupForLeague(fact.competition)}:${fact.competition}:${fact.provider}:${fact.id}`;
 }
 
+function americanFootballPlayMergeKey(play: AmericanFootballPlayMetadata) {
+  return `sports.american_football:${play.provider}:${play.gameId}:${play.playId}`;
+}
+
 function shouldReplaceProviderRecord(
-  provider: SportsKnowledgePlayer["provider"] | SportsKnowledgeMatchActivity["provider"] | SportsKnowledgeFact["provider"] | undefined,
+  provider:
+    | SportsKnowledgePlayer["provider"]
+    | SportsKnowledgeMatchActivity["provider"]
+    | SportsKnowledgeFact["provider"]
+    | AmericanFootballPlayMetadata["provider"]
+    | undefined,
   domainGroup: KnowledgeDomainGroup,
   replaceProviders: Set<NonNullable<SportsKnowledgePlayer["provider"]>>,
   replaceDomainGroups: Set<KnowledgeDomainGroup>
@@ -410,6 +440,7 @@ function loadExternalKnowledge(): ExternalSportsKnowledge {
       players: Array.isArray(parsed.players) ? parsed.players : undefined,
       matchActivities: Array.isArray(parsed.matchActivities) ? parsed.matchActivities : undefined,
       facts: Array.isArray(parsed.facts) ? parsed.facts : undefined,
+      americanFootballPlays: Array.isArray(parsed.americanFootballPlays) ? parsed.americanFootballPlays : undefined,
       deletedPlayerIds: Array.isArray(parsed.deletedPlayerIds) ? parsed.deletedPlayerIds.filter((item: unknown): item is string => typeof item === "string") : undefined,
       deletedPlayerKeys: Array.isArray(parsed.deletedPlayerKeys) ? parsed.deletedPlayerKeys.filter((item: unknown): item is string => typeof item === "string") : undefined
     };

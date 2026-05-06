@@ -1,6 +1,15 @@
 import type { IndexRecord, KnowledgeSourceId, TimelineSegment } from "../shared/types";
 import { formatKnowledgeSourceLabel, sourceSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
-import { logJson, traceAsync } from "./observability";
+import {
+  type KnowledgeActionSpottingAdapter,
+  runKnowledgeActionSpottingAdapter
+} from "./knowledge/actionSpottingAdapter";
+import {
+  americanFootballActionModel,
+  applyAmericanFootballActionSpots,
+  isAmericanFootballActionSpottingConfigured,
+  spotAmericanFootballActions
+} from "./knowledge/adapters/sports/americanFootball/actionSpotting";
 import { applySoccerNetActionSpots, isSoccerNetActionSpottingConfigured, soccerNetActionModel, spotSoccerNetActions } from "./knowledge/adapters/sports/football/soccernet";
 
 export type KnowledgeActionSpottingResult = {
@@ -13,6 +22,23 @@ export type KnowledgeActionSpottingResult = {
   error: string | null;
 };
 
+const knowledgeActionSpottingAdapters: Partial<Record<KnowledgeSourceId, KnowledgeActionSpottingAdapter<any>>> = {
+  "sports.football": {
+    sourceId: "sports.football",
+    modelLabel: soccerNetActionModel,
+    isConfigured: isSoccerNetActionSpottingConfigured,
+    spot: spotSoccerNetActions,
+    apply: applySoccerNetActionSpots
+  },
+  "sports.american_football": {
+    sourceId: "sports.american_football",
+    modelLabel: americanFootballActionModel,
+    isConfigured: isAmericanFootballActionSpottingConfigured,
+    spot: spotAmericanFootballActions,
+    apply: applyAmericanFootballActionSpots
+  }
+};
+
 export function resolveKnowledgeActionSpottingSource(index: IndexRecord): KnowledgeSourceId | null {
   return index.domainIndexing?.groups.find(sourceSupportsKnowledgeActionSpotting) ?? null;
 }
@@ -20,14 +46,13 @@ export function resolveKnowledgeActionSpottingSource(index: IndexRecord): Knowle
 export function getKnowledgeActionSpottingModelLabel(index: IndexRecord) {
   const sourceId = resolveKnowledgeActionSpottingSource(index);
   if (!sourceId) return "no configured knowledge action adapter";
-  if (sourceId === "sports.football") return `${formatKnowledgeSourceLabel(sourceId)} · ${soccerNetActionModel}`;
-  return formatKnowledgeSourceLabel(sourceId);
+  const adapter = knowledgeActionSpottingAdapters[sourceId];
+  return adapter ? `${formatKnowledgeSourceLabel(sourceId)} · ${adapter.modelLabel}` : formatKnowledgeSourceLabel(sourceId);
 }
 
 export function isKnowledgeActionSpottingConfigured(index: IndexRecord) {
   const sourceId = resolveKnowledgeActionSpottingSource(index);
-  if (sourceId === "sports.football") return isSoccerNetActionSpottingConfigured();
-  return false;
+  return sourceId ? Boolean(knowledgeActionSpottingAdapters[sourceId]?.isConfigured()) : false;
 }
 
 export async function runKnowledgeActionSpotting(params: {
@@ -39,34 +64,8 @@ export async function runKnowledgeActionSpotting(params: {
   assetId: string;
 }): Promise<KnowledgeActionSpottingResult> {
   const sourceId = resolveKnowledgeActionSpottingSource(params.index);
-  if (sourceId === "sports.football") {
-    const result = await traceAsync(
-      "model.knowledge_action_spotting",
-      { jobId: params.jobId, assetId: params.assetId, sourceId, model: soccerNetActionModel, segments: params.timeline.length },
-      () => spotSoccerNetActions(params.filePath, params.timeline, params.duration),
-      "model.knowledge_action_spotting"
-    );
-    const trace = result.available
-      ? `knowledge-action:${sourceId}:${result.provider}:${result.model}:${result.spots.length}`
-      : `knowledge-action-unavailable:${sourceId}:${result.error ?? "not configured"}`;
-    if (!result.available) {
-      logJson("warn", "model.knowledge_action_spotting.unavailable", "Knowledge action spotting unavailable", {
-        jobId: params.jobId,
-        assetId: params.assetId,
-        sourceId,
-        error: result.error
-      });
-    }
-    return {
-      available: result.available,
-      sourceId,
-      provider: result.provider,
-      model: result.model,
-      trace,
-      timeline: applySoccerNetActionSpots(params.timeline, result),
-      error: result.error ?? null
-    };
-  }
+  const adapter = sourceId ? knowledgeActionSpottingAdapters[sourceId] : null;
+  if (adapter) return runKnowledgeActionSpottingAdapter(adapter, params);
 
   return {
     available: false,

@@ -900,15 +900,15 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
 
 function sumKnowledgeDomainDocuments(domains: NonNullable<KnowledgeSnapshot["domains"]>) {
   return domains.reduce(
-    (total, domain) => total + domain.competitions.length + domain.teams + domain.players + domain.matchActivities + domain.facts,
+    (total, domain) => total + domain.competitions.length + domain.teams + domain.players + domain.matchActivities + domain.facts + (domain.plays ?? 0),
     0
   );
 }
 
 function defaultKnowledgeDomains(): NonNullable<KnowledgeSnapshot["domains"]> {
   return [
-    { id: "sports.football", label: "Football", sport: "football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 },
-    { id: "sports.american_football", label: "American football", sport: "american_football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0 }
+    { id: "sports.football", label: "Football", sport: "football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0, plays: 0 },
+    { id: "sports.american_football", label: "American football", sport: "american_football", competitions: [], teams: 0, players: 0, matchActivities: 0, facts: 0, plays: 0 }
   ];
 }
 

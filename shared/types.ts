@@ -94,6 +94,23 @@ export type DomainEvent = {
   americanFootball?: {
     phase: "dropback" | "designed_run" | "scramble" | "play_action" | "unknown";
     playType: "scramble" | "pocket_escape" | "throw_on_run" | "pressure" | "pass" | "rush" | "unknown";
+    playMetadata?: {
+      provider: "nflverse" | "big-data-bowl" | "manual" | "unknown";
+      gameId: string | null;
+      playId: string | null;
+      season: string | null;
+      week: number | null;
+      possessionTeam: string | null;
+      defensiveTeam: string | null;
+      down: number | null;
+      distance: number | null;
+      yardline: string | null;
+      yardline100: number | null;
+      quarter: number | null;
+      clock: string | null;
+      description: string | null;
+      sourceText: string[];
+    };
     quarterback: {
       present: boolean;
       confidence: number;
@@ -114,6 +131,23 @@ export type DomainEvent = {
       outcome: "run" | "throw" | "sack_avoidance" | "unknown";
       confidence: number;
     };
+    participants?: Array<{
+      role: "quarterback" | "rusher" | "receiver" | "passer" | "tackler" | "contact" | "unknown";
+      playerId: string | null;
+      name: string | null;
+      team: string | null;
+      trackId: string | null;
+      confidence: number;
+      source: "nflverse" | "helmet_assignment" | "tracking" | "asr" | "ocr" | "vlm" | "unknown";
+    }>;
+    tracking?: {
+      schema: "big-data-bowl" | "mot" | "unavailable";
+      playId: string | null;
+      frameIds: string[];
+      trackIds: string[];
+      contactIds: string[];
+      confidence: number;
+    };
     limitations: string[];
   };
 };
@@ -123,6 +157,119 @@ export type PlayerIdentity = {
   confidence: number;
   source: "query" | "title" | "asr" | "ocr" | "metadata" | "knowledge" | "vlm";
   evidence: string[];
+};
+
+export type MatchClockPeriod = "1H" | "2H" | "ET1" | "ET2" | "PEN" | "Q1" | "Q2" | "Q3" | "Q4" | "OT" | "unknown";
+
+export type MatchClockMapping = {
+  videoStart: number;
+  videoEnd: number;
+  period: MatchClockPeriod;
+  matchMinuteStart: number | null;
+  matchMinuteEnd: number | null;
+  clockText: string | null;
+  source: "ocr" | "asr" | "vlm" | "event_metadata" | "play_metadata" | "manual" | "unknown";
+  confidence: number;
+  evidence: string[];
+};
+
+export type MatchVideoRange = {
+  start: number;
+  end: number;
+  confidence: number;
+  evidence: string[];
+};
+
+export type MatchContext = {
+  id: string;
+  domainGroup?: KnowledgeDomainGroup | null;
+  matchId: string | null;
+  gameId?: string | null;
+  playId?: string | null;
+  provider: "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref" | "video_index" | "manual" | "unknown";
+  competition: string | null;
+  season: string | null;
+  week?: number | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  down?: number | null;
+  distance?: number | null;
+  yardline?: string | null;
+  yardline100?: number | null;
+  confidence: number;
+  status: "unknown" | "candidate" | "confirmed";
+  evidence: string[];
+  videoRanges: MatchVideoRange[];
+  clockMappings: MatchClockMapping[];
+};
+
+export type ActiveRosterWindow = {
+  matchContextId: string;
+  playerId: string | null;
+  canonicalName: string;
+  team: string | null;
+  shirtNumber: number | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  reason: "starter" | "sub_in" | "sub_out" | "red_card" | "event_mentioned" | "play_participant" | "roster_candidate" | "unknown";
+  evidence: string[];
+};
+
+export type IdentityEvidenceItem = {
+  source:
+    | "asr"
+    | "ocr"
+    | "vlm"
+    | "jersey_ocr"
+    | "lineup"
+    | "mot"
+    | "reid"
+    | "event_metadata"
+    | "play_metadata"
+    | "helmet_assignment"
+    | "contact"
+    | "title"
+    | "metadata"
+    | "knowledge";
+  value: string;
+  confidence: number;
+};
+
+export type PlayerIdentityCandidate = {
+  trackId: string | null;
+  playerId: string | null;
+  canonicalName: string | null;
+  team: string | null;
+  shirtNumber: number | null;
+  matchContextId: string | null;
+  videoRange: { start: number; end: number };
+  matchClock: MatchClockMapping | null;
+  confidence: number;
+  status: "unknown" | "candidate" | "confirmed" | "rejected";
+  evidence: IdentityEvidenceItem[];
+};
+
+export type TrackIdentityAssignment = PlayerIdentityCandidate & {
+  trackId: string;
+};
+
+export type SegmentIdentityContext = {
+  matchContextIds: string[];
+  clockMappings: MatchClockMapping[];
+  activeRosterWindows: ActiveRosterWindow[];
+  playerIdentityCandidates: PlayerIdentityCandidate[];
+  trackIdentityAssignments: TrackIdentityAssignment[];
+};
+
+export type AssetIdentityIndex = {
+  generatedBy: string;
+  status: "skipped" | "partial" | "ready";
+  matchContexts: MatchContext[];
+  activeRosterWindows: ActiveRosterWindow[];
+  playerIdentityCandidates: PlayerIdentityCandidate[];
+  trackIdentityAssignments: TrackIdentityAssignment[];
+  limitations: string[];
+  updatedAt: string;
 };
 
 export type DomainScopeValue = {
@@ -347,6 +494,7 @@ export type TimelineSegment = {
     trust?: EvidenceTrustTier;
     vlm?: DomainVlmQuality;
   };
+  identity?: SegmentIdentityContext;
   tags: string[];
   modalities: Array<"visual" | "audio" | "transcription" | "metadata">;
   confidence: number;
@@ -487,6 +635,7 @@ export type AssetRecord = {
   summary: string;
   timeline: TimelineSegment[];
   keyframes: KeyframeRecord[];
+  identity?: AssetIdentityIndex;
   technicalMetadata: {
     storageProvider: StorageProvider;
     bucket: string;
@@ -565,7 +714,7 @@ export type SearchResult = {
 
 export type KnowledgeEvidence = {
   id: string;
-  kind: "roster" | "player_profile" | "match_activity" | "competition_scope" | "video_scope" | "team_stat" | "attendance";
+  kind: "roster" | "player_profile" | "match_activity" | "competition_scope" | "video_scope" | "team_stat" | "attendance" | "play_metadata";
   entityType: "player" | "team" | "competition" | "season" | "event";
   entityName: string;
   source: "sports_knowledge" | "football-data" | "football-data-uk" | "kaggle" | "statbunker" | "statsbomb" | "nflverse" | "fbref" | "video_index" | "query";
@@ -895,6 +1044,7 @@ export type KnowledgeSnapshot = {
     players: number;
     matchActivities: number;
     facts: number;
+    plays?: number;
   }>;
   competitions: Array<{ value: string; aliases: string[]; domainGroup?: KnowledgeSourceId; sport?: "football" | "american_football" }>;
   teams: Array<{ value: string; aliases: string[]; domainGroup?: KnowledgeSourceId; league?: string }>;
@@ -941,6 +1091,38 @@ export type KnowledgeSnapshot = {
     metric: string;
     value: string | number;
     rank?: number | null;
+    sourceText: string;
+  }>;
+  americanFootballPlays?: Array<{
+    id: string;
+    provider: "nflverse";
+    competition: "NFL";
+    season: string;
+    week: number | null;
+    gameId: string;
+    playId: string;
+    gameDate: string | null;
+    homeTeam: string;
+    awayTeam: string;
+    possessionTeam: string | null;
+    defensiveTeam: string | null;
+    quarter: number | null;
+    clock: string | null;
+    down: number | null;
+    distance: number | null;
+    yardline: string | null;
+    yardline100: number | null;
+    playType: string;
+    description: string;
+    yardsGained: number | null;
+    touchdown: boolean;
+    turnover: boolean;
+    passerPlayerId: string | null;
+    passerPlayerName: string | null;
+    rusherPlayerId: string | null;
+    rusherPlayerName: string | null;
+    receiverPlayerId: string | null;
+    receiverPlayerName: string | null;
     sourceText: string;
   }>;
 };

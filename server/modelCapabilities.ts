@@ -74,6 +74,7 @@ export async function getRuntimeCapabilities() {
       ultralytics: Boolean(raw.ultralytics),
       rfdetr: Boolean(raw.rfdetr),
       soccernet: Boolean(raw.soccernet),
+      americanFootballActionSpotting: Boolean(raw.american_football_action_spotting),
       openClip: Boolean(raw.open_clip),
       sentenceTransformers: Boolean(raw.sentence_transformers),
       qwenVlm: Boolean(raw.qwen_vl_utils && (raw.mlx_vlm || raw.transformers))

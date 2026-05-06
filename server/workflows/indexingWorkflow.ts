@@ -30,9 +30,10 @@ import {
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/mediaLifecycle";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
+import { resolveTimelineMatchIdentity } from "../domainIndex/matchIdentityResolver";
 import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
 import { getWorkflowRetryImpactedEvidence, type WorkflowEvidence } from "../../shared/workflowNodes";
-import type { AssetRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
+import type { AssetRecord, IndexRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
 
 export { analyzeAndEmit } from "./analysisWorkflow";
 export { enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
@@ -366,9 +367,11 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       return { trackerTrace: traceFromAsset(asset, "vision-tracker") ?? "", detectedTimeline: asset.timeline };
     });
 
-    const domainStage = await runCheckpointedIndexingStage(jobId, "domain-index", 83, "Domain event layer complete", options.retryStage, () => assetHasDomainSnapshot(assetId, timelineStage.embeddingIndex.domainIndexing?.enabled), async () => {
+    const domainStage = await runCheckpointedIndexingStage(jobId, "domain-index", 83, "Domain event layer complete", options.retryStage, () => assetHasDomainSnapshot(assetId, timelineStage.embeddingIndex), async () => {
       let knowledgeActionTrace = "";
       let domainVlmTrace = "";
+      let matchIdentityTrace = "";
+      let assetIdentity: AssetRecord["identity"] | undefined;
       let actionTimeline = trackingStage.detectedTimeline;
       const shouldRunKnowledgeActionSpotting =
         isCapabilityEnabled(timelineStage.embeddingIndex, "knowledgeActionSpotting") &&
@@ -421,6 +424,20 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             logJson("warn", "model.vlm.related_knowledge_domain.partial", "Related knowledge VLM refinement had partial failures", { jobId, assetId, errors: vlmRefinement.errors });
           }
         }
+        const matchIdentity = await traceAsync(
+          "stage.match_identity.resolve",
+          { jobId, assetId, segments: timelineForDomain.length },
+          async () => resolveTimelineMatchIdentity({ ...timelineStage.refreshed, timeline: timelineForDomain }, timelineStage.embeddingIndex, timelineForDomain),
+          "stage.match_identity.resolve"
+        );
+        timelineForDomain = matchIdentity.timeline;
+        assetIdentity = matchIdentity.identity;
+        matchIdentityTrace = matchIdentity.trace;
+        await updateJob(
+          jobId,
+          { stage: "domain-index", progress: 83 },
+          `Sports identity resolver found ${matchIdentity.identity.matchContexts.length} match contexts and ${matchIdentity.identity.trackIdentityAssignments.length} track assignments`
+        );
       }
       await persistIndexingSnapshot(assetId, {
         status: "embedding",
@@ -429,12 +446,18 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         summary: timelineStage.output.summary,
         timeline: timelineForDomain,
         keyframes: timelineStage.keyframes,
-        modelTrace: [knowledgeActionTrace, domainVlmTrace]
+        identity: assetIdentity,
+        modelTrace: [knowledgeActionTrace, domainVlmTrace, matchIdentityTrace]
       });
-      return { knowledgeActionTrace, domainVlmTrace, timelineForDomain };
+      return { knowledgeActionTrace, domainVlmTrace, matchIdentityTrace, timelineForDomain };
     }, async () => {
       const asset = await requireAsset(assetId);
-      return { knowledgeActionTrace: traceFromAsset(asset, "knowledge-action") ?? traceFromAsset(asset, "soccernet-action") ?? "", domainVlmTrace: traceFromAsset(asset, "domain-vlm") ?? "", timelineForDomain: asset.timeline };
+      return {
+        knowledgeActionTrace: traceFromAsset(asset, "knowledge-action") ?? traceFromAsset(asset, "soccernet-action") ?? "",
+        domainVlmTrace: traceFromAsset(asset, "domain-vlm") ?? "",
+        matchIdentityTrace: traceFromAsset(asset, "match-identity") ?? "",
+        timelineForDomain: asset.timeline
+      };
     });
 
     const timeline = await runCheckpointedIndexingStage(jobId, "embed", 86, "Semantic text embeddings complete", options.retryStage, () => assetHasEmbeddedTimeline(assetId), async () => {
@@ -672,6 +695,7 @@ type IndexingSnapshotPatch = {
   summary?: string;
   timeline?: AssetRecord["timeline"];
   keyframes?: AssetRecord["keyframes"];
+  identity?: AssetRecord["identity"];
   modelTrace?: string[];
 };
 
@@ -684,6 +708,7 @@ async function persistIndexingSnapshot(assetId: string, patch: IndexingSnapshotP
     summary: patch.summary ?? current.summary,
     timeline: patch.timeline ?? current.timeline,
     keyframes: patch.keyframes ?? current.keyframes,
+    identity: patch.identity ?? current.identity,
     status: patch.status ?? current.status,
     progress: patch.progress ?? current.progress,
     intelligence: {
@@ -732,6 +757,7 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
   let summary = asset.summary;
   let timeline = asset.timeline;
   let keyframes = asset.keyframes;
+  let identity = asset.identity;
   const intelligence: LocalIntelligence = {
     ...asset.intelligence,
     audio: asset.intelligence.audio,
@@ -774,6 +800,7 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
   if (timeline.length > 0) {
     timeline = invalidateTimelineEvidence(timeline, evidence);
   }
+  if (evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) identity = undefined;
 
   return {
     ...asset,
@@ -785,6 +812,7 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
     summary,
     timeline,
     keyframes,
+    identity,
     intelligence,
     updatedAt: new Date().toISOString()
   };
@@ -822,7 +850,7 @@ function invalidateTimelineEvidence(timeline: AssetRecord["timeline"], evidence:
 }
 
 function stripTimelineDomain(segment: AssetRecord["timeline"][number]): AssetRecord["timeline"][number] {
-  const { domain: _domain, ...rest } = segment;
+  const { domain: _domain, identity: _identity, ...rest } = segment;
   return rest;
 }
 
@@ -840,6 +868,7 @@ function traceMatchesRetryEvidence(trace: string, evidence: Set<WorkflowEvidence
   if (evidence.has("vision-detector") && traceHasPrefix(trace, ["vision-detector", "vision-detector-unavailable:"])) return true;
   if (evidence.has("vision-tracker") && traceHasPrefix(trace, ["vision-tracker", "vision-tracker-unavailable:"])) return true;
   if (evidence.has("knowledge-action") && traceHasPrefix(trace, ["knowledge-action", "knowledge-action-unavailable:", "soccernet-action", "soccernet-action-unavailable:"])) return true;
+  if ((evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) && trace.startsWith("match-identity:")) return true;
   if (evidence.has("domain-vlm") && traceHasPrefix(trace, ["domain-vlm", "domain-vlm-refine:"])) return true;
   if (evidence.has("text-embedding") && trace.startsWith("embedding:")) return true;
   if (evidence.has("visual-embedding") && traceHasPrefix(trace, ["visual-embedding", "visual-embedding-unavailable:"])) return true;
@@ -967,10 +996,14 @@ async function assetHasModelTrace(assetId: string, prefix: string) {
   return Boolean(asset && traceFromAsset(asset, prefix));
 }
 
-async function assetHasDomainSnapshot(assetId: string, domainEnabled: boolean | undefined) {
-  if (!domainEnabled) return true;
+async function assetHasDomainSnapshot(assetId: string, index: IndexRecord) {
+  if (!index.domainIndexing?.enabled) return true;
   const asset = await getAsset(assetId);
-  return Boolean(asset?.timeline.some((segment) => segment.domain));
+  if (!asset?.timeline.some((segment) => segment.domain)) return false;
+  if (index.domainIndexing.groups.some((group) => group === "sports.football" || group === "sports.american_football")) {
+    return Boolean(asset.identity?.generatedBy === "sports-identity-resolver-v1" || asset.identity?.generatedBy === "match-context-identity-resolver-v1" || traceFromAsset(asset, "match-identity"));
+  }
+  return true;
 }
 
 async function assetHasEmbeddedTimeline(assetId: string) {

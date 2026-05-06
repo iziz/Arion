@@ -566,7 +566,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
             : knowledgeActionFailed
               ? failureMessage
               : activeJobStage === "knowledge-action" || activeJobStage === "soccernet-action"
-                ? "Running configured action spotter"
+                ? "Running configured template/action generator"
                 : knowledgeActionPassCompleted
                   ? waitingForIndexedAssetSave("Knowledge action spotting")
                 : isIndexed

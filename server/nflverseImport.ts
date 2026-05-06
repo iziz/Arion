@@ -1,6 +1,7 @@
 import type { KnowledgeSnapshot } from "../shared/types";
 import {
   mergeSportsKnowledge,
+  type AmericanFootballPlayMetadata,
   type SportsKnowledgeFact,
   type SportsKnowledgeMatchActivity,
   type SportsKnowledgePlayer
@@ -12,6 +13,8 @@ const currentYear = new Date().getUTCFullYear();
 type ImportOptions = {
   seasons?: number[];
   includePlayers?: boolean;
+  includePlays?: boolean;
+  maxPlaysPerSeason?: number;
 };
 
 type NflverseCsvRow = Record<string, string>;
@@ -30,6 +33,7 @@ export async function importNflverseKnowledge(options: ImportOptions = {}): Prom
   teams: number;
   matchActivities: number;
   facts: number;
+  plays: number;
   warnings: string[];
   snapshot: KnowledgeSnapshot;
 }> {
@@ -39,6 +43,7 @@ export async function importNflverseKnowledge(options: ImportOptions = {}): Prom
   const teams = new Map<string, ImportedTeam>();
   const matchActivities: SportsKnowledgeMatchActivity[] = [];
   const facts: SportsKnowledgeFact[] = [];
+  const americanFootballPlays: AmericanFootballPlayMetadata[] = [];
 
   if (options.includePlayers !== false) {
     try {
@@ -60,13 +65,23 @@ export async function importNflverseKnowledge(options: ImportOptions = {}): Prom
     } catch (error) {
       warnings.push(error instanceof Error ? `roster_${season}: ${error.message}` : `roster_${season}: nflverse roster import failed`);
     }
+
+    if (options.includePlays !== false) {
+      try {
+        const rows = await fetchCsv(`${nflverseBaseUrl}/pbp/play_by_play_${season}.csv`);
+        americanFootballPlays.push(...americanFootballPlaysFromPbpRows(rows, season, options.maxPlaysPerSeason));
+      } catch (error) {
+        warnings.push(error instanceof Error ? `play_by_play_${season}: ${error.message}` : `play_by_play_${season}: nflverse play-by-play import failed`);
+      }
+    }
   }
 
   const snapshot = mergeSportsKnowledge({
     teams: Array.from(teams.values()),
     players: Array.from(playersByKey.values()),
     matchActivities,
-    facts
+    facts,
+    americanFootballPlays
   }, {
     replaceProviders: ["nflverse"],
     replaceDomainGroups: ["sports.american_football"]
@@ -79,6 +94,7 @@ export async function importNflverseKnowledge(options: ImportOptions = {}): Prom
     teams: teams.size,
     matchActivities: matchActivities.length,
     facts: facts.length,
+    plays: americanFootballPlays.length,
     warnings,
     snapshot
   };
@@ -226,6 +242,122 @@ function factsFromRosterRows(rows: NflverseCsvRow[], season: number): SportsKnow
   ]);
 }
 
+export function americanFootballPlaysFromPbpRows(rows: NflverseCsvRow[], fallbackSeason: number, maxRows?: number): AmericanFootballPlayMetadata[] {
+  const limit = Number.isFinite(maxRows) && maxRows !== undefined ? Math.max(0, Math.floor(maxRows)) : rows.length;
+  const plays: AmericanFootballPlayMetadata[] = [];
+  for (const row of rows) {
+    if (plays.length >= limit) break;
+    const gameId = pick(row, ["game_id", "game id"]);
+    const playId = pick(row, ["play_id", "play id"]);
+    const description = pick(row, ["desc", "description"]);
+    if (!gameId || !playId || !description) continue;
+    const season = String(numberValue(pick(row, ["season"])) ?? fallbackSeason);
+    const week = numberValue(pick(row, ["week"]));
+    const homeTeam = teamName(pick(row, ["home_team", "home"]));
+    const awayTeam = teamName(pick(row, ["away_team", "away"]));
+    const possessionTeam = teamName(pick(row, ["posteam", "possession_team", "possession"]));
+    const defensiveTeam = teamName(pick(row, ["defteam", "defensive_team", "defense"]));
+    const down = numberValue(pick(row, ["down"]));
+    const distance = numberValue(pick(row, ["ydstogo", "distance", "yards_to_go"]));
+    const yardline = pick(row, ["yrdln", "yardline"]);
+    const yardline100 = numberValue(pick(row, ["yardline_100", "yardline100"]));
+    const quarter = numberValue(pick(row, ["qtr", "quarter"]));
+    const clock = pick(row, ["time", "clock"]);
+    const playType = pick(row, ["play_type", "play type"]) || "unknown";
+    const yardsGained = numberValue(pick(row, ["yards_gained", "yards gained"]));
+    const touchdown = booleanValue(pick(row, ["touchdown", "td"])) || Boolean(pick(row, ["td_player_id", "td_player_name"]));
+    const turnover =
+      booleanValue(pick(row, ["interception", "fumble_lost", "turnover"])) ||
+      Boolean(pick(row, ["interception_player_id", "fumble_lost_1_player_id", "fumble_lost_2_player_id"]));
+    const passerPlayerId = pick(row, ["passer_player_id", "passer_id"]);
+    const passerPlayerName = pick(row, ["passer_player_name", "passer"]);
+    const rusherPlayerId = pick(row, ["rusher_player_id", "rusher_id"]);
+    const rusherPlayerName = pick(row, ["rusher_player_name", "rusher"]);
+    const receiverPlayerId = pick(row, ["receiver_player_id", "receiver_id"]);
+    const receiverPlayerName = pick(row, ["receiver_player_name", "receiver"]);
+    plays.push({
+      id: `nflverse:play:${season}:${gameId}:${playId}`,
+      provider: "nflverse",
+      competition: "NFL",
+      season,
+      week,
+      gameId,
+      playId,
+      gameDate: pick(row, ["game_date", "game date"]) || null,
+      homeTeam,
+      awayTeam,
+      possessionTeam: possessionTeam || null,
+      defensiveTeam: defensiveTeam || null,
+      quarter,
+      clock: clock || null,
+      down,
+      distance,
+      yardline: yardline || null,
+      yardline100,
+      playType,
+      description,
+      yardsGained,
+      touchdown,
+      turnover,
+      passerPlayerId: passerPlayerId || null,
+      passerPlayerName: passerPlayerName || null,
+      rusherPlayerId: rusherPlayerId || null,
+      rusherPlayerName: rusherPlayerName || null,
+      receiverPlayerId: receiverPlayerId || null,
+      receiverPlayerName: receiverPlayerName || null,
+      sourceText: buildPlaySourceText({
+        gameId,
+        playId,
+        season,
+        week,
+        possessionTeam,
+        defensiveTeam,
+        down,
+        distance,
+        yardline,
+        quarter,
+        clock,
+        playType,
+        description,
+        yardsGained
+      })
+    });
+  }
+  return plays;
+}
+
+function buildPlaySourceText(play: {
+  gameId: string;
+  playId: string;
+  season: string;
+  week: number | null;
+  possessionTeam: string;
+  defensiveTeam: string;
+  down: number | null;
+  distance: number | null;
+  yardline: string;
+  quarter: number | null;
+  clock: string;
+  playType: string;
+  description: string;
+  yardsGained: number | null;
+}) {
+  const downDistance = play.down && play.distance !== null ? `${ordinal(play.down)} and ${play.distance}` : "down-distance unknown";
+  const context = [
+    `nflverse ${play.season}${play.week ? ` week ${play.week}` : ""}`,
+    `gameId=${play.gameId}`,
+    `playId=${play.playId}`,
+    play.quarter ? `Q${play.quarter}` : "",
+    play.clock || "",
+    play.possessionTeam ? `${play.possessionTeam} offense` : "",
+    play.defensiveTeam ? `vs ${play.defensiveTeam}` : "",
+    downDistance,
+    play.yardline || "",
+    play.playType
+  ].filter(Boolean).join(" · ");
+  return `${context}. ${play.description}${play.yardsGained !== null ? ` Yards gained: ${play.yardsGained}.` : ""}`;
+}
+
 function mergePlayer(playersByKey: Map<string, SportsKnowledgePlayer>, player: SportsKnowledgePlayer) {
   const key = normalize(player.canonical);
   const existing = playersByKey.get(key);
@@ -343,6 +475,19 @@ function numberValue(value: string) {
   if (!value) return null;
   const parsed = Number(value.replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function booleanValue(value: string) {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function ordinal(value: number) {
+  if (value === 1) return "1st";
+  if (value === 2) return "2nd";
+  if (value === 3) return "3rd";
+  return `${value}th`;
 }
 
 function normalizeHeader(value: string) {

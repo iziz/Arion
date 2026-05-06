@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultCapabilityPolicy, normalizeCapabilityPolicy } from "../server/domainConfig";
+import { knowledgeTemplateDescriptors } from "../shared/knowledgeTemplates";
 
 test("non-knowledge asset groups disable domain-specific capabilities", () => {
   const policy = normalizeCapabilityPolicy(
@@ -41,9 +42,36 @@ test("related knowledge defaults keep generic analysis optional and adapter acti
         groups: ["sports.american_football"],
         stages: ["domain_caption", "event_label", "structured_event"]
       }).knowledgeActionSpotting,
-      "disabled"
+      "optional"
     );
   });
+});
+
+test("american football action spotting can be required when its adapter is selected", () => {
+  const policy = normalizeCapabilityPolicy(
+    {
+      knowledgeActionSpotting: "required"
+    },
+    {
+      enabled: true,
+      groups: ["sports.american_football"],
+      stages: ["domain_caption", "event_label", "structured_event"]
+    }
+  );
+
+  assert.equal(policy.knowledgeActionSpotting, "required");
+});
+
+test("domain-specific knowledge templates expose manifest generator and evaluator contracts", () => {
+  const template = knowledgeTemplateDescriptors["sports.american_football"];
+
+  assert.ok(template);
+  assert.equal(template.sourceId, "sports.american_football");
+  assert.equal(template.manifest.id, "sports.american_football.manifest.v1");
+  assert.equal(template.generator.kind, "inline-template-generator");
+  assert.equal(template.generator.actionSpotting.alignment.requireProviderContext, true);
+  assert.ok(template.manifest.skipConditions.some((condition) => condition.includes("nflverse game/play alignment is skipped")));
+  assert.ok(template.evaluator.benchmarkCoverage.some((coverage) => coverage.name.includes("NFL Big Data Bowl")));
 });
 
 function withDefaultCapabilityEnv(run: () => void) {

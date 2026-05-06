@@ -15,17 +15,19 @@ const all = args.get("all") === "true";
 const maxPlayers = all ? undefined : numberArg("maxPlayers", 5000);
 const maxFacts = all ? undefined : numberArg("maxFacts", 5000);
 const maxActivities = all ? undefined : numberArg("maxActivities", 5000);
+const maxAmericanFootballPlays = all ? undefined : numberArg("maxAmericanFootballPlays", 5000);
 const batchSize = numberArg("batchSize", 128);
 
 const documents = buildKnowledgeDocuments(undefined, {
   maxPlayers,
   maxFacts,
-  maxActivities
+  maxActivities,
+  maxAmericanFootballPlays
 });
 
 console.error(
   `[knowledge-vectors] embedding ${documents.length} documents` +
-    `${all ? " (all)" : ` (players=${maxPlayers}, facts=${maxFacts}, activities=${maxActivities})`}`
+    `${all ? " (all)" : ` (players=${maxPlayers}, facts=${maxFacts}, activities=${maxActivities}, americanFootballPlays=${maxAmericanFootballPlays})`}`
 );
 
 let lastLogged = 0;
@@ -50,6 +52,7 @@ console.log(
         maxPlayers,
         maxFacts,
         maxActivities,
+        maxAmericanFootballPlays,
         batchSize
       }
     },

@@ -206,14 +206,14 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
   },
   knowledgeAction: {
     id: "knowledgeAction",
-    description: "Runs action spotting for the selected related knowledge source when that adapter supports it.",
+    description: "Runs the selected related knowledge template generator or external action adapter before domain events are built.",
     retryStage: "knowledgeAction",
     produces: ["knowledge-action"],
     dependsOn: ["source", "timeline", "vision-tracker"],
     stageAliases: ["knowledge-action", "soccernet-action"],
     runtimeStages: [],
-    logTokens: ["knowledge action", "action spotting", "soccernet"],
-    searchImpact: "Search impact: adapter action evidence",
+    logTokens: ["knowledge action", "action spotting", "soccernet", "american football"],
+    searchImpact: "Search impact: template action evidence",
     skippedSearchImpact: "Search impact: action spotting not used"
   },
   domain: {

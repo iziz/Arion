@@ -46,6 +46,8 @@ Primary code references:
 - `scripts/qwen_vlm_worker.py`
 - `shared/types.ts`
 
+Sports-domain indexing details are documented in [sports-domain-indexing.md](sports-domain-indexing.md).
+
 ## Operational Runtime Topology
 
 This is the intended production-style boundary model after the durable queue and media boundary changes. Standard local development uses Docker Compose for Redis and PostgreSQL/pgvector; Vite and local filesystem-backed object storage are implementation choices behind the same boundaries.
@@ -203,7 +205,7 @@ flowchart TB
 
 ## Development Runtime
 
-`package.json` defines the local development topology:
+`package.json` defines the local development topology. The canonical npm command reference is [npm-scripts.md](npm-scripts.md).
 
 - `npm run dev` runs `dev:infra` first, then starts `dev:api`, `dev:worker:run`, `dev:ask-worker:run`, and `dev:web` concurrently.
 - `npm run dev:full` also starts the Python runtime service through `models:runtime:ai` and the Python VLM worker through `models:vlm:ai`.
@@ -687,7 +689,7 @@ flowchart TD
   VisionTracks -.->|required unavailable| Failure
   VisionTracks --> Classify["Apply event classification"]
   Classify --> KnowledgeAction{"knowledgeActionSpotting enabled\nand selected source supports it?"}
-  KnowledgeAction -->|yes| KnowledgeActionRun["Adapter action spotting\ncurrent sports.football -> SoccerNet"]
+  KnowledgeAction -->|yes| KnowledgeActionRun["Adapter action spotting\nsports.football -> SoccerNet\nsports.american_football -> American football"]
   KnowledgeActionRun -.->|required unavailable| Failure
   KnowledgeAction -->|no| DomainIndex
   KnowledgeActionRun --> DomainIndex{"domainIndexing enabled?"}
@@ -743,7 +745,7 @@ Stage details:
    - `applyEventClassification` derives event labels from text and vision features.
 9. `knowledge-action`
    - Optional adapter-provided action spotting when the selected related-knowledge source supports it.
-   - The current implementation maps `sports.football` to the SoccerNet action spotting adapter.
+   - The current implementation maps `sports.football` to the SoccerNet action spotting adapter and `sports.american_football` to the American-football action spotting adapter.
 10. `domain-index`
    - Related-knowledge-enabled indexes enrich segments with domain captions, labels, events, scope, and search text.
 11. `domain-vlm`
@@ -1259,6 +1261,7 @@ Important scripts include:
 - `scripts/track_objects.py`
 - `scripts/qwen_vlm_worker.py`
 - `scripts/soccernet_action_spotting.py`
+- `scripts/american_football_action_spotting.py`
 
 `PYTHON_RUNTIME_MODE=service` routes model work through HTTP runtime services. `PYTHON_RUNTIME_MODE=direct` keeps local script execution available for development and migration checks. `PYTHON_RUNTIME_SERVICE_ATTEMPTS` controls transient HTTP call retries before the workflow records the runtime stage as failed.
 
@@ -1466,10 +1469,11 @@ Selected environment variables used by the implementation:
 | `VISION_DETECTOR_BACKEND` | Selects vision detector backend. |
 | `VISION_TRACKER` | Selects Ultralytics tracker config. |
 | `SOCCERNET_ACTION_SPOTTING_COMMAND` / `SOCCERNET_ACTION_SPOTS_JSON` | Enables SoccerNet-style action spotting. |
+| `AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND` / `AMERICAN_FOOTBALL_ACTION_SPOTS_JSON` | Enables American-football action spotting. Legacy `NFL_ACTION_*` names are also accepted. |
 
 ## Maintenance Scripts
 
-The repo includes TypeScript and Python maintenance scripts:
+The repo includes TypeScript and Python maintenance scripts. Use [npm-scripts.md](npm-scripts.md) for the command-level reference.
 
 - Postgres:
   - `scripts/postgres_check.ts`
