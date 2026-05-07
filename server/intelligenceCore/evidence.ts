@@ -1,20 +1,15 @@
-import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, SearchMatchReason, TimelineSegment, VerificationCheck } from "../../shared/types";
+import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, PlayerIdentity, SearchMatchReason, TimelineSegment, VerificationCheck } from "../../shared/types";
 import { isTrustedDomainSegment, isTrustedDomainEvent, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "../evidenceTrust";
 import { playerTeamForSeason } from "../knowledge/registry";
 import { isObjectEvidenceReady, segmentSearchText } from "./sceneTimeline";
 import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { formatTime, normalizeSearchValue, unique } from "./textUtils";
 
-export function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, verification: VerificationCheck[], reasons: SearchMatchReason[]): ClipResult {
+export function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, verification: VerificationCheck[], reasons: SearchMatchReason[], filters?: DomainSearchFilters): ClipResult {
   const event = trustedDomainEvents(segment)[0];
   const football = event?.football;
   const americanFootball = event?.americanFootball;
-  const player =
-    football?.receivingPlayer.identity?.name ??
-    football?.passingPlayer.identity?.name ??
-    americanFootball?.quarterback.identity?.name ??
-    segment.domain?.scope?.players[0]?.value ??
-    null;
+  const player = selectClipPlayer(segment, filters, football, americanFootball);
   const start = Math.max(0, Number((segment.start - 2).toFixed(2)));
   const end = Number((segment.end + 2).toFixed(2));
   return {
@@ -35,6 +30,36 @@ export function clipFromSegment(asset: AssetRecord, segment: TimelineSegment, ve
       ...(event?.evidence.heuristics ?? [])
     ].filter(Boolean)).slice(0, 6)
   };
+}
+
+function selectClipPlayer(
+  segment: TimelineSegment,
+  filters: DomainSearchFilters | undefined,
+  football: ReturnType<typeof trustedDomainEvents>[number]["football"] | undefined,
+  americanFootball: ReturnType<typeof trustedDomainEvents>[number]["americanFootball"] | undefined
+) {
+  const receiver = football?.receivingPlayer.identity ?? null;
+  const passer = football?.passingPlayer.identity ?? null;
+  const quarterback = americanFootball?.quarterback.identity ?? null;
+  const requestedPlayer = filters?.player;
+  if (requestedPlayer) {
+    const rolePreferred =
+      filters.role === "passer"
+        ? passer
+        : filters.role === "receiver"
+          ? receiver
+          : filters.role === "shooter"
+            ? receiver ?? passer
+            : null;
+    if (rolePreferred && identityMatchesPlayer(rolePreferred, requestedPlayer)) return rolePreferred.name;
+    const matchingIdentity = [receiver, passer, quarterback].find((identity) => identityMatchesPlayer(identity, requestedPlayer));
+    if (matchingIdentity) return matchingIdentity.name;
+    const scopedPlayer = segment.domain?.scope?.players.find((player) => scopeValueMatchesPlayer(player.value, requestedPlayer));
+    if (scopedPlayer) return scopedPlayer.value;
+  }
+  if (filters?.role === "passer") return passer?.name ?? receiver?.name ?? quarterback?.name ?? segment.domain?.scope?.players[0]?.value ?? null;
+  if (filters?.role === "receiver") return receiver?.name ?? passer?.name ?? quarterback?.name ?? segment.domain?.scope?.players[0]?.value ?? null;
+  return receiver?.name ?? passer?.name ?? quarterback?.name ?? segment.domain?.scope?.players[0]?.value ?? null;
 }
 
 function summarizeVerification(verification: VerificationCheck[]): ClipResult["verificationSummary"] {
@@ -183,7 +208,12 @@ export function evaluateSegmentDomainFilters(asset: AssetRecord, segment: Timeli
   applyScopeFilter("season", filters.season);
 
   if (filters.player) {
-    if (hasTrustedPlayerIdentity(segment, filters.player)) {
+    const role = roleSpecificIdentityFilter(filters.role);
+    if (role && hasTrustedPlayerIdentityForRole(segment, filters.player, role)) {
+      trust("player");
+    } else if (role && hasRoleSpecificPlayerConflict(segment, filters.player, role)) {
+      fail("player");
+    } else if (!role && hasTrustedPlayerIdentity(segment, filters.player)) {
       trust("player");
     } else if (textAllowsFilter(fullSegmentText, filters.player)) {
       weaken("player");
@@ -273,8 +303,7 @@ function applyEventFilters(
     else record.fail("eventType");
   }
   if (eventFilters.role) {
-    if (eventFilters.role === "shooter" && textAllowsEventFilter(fullSegmentText, "shot")) record.weaken("role");
-    else record.fail("role");
+    record.fail("role");
   }
 }
 
@@ -355,6 +384,61 @@ function hasTrustedPlayerIdentity(segment: TimelineSegment, player: string) {
   });
 }
 
+function hasTrustedPlayerIdentityForRole(segment: TimelineSegment, player: string, role: "receiver" | "passer") {
+  return Boolean(findTrustedPlayerIdentityForRole(segment, player, role));
+}
+
+function findTrustedPlayerIdentityForRole(segment: TimelineSegment, player: string, role: "receiver" | "passer") {
+  return roleIdentities(segment, role).find((identity) => identityMatchesPlayer(identity, player)) ?? null;
+}
+
+function hasRoleSpecificPlayerConflict(segment: TimelineSegment, player: string, role: "receiver" | "passer") {
+  return Boolean(findRoleSpecificPlayerConflict(segment, player, role));
+}
+
+function findRoleSpecificPlayerConflict(segment: TimelineSegment, player: string, role: "receiver" | "passer") {
+  const requestedRoleIdentities = roleIdentities(segment, role);
+  const otherRoleIdentities = roleIdentities(segment, role === "receiver" ? "passer" : "receiver");
+  const requestedRolePresent = trustedDomainEvents(segment).some((event) =>
+    role === "receiver" ? event.football?.receivingPlayer.present : event.football?.passingPlayer.present
+  );
+  const mismatchedRequestedRole = requestedRoleIdentities.find((identity) => !identityMatchesPlayer(identity, player));
+  if (mismatchedRequestedRole && !requestedRoleIdentities.some((identity) => identityMatchesPlayer(identity, player))) {
+    return {
+      observed: `${role} ${mismatchedRequestedRole.name}`,
+      evidence: mismatchedRequestedRole.evidence.length ? mismatchedRequestedRole.evidence : [`Structured ${role} identity is ${mismatchedRequestedRole.name}.`]
+    };
+  }
+  const playerInOtherRole = otherRoleIdentities.find((identity) => identityMatchesPlayer(identity, player));
+  if (requestedRolePresent && playerInOtherRole) {
+    return {
+      observed: `${role === "receiver" ? "passer" : "receiver"} ${playerInOtherRole.name}`,
+      evidence: playerInOtherRole.evidence.length ? playerInOtherRole.evidence : [`Structured ${role === "receiver" ? "passer" : "receiver"} identity is ${playerInOtherRole.name}.`]
+    };
+  }
+  return null;
+}
+
+function roleIdentities(segment: TimelineSegment, role: "receiver" | "passer"): PlayerIdentity[] {
+  return trustedDomainEvents(segment)
+    .map((event) => (role === "receiver" ? event.football?.receivingPlayer.identity : event.football?.passingPlayer.identity))
+    .filter((identity): identity is PlayerIdentity => Boolean(identity));
+}
+
+function roleSpecificIdentityFilter(role?: DomainSearchFilters["role"]) {
+  return role === "receiver" || role === "passer" ? role : null;
+}
+
+function identityMatchesPlayer(identity: PlayerIdentity | null | undefined, player: string) {
+  return Boolean(identity && scopeValueMatchesPlayer(identity.name, player));
+}
+
+function scopeValueMatchesPlayer(value: string, player: string) {
+  const normalized = normalizeSearchValue(value);
+  const expected = normalizeSearchValue(player);
+  return Boolean(normalized && expected && (normalized.includes(expected) || expected.includes(normalized)));
+}
+
 function splitFilterValues(value?: string) {
   return (value ?? "")
     .split(",")
@@ -425,20 +509,43 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
   pushTextBackedCheck("season", filters.season, segment.domain?.scope?.season?.value ?? null, segment.domain?.scope?.season?.confidence ?? 0, segment.domain?.scope?.season?.evidence ?? []);
 
   if (filters.player) {
-    const identities = events
-      .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity, event.americanFootball?.quarterback.identity])
-      .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity));
-    const scopedPlayers = segment.domain?.scope?.players ?? [];
-    const player = [...identities, ...scopedPlayers].find((candidate) => {
-      const value = "name" in candidate ? candidate.name : candidate.value;
-      const normalized = normalizeSearchValue(value);
-      const expected = normalizeSearchValue(filters.player ?? "");
-      return normalized.includes(expected) || expected.includes(normalized);
-    });
-    const observed = player ? ("name" in player ? player.name : player.value) : null;
-    const confidence = player?.confidence ?? 0;
-    const evidence = player?.evidence ?? [];
-    pushTextBackedCheck("player", filters.player, observed, confidence, evidence);
+    const role = roleSpecificIdentityFilter(filters.role);
+    const roleMatch = role ? findTrustedPlayerIdentityForRole(segment, filters.player, role) : null;
+    const roleConflict = role && !roleMatch ? findRoleSpecificPlayerConflict(segment, filters.player, role) : null;
+    if (roleMatch) {
+      checks.push({
+        segmentId: segment.id,
+        constraint: "player",
+        expected: `${filters.player} as ${role}`,
+        observed: roleMatch.name,
+        status: "pass",
+        confidence: roleMatch.confidence,
+        evidence: roleMatch.evidence
+      });
+    } else if (roleConflict) {
+      checks.push({
+        segmentId: segment.id,
+        constraint: "player",
+        expected: `${filters.player} as ${role}`,
+        observed: roleConflict.observed,
+        status: "fail",
+        confidence: 0,
+        evidence: roleConflict.evidence
+      });
+    } else {
+      const identities = events
+        .flatMap((event) => [event.football?.receivingPlayer.identity, event.football?.passingPlayer.identity, event.americanFootball?.quarterback.identity])
+        .filter((identity): identity is NonNullable<typeof identity> => Boolean(identity));
+      const scopedPlayers = segment.domain?.scope?.players ?? [];
+      const player = [...identities, ...scopedPlayers].find((candidate) => {
+        const value = "name" in candidate ? candidate.name : candidate.value;
+        return scopeValueMatchesPlayer(value, filters.player ?? "");
+      });
+      const observed = player ? ("name" in player ? player.name : player.value) : null;
+      const confidence = player?.confidence ?? 0;
+      const evidence = player?.evidence ?? [];
+      pushTextBackedCheck("player", filters.player, observed, confidence, evidence);
+    }
     const team = playerTeamForSeason(filters.player, filters.season);
     if (team) {
       const observedTeams = segment.domain?.scope?.teams.map((item) => item.value) ?? [];
@@ -509,15 +616,14 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
       if (filters.role === "shooter") return event.eventType === "shot";
       return false;
     });
-    const textMatch = !match && events.length === 0 && filters.role === "shooter" && textAllowsEventFilter(segmentText, "shot");
     checks.push({
       segmentId: segment.id,
       constraint: "role",
       expected: filters.role,
-      observed: match ? filters.role : textMatch ? "text fallback" : "missing",
-      status: match ? "pass" : textMatch ? "soft_pass" : "fail",
-      confidence: match?.confidence ?? (textMatch ? 0.4 : 0),
-      evidence: match ? [match.caption] : textMatch ? ["Matched unstructured goal/shot text fallback."] : ["No matching structured player role."]
+      observed: match ? filters.role : "missing",
+      status: match ? "pass" : "fail",
+      confidence: match?.confidence ?? 0,
+      evidence: match ? [match.caption] : ["No matching structured player role."]
     });
   }
   return checks;
@@ -604,6 +710,9 @@ export function buildSearchMatchReasons(
     }
     if (filters?.role === "receiver" && event.football?.receivingPlayer.present) {
       reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Role", value: "receiver", confidence: event.football.receivingPlayer.confidence });
+    }
+    if (filters?.role === "passer" && event.football?.passingPlayer.present) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Role", value: "passer", confidence: event.football.passingPlayer.confidence });
     }
   }
 

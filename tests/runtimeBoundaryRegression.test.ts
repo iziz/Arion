@@ -144,6 +144,9 @@ test("Python model HTTP services keep blocking model work off the event loop", a
   assert.match(vlmWorker, /asyncio\.to_thread\(_generate_text_locked/);
   assert.match(vlmWorker, /asyncio\.to_thread\(_generate_video_text_locked/);
   assert.match(vlmWorker, /MODEL_GENERATION_LOCK/);
+  assert.match(vlmWorker, /"participants": _participants/);
+  assert.match(vlmWorker, /def _participants/);
+  assert.match(vlmWorker, /action_source/);
 });
 
 test("ASR partials are merged before slower diarization and OCR stages finish", async () => {

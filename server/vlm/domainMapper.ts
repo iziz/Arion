@@ -45,22 +45,25 @@ type VlmPlayerRole = {
   name?: string | null;
   confidence?: number;
   trackId?: string | null;
+  evidence?: string[];
 };
 
 export function mergeVlmResponse(asset: AssetRecord, segment: TimelineSegment, response: VlmSportsEventResponse, requestedDomain: string, modelName: string): TimelineSegment {
   const domain = normalizeDomain(response.domain ?? requestedDomain);
-    const event = buildVlmDomainEvent(segment, response, domain, modelName);
-    if (!event) return segment;
-    const base = segment.domain;
-    const trustedBase = isTrustedDomainSegment(base);
-    const captions = unique([response.caption, ...(trustedBase ? (base?.captions ?? []) : [])].filter(isNonEmpty));
-    const labels = unique([domain, ...event.labels, ...(response.labels ?? []), ...(trustedBase ? (base?.labels ?? []) : [])].filter(isNonEmpty));
-    const events = [event, ...(trustedBase ? (base?.events ?? []) : [])].sort((a, b) => b.confidence - a.confidence).slice(0, 4);
-    const searchText = [
-      trustedBase ? base?.searchText : "",
+  const event = buildVlmDomainEvent(segment, response, domain, modelName);
+  if (!event) return segment;
+  const base = segment.domain;
+  const trustedBase = isTrustedDomainSegment(base);
+  const captions = unique([response.caption, ...(trustedBase ? (base?.captions ?? []) : [])].filter(isNonEmpty));
+  const labels = unique([domain, ...event.labels, ...(response.labels ?? []), ...(trustedBase ? (base?.labels ?? []) : [])].filter(isNonEmpty));
+  const events = [event, ...(trustedBase ? (base?.events ?? []) : [])].sort((a, b) => b.confidence - a.confidence).slice(0, 4);
+  const searchText = [
+    trustedBase ? base?.searchText : "",
     `VLM caption: ${event.caption}.`,
     `VLM event: ${event.eventType}.`,
-    event.football ? `VLM football: ${event.football.fieldZone} ${event.football.passType} receiver=${event.football.receivingPlayer.present}.` : "",
+    event.football
+      ? `VLM football: ${event.football.fieldZone} ${event.football.passType} passer=${playerRoleSearchText(event.football.passingPlayer)} receiver=${playerRoleSearchText(event.football.receivingPlayer)}.`
+      : "",
     event.americanFootball
       ? `VLM american football: ${event.americanFootball.playType} pressure=${event.americanFootball.pressure.present} pocket=${event.americanFootball.pocket.status} decision=${event.americanFootball.decision.outcome}.`
       : "",
@@ -71,18 +74,18 @@ export function mergeVlmResponse(asset: AssetRecord, segment: TimelineSegment, r
 
   return {
     ...segment,
-      domain: {
-        groups: unique([domain, ...(base?.groups ?? [])]).filter(isSportsDomainGroup),
-        captions,
-        labels,
-        events,
-        scope: base?.scope,
-        searchText,
-        confidence: Number(Math.max(base?.confidence ?? 0, event.confidence).toFixed(2)),
-        generatedBy: base?.generatedBy ? `${base.generatedBy}+vlm:${response.model ?? modelName}` : `vlm:${response.model ?? modelName}`,
-        trust: "detected",
-        vlm: buildVlmQuality(response, "refined", "Related knowledge VLM structure accepted.", null, modelName)
-      },
+    domain: {
+      groups: unique([domain, ...(base?.groups ?? [])]).filter(isSportsDomainGroup),
+      captions,
+      labels,
+      events,
+      scope: base?.scope,
+      searchText,
+      confidence: Number(Math.max(base?.confidence ?? 0, event.confidence).toFixed(2)),
+      generatedBy: base?.generatedBy ? `${base.generatedBy}+vlm:${response.model ?? modelName}` : `vlm:${response.model ?? modelName}`,
+      trust: "detected",
+      vlm: buildVlmQuality(response, "refined", "Related knowledge VLM structure accepted.", null, modelName)
+    },
     tags: unique([...segment.tags, ...labels]).slice(0, 32),
     sources: unique([...segment.sources, "domain" as const])
   };
@@ -136,13 +139,13 @@ function buildVlmDomainEvent(
   if (!caption || confidence <= 0) return null;
   if (domain === "sports.american_football") return buildVlmAmericanFootballEvent(segment, response, caption, confidence, modelName);
   const football = response.football ?? {};
-  const eventType = normalizeEventType(response.eventType);
   const passType = normalizePassType(football.passType);
   const fieldZone = normalizeFieldZone(football.fieldZone);
-  const receiverPresent = Boolean(football.receivingPlayer?.present);
-  const passerPresent = Boolean(football.passingPlayer?.present);
   const receiverIdentity = buildPlayerIdentity(football.receivingPlayer);
   const passerIdentity = buildPlayerIdentity(football.passingPlayer);
+  const receiverPresent = Boolean(football.receivingPlayer?.present || receiverIdentity);
+  const passerPresent = Boolean(football.passingPlayer?.present || passerIdentity);
+  const eventType = normalizeFootballEventType(normalizeEventType(response.eventType), passType, receiverPresent, passerPresent);
   const labels = unique([
     domain,
     eventType !== "scene" ? `event.${eventType}` : "",
@@ -159,12 +162,12 @@ function buildVlmDomainEvent(
     id: `${segment.id}-domain-vlm-1`,
     domain,
     ontologyVersion: "sports-domain-v1",
-      caption,
-      eventType,
-      labels,
-      confidence,
-      trust: "detected",
-      evidence: {
+    caption,
+    eventType,
+    labels,
+    confidence,
+    trust: "detected",
+    evidence: {
       asr: snippets(segment.transcript),
       ocr: [
         ...(segment.sceneData?.text.subtitles ?? []),
@@ -195,7 +198,7 @@ function buildVlmDomainEvent(
       },
       ball: {
         state: normalizeBallState(football.ballState, passType, eventType),
-        confidence: passType !== "unknown" || eventType === "shot" ? confidence : 0,
+        confidence: passType !== "unknown" || eventType === "pass_receive" || eventType === "shot" ? confidence : 0,
         trackingStatus: "estimated"
       },
       field: {
@@ -292,11 +295,12 @@ function buildVlmAmericanFootballEvent(
 function buildPlayerIdentity(role?: VlmPlayerRole): PlayerIdentity | null {
   const name = role?.name?.trim();
   if (!name) return null;
+  const evidence = stringList(role?.evidence, 4);
   return {
     name,
     confidence: clampConfidence(role?.confidence ?? 0.45),
     source: "vlm",
-    evidence: ["Local VLM worker reported this player name."]
+    evidence: evidence.length > 0 ? evidence : ["Local VLM worker reported this player name."]
   };
 }
 
@@ -312,6 +316,16 @@ function normalizeEventType(value?: string) {
   if (/save/.test(normalized)) return "save";
   if (/progressive/.test(normalized)) return "progressive_pass";
   return normalized || "scene";
+}
+
+function normalizeFootballEventType(
+  value: string,
+  passType: NonNullable<DomainEvent["football"]>["passType"],
+  receiverPresent: boolean,
+  passerPresent: boolean
+) {
+  if ((value === "scene" || value === "progressive_pass") && (passType !== "unknown" || receiverPresent || passerPresent)) return "pass_receive";
+  return value;
 }
 
 function normalizeDomain(value?: string): "sports.football" | "sports.american_football" {
@@ -402,7 +416,7 @@ function normalizePhase(value?: string): NonNullable<DomainEvent["football"]>["p
 function normalizeBallState(value: string | undefined, passType: NonNullable<DomainEvent["football"]>["passType"], eventType: string): NonNullable<DomainEvent["football"]>["ball"]["state"] {
   const normalized = normalize(value);
   if (/shot/.test(normalized) || eventType === "shot") return "shot";
-  if (/pass|travel/.test(normalized) || passType !== "unknown") return "pass_travel";
+  if (/pass|travel/.test(normalized) || passType !== "unknown" || eventType === "pass_receive") return "pass_travel";
   if (/play/.test(normalized)) return "in_play";
   return "unknown";
 }
@@ -432,6 +446,11 @@ function truncateRaw(value: string | null) {
   return value.length > 2000 ? `${value.slice(0, 2000)}...` : value;
 }
 
+function playerRoleSearchText(role: NonNullable<DomainEvent["football"]>["passingPlayer"] | NonNullable<DomainEvent["football"]>["receivingPlayer"]) {
+  if (!role.present) return "false";
+  return role.identity?.name ? `${role.identity.name}` : "true";
+}
+
 function snippets(text: string) {
   return text
     .replace(/\s+/g, " ")
@@ -447,4 +466,12 @@ function unique<T>(items: T[]) {
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function stringList(value: unknown, limit: number) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, limit);
 }

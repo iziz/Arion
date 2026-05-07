@@ -14,6 +14,7 @@ import { buildAskAnalysisAnswerContent, buildAskVideoAnswerContent } from "../se
 import { buildSearchAssistantAnswer } from "../src/searchTrust";
 import { applyExtractiveVideoSummaries } from "../server/intelligenceCore/extractiveSummary";
 import { segmentToEmbeddingText } from "../server/localEmbeddingRuntime";
+import { mergeVlmResponse } from "../server/vlm/domainMapper";
 import type { AssetRecord, DomainEvent, DomainQueryPlan, IndexRecord, StructuredKnowledgeAnswer, TimelineSegment } from "../shared/types";
 
 test("planned semantic query is used as the lexical retrieval anchor", () => {
@@ -296,6 +297,17 @@ test("generic clothing question is planned as a grounded video answer", () => {
   assert.equal(orchestration.analysis.required, true);
 });
 
+test("local query planner does not infer participant roles from language-specific event terms", () => {
+  const passPlan = planDomainQuery("손흥민이 패스하는 장면 찾아줘");
+  const shotPlan = planDomainQuery("손흥민 골 장면 찾아줘");
+
+  assert.equal(passPlan.domainFilters.role, undefined);
+  assert.equal(passPlan.intent.role, null);
+  assert.equal(shotPlan.domainFilters.eventType, "shot");
+  assert.equal(shotPlan.domainFilters.role, undefined);
+  assert.equal(shotPlan.intent.role, null);
+});
+
 test("OpenAI generic route can override related-knowledge false positives", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
@@ -388,6 +400,47 @@ test("VLM planner is used when OpenAI planning fails", async () => {
   assert.equal(plan.planner?.source, "vlm");
   assert.match(plan.planner?.fallbackReason ?? "", /OpenAI planner fallback/);
   assert.deepEqual(plan.retrieval?.requiredEvidence, [{ kind: "visible_text", terms: ["테스트미소"], match: "all" }]);
+});
+
+test("VLM fallback planner preserves structured participant direction", async () => {
+  const plan = await withMockedOpenAiFailureAndVlmPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: null,
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: ["The named entity initiates the pass action."]
+        }
+      ],
+      semanticQuery: "Son Heung-min passing the ball to another player",
+      retrieval: {
+        textQuery: "Son Heung-min pass to another player football",
+        visualQuery: "football player passing the ball to a teammate",
+        evidenceTerms: ["son heung-min", "pass", "teammate"]
+      },
+      filterEvidence: {
+        player: ["Son Heung-min"],
+        eventType: ["pass action"]
+      },
+      confidence: 0.89,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("손흥민이 다른 선수한테 패스하는 장면 찾아줘")
+  );
+
+  assert.equal(plan.planner?.source, "vlm");
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, "passer");
+  assert.deepEqual(plan.intent.participants?.map((participant) => [participant.entity, participant.relation, participant.role]), [["Son Heung-min", "action_source", "passer"]]);
 });
 
 test("planner unavailability does not fall back to local query rules", async () => {
@@ -550,6 +603,118 @@ test("OpenAI stat moment plans become explicit knowledge-seeded retrieval routes
   assert.equal(plan.intent.statMode, "leaderboard");
 });
 
+test("planner-provided pass participant roles are preserved as structured filters", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: null,
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: ["The named player is the source of the pass action."]
+        }
+      ],
+      semanticQuery: "Son Heung-min passing the ball to another player",
+      retrieval: {
+        textQuery: "Son Heung-min pass to another player football",
+        visualQuery: "football player passing the ball to teammate",
+        evidenceTerms: ["손흥민", "son heung-min", "pass", "패스"]
+      },
+      filterEvidence: {
+        player: ["손흥민"],
+        eventType: ["model inferred pass event"]
+      },
+      confidence: 0.82,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("손흥민이 다른선수한테 공을 패스해주는 영상 찾아줘")
+  );
+
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, "passer");
+  assert.equal(plan.intent.role, "passer");
+  assert.deepEqual(plan.intent.participants?.map((participant) => [participant.entity, participant.relation, participant.role]), [["Son Heung-min", "action_source", "passer"]]);
+  assert.doesNotMatch(plan.warnings.join(" "), /Normalized directional pass role/);
+});
+
+test("top-level planner roles are ignored unless backed by structured participants", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: "passer",
+      semanticQuery: "Son Heung-min pass moment",
+      retrieval: {
+        textQuery: "Son Heung-min pass moment",
+        visualQuery: "football pass moment",
+        evidenceTerms: ["son heung-min", "pass"]
+      },
+      filterEvidence: {
+        player: ["Son Heung-min"],
+        eventType: ["pass event"],
+        role: ["legacy top-level role without participant contract"]
+      },
+      confidence: 0.82,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("Son Heung-min pass participant without evidence clip")
+  );
+
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, undefined);
+  assert.equal(plan.intent.role, null);
+  assert.deepEqual(plan.intent.participants, []);
+});
+
+test("participant constraints without evidence are not promoted into filters", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      knowledgeMode: "grounding",
+      player: "Son Heung-min",
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: []
+        }
+      ],
+      semanticQuery: "Son Heung-min pass moment",
+      retrieval: {
+        textQuery: "Son Heung-min pass moment",
+        visualQuery: "football pass moment",
+        evidenceTerms: ["son heung-min", "pass"]
+      },
+      filterEvidence: {
+        player: ["Son Heung-min"]
+      },
+      confidence: 0.82,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("Son Heung-min passing clip")
+  );
+
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.role, undefined);
+  assert.equal(plan.domainFilters.eventType, undefined);
+  assert.deepEqual(plan.intent.participants, []);
+});
+
 test("knowledge-seeded retrieval resolves the stat subject before building moment filters", () => {
   const queryPlan: DomainQueryPlan = {
     ...queryPlanForBirthday(),
@@ -704,21 +869,20 @@ test("moment search can return strong semantic evidence without literal query te
   assert.equal(results[0]?.segments[0]?.id, "cake-candles");
 });
 
-test("unstructured event text is weak evidence only when structured event evidence is absent", () => {
+test("unstructured event text is weak event evidence only when structured event evidence is absent", () => {
   const queryPlan: DomainQueryPlan = {
     ...queryPlanForBirthday(),
     route: "asset_evidence",
     responseMode: "moment_retrieval",
     knowledgeMode: "grounding",
     domainFilters: {
-      eventType: "shot",
-      role: "shooter"
+      eventType: "shot"
     },
     intent: {
       ...queryPlanForBirthday().intent,
       domain: "sports.football",
       eventType: "shot",
-      role: "shooter"
+      role: null
     }
   };
   const textOnlyGoal = segment({
@@ -747,8 +911,110 @@ test("unstructured event text is weak evidence only when structured event eviden
   assert.deepEqual(results[0]?.segments.map((item) => item.id), ["text-only-goal"]);
   assert.equal(evaluateSegmentDomainFilters(asset, textOnlyGoal, queryPlan.domainFilters).trust, "weak");
   assert.equal(evaluateSegmentDomainFilters(asset, structuredConflict, queryPlan.domainFilters).accepted, false);
-  assert.deepEqual(weakChecks.map((check) => check.status), ["soft_pass", "soft_pass"]);
-  assert.deepEqual(conflictChecks.map((check) => check.status), ["fail", "fail"]);
+  assert.deepEqual(weakChecks.map((check) => check.status), ["soft_pass"]);
+  assert.deepEqual(conflictChecks.map((check) => check.status), ["fail"]);
+});
+
+test("passer role searches reject moments where the named player is only the receiver", () => {
+  const queryPlan: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    knowledgeMode: "grounding",
+    rewrittenQuery: "player=Son Heung-min · role=passer · event=pass_receive",
+    domainFilters: {
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: "passer"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: "passer"
+    }
+  };
+  const sonReceiver = withDomainEvents(
+    segment({
+      id: "son-receiver",
+      transcript: "Harry Kane passes into Son Heung-min.",
+      embedding: [0, 1]
+    }),
+    [footballPassEvent({ passingPlayer: "Harry Kane", receivingPlayer: "Son Heung-min" })]
+  );
+  const sonPasser = withDomainEvents(
+    segment({
+      id: "son-passer",
+      transcript: "Son Heung-min passes the ball to another player.",
+      embedding: [0, 1]
+    }),
+    [footballPassEvent({ passingPlayer: "Son Heung-min", receivingPlayer: "Dejan Kulusevski" })]
+  );
+  const asset = assetWithSegments([sonReceiver, sonPasser]);
+  const results = searchAssets([asset], [indexRecord()], "손흥민이 다른선수한테 공을 패스해주는 영상 찾아줘", {
+    queryPlan,
+    domainFilters: queryPlan.domainFilters,
+    queryVector: [1, 0]
+  });
+  const rejectedChecks = buildVerificationChecks(asset, sonReceiver, queryPlan.domainFilters);
+
+  assert.equal(evaluateSegmentDomainFilters(asset, sonReceiver, queryPlan.domainFilters).accepted, false);
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0]?.segments.map((item) => item.id), ["son-passer"]);
+  assert.equal(results[0]?.clips[0]?.player, "Son Heung-min");
+  assert.equal(rejectedChecks.find((check) => check.constraint === "player")?.status, "fail");
+});
+
+test("VLM football refinement records named passers as action-source role evidence", () => {
+  const source = segment({
+    id: "vlm-son-passer",
+    transcript: "Son Heung-min plays a pass to a teammate.",
+    embedding: [0, 1]
+  });
+  const refined = mergeVlmResponse(
+    assetWithSegments([source]),
+    source,
+    {
+      domain: "sports.football",
+      provider: "test-vlm",
+      model: "test-model",
+      caption: "Son Heung-min passes the ball to a teammate.",
+      eventType: "scene",
+      confidence: 0.92,
+      labels: ["sports.football"],
+      evidence: ["The frame and indexed text describe Son Heung-min making a pass."],
+      football: {
+        phase: "attack",
+        fieldZone: "middle_third",
+        passType: "short_pass",
+        passingPlayer: {
+          present: true,
+          name: "Son Heung-min",
+          confidence: 0.91,
+          evidence: ["Indexed segment text names Son Heung-min as the passer."]
+        },
+        receivingPlayer: {
+          present: true,
+          name: null,
+          confidence: 0.7,
+          evidence: ["A teammate is the pass target."]
+        },
+        ballState: "pass_travel",
+        attackingDirection: "unknown"
+      }
+    },
+    "sports.football",
+    "test-model"
+  );
+  const event = refined.domain?.events[0];
+
+  assert.equal(event?.eventType, "pass_receive");
+  assert.equal(event?.football?.passingPlayer.present, true);
+  assert.equal(event?.football?.passingPlayer.identity?.name, "Son Heung-min");
+  assert.equal(event?.football?.receivingPlayer.present, true);
+  assert.equal(event?.football?.ball.state, "pass_travel");
+  assert.match(refined.domain?.searchText ?? "", /passer=Son Heung-min/);
 });
 
 test("birthday moment search keeps scenes with direct birthday evidence", () => {
@@ -1403,6 +1669,54 @@ function domainEvent(eventType: string): DomainEvent {
       visual: [],
       metadata: [],
       heuristics: []
+    }
+  };
+}
+
+function footballPassEvent({ passingPlayer, receivingPlayer }: { passingPlayer: string; receivingPlayer: string }): DomainEvent {
+  return {
+    ...domainEvent("pass_receive"),
+    caption: `${passingPlayer} passes to ${receivingPlayer}.`,
+    labels: ["event.pass_receive", "pass.short_pass", "role.passer", "role.receiver"],
+    football: {
+      phase: "attack",
+      fieldZone: "middle_third",
+      passType: "short_pass",
+      receivingPlayer: {
+        present: true,
+        confidence: 0.86,
+        trackId: null,
+        trackingStatus: "estimated",
+        identity: {
+          name: receivingPlayer,
+          confidence: 0.9,
+          source: "vlm",
+          evidence: [`VLM identified receiver as ${receivingPlayer}.`]
+        }
+      },
+      passingPlayer: {
+        present: true,
+        confidence: 0.88,
+        trackId: null,
+        trackingStatus: "estimated",
+        identity: {
+          name: passingPlayer,
+          confidence: 0.91,
+          source: "vlm",
+          evidence: [`VLM identified passer as ${passingPlayer}.`]
+        }
+      },
+      ball: {
+        state: "pass_travel",
+        confidence: 0.84,
+        trackingStatus: "estimated"
+      },
+      field: {
+        calibrationStatus: "estimated",
+        attackingDirection: "unknown",
+        zoneConfidence: 0.62
+      },
+      limitations: []
     }
   };
 }
