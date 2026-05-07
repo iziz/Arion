@@ -500,26 +500,24 @@
 
 .system-inline-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
   margin-left: 25px;
-  padding-top: 4px;
 }
 
 .system-inline-metrics span {
   display: grid;
-  gap: 3px;
-  align-items: start;
+  grid-template-columns: 76px minmax(118px, 0.7fr) minmax(0, 1.3fr);
+  gap: 8px;
+  align-items: baseline;
   min-width: 0;
-  border-radius: 8px;
-  background: #f2f8f5;
-  padding: 8px 9px;
+  border-top: 1px solid #e1ebe6;
+  padding-top: 7px;
   color: #6e8078;
 }
 
 .system-inline-metrics span.error {
-  background: #fff3f1;
+  color: #9b473c;
 }
 
 .system-inline-metrics span.error b,
