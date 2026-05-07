@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, type Dispatch, type FormEvent, type RefObj
 import type {
   AssetRecord,
   AssetSummaryRecord,
+  CapabilityPolicy,
   ClipDetailResult,
   DomainQueryPlan,
   EventRecord,
@@ -29,7 +30,7 @@ import type {
   KnowledgeSnapshot
 } from "../../shared/types";
 import { KNOWLEDGE_SOURCES } from "../../shared/knowledgeSources";
-import type { DatabaseStatus, ObservabilitySnapshot } from "../api";
+import type { DatabaseStatus, ModelCapabilitiesSnapshot, ObservabilitySnapshot } from "../api";
 import type { ConsoleTab, DialogMode, SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import { formatDuration, mediaPath } from "../displayUtils";
 import { type SearchTrustFilters } from "../searchTrust";
@@ -113,6 +114,7 @@ export type ConsoleLayoutProps = {
   events: EventRecord[];
   dbStatus: DatabaseStatus | null;
   observability: ObservabilitySnapshot | null;
+  modelCapabilities: ModelCapabilitiesSnapshot | null;
   clipDetail: ClipDetailResult | null;
   clipDetailLoading: boolean;
   setClipDetail: Dispatch<SetStateAction<ClipDetailResult | null>>;
@@ -135,11 +137,18 @@ type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
 type ObservabilityLog = ObservabilitySnapshot["recentLogs"][number];
 
 const sectionTechStacks = {
-  data: ["React", "Express", "Multer", "FFmpeg/ffprobe", "Whisper", "PaddleOCR", "OpenCLIP", "pgvector"] as const,
   search: ["LLM query planner", "multilingual-e5 text vectors", "OpenCLIP visual vectors", "pgvector HNSW", "hybrid lexical ranking", "Redis/BullMQ ask queue"] as const,
   knowledge: ["Sports registry", "football-data/StatBunker/StatsBomb/nflverse", "multilingual-e5 knowledge vectors", "pgvector HNSW", "evidence grounding"] as const,
   system: ["TypeScript", "Vite", "Node.js/Express", "PostgreSQL/pgvector", "Redis/BullMQ", "OpenTelemetry", "NDJSON logs"] as const
 } as const;
+
+type TechStackTagItem = {
+  category: string;
+  label: string;
+  tooltip: string;
+  kind?: "app" | "runtime" | "model" | "storage" | "policy";
+  disabled?: boolean;
+};
 
 type AssetOverviewFact = {
   label: string;
@@ -175,16 +184,182 @@ function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
   ];
 }
 
-function TechStackTags({ items }: { items: readonly string[] }) {
+function TechStackTags({ items }: { items: readonly (string | TechStackTagItem)[] }) {
   return (
-    <h2 className="section-stack-title tech-stack-tags" aria-label={items.join(", ")}>
-      {items.map((item) => (
-        <span key={item} className="tech-stack-tag">
-          {item}
-        </span>
-      ))}
+    <h2 className="section-stack-title tech-stack-tags" aria-label={items.map((item) => (typeof item === "string" ? item : `${item.category} ${item.label}`)).join(", ")}>
+      {items.map((item) => {
+        const tag = typeof item === "string" ? legacyTechStackTag(item) : item;
+        return (
+          <span
+            key={`${tag.category}:${tag.label}`}
+            className="tech-stack-tag"
+            data-kind={tag.kind ?? "app"}
+            data-disabled={tag.disabled ? "true" : undefined}
+            data-tooltip={`${tag.category}: ${tag.tooltip}`}
+            tabIndex={0}
+            aria-label={`${tag.category}: ${tag.label}. ${tag.tooltip}`}
+          >
+            <b>{tag.category}</b>
+            <span>{tag.label}</span>
+          </span>
+        );
+      })}
     </h2>
   );
+}
+
+function legacyTechStackTag(label: string): TechStackTagItem {
+  return {
+    category: "Stack",
+    label,
+    tooltip: `${label} is used in this console area.`,
+    kind: "app"
+  };
+}
+
+function buildAssetTechStackTags(
+  index: IndexRecord | null,
+  capabilities: ModelCapabilitiesSnapshot | null,
+  dbStatus: DatabaseStatus | null
+): TechStackTagItem[] {
+  const configured = capabilities?.configuredModels;
+  const modelFlags = capabilities?.models ?? {};
+  const tools = capabilities?.tools ?? {};
+  const policy = index?.capabilityPolicy;
+  const textEmbedding = configured?.textEmbedding;
+  const visualEmbedding = configured?.visualEmbedding;
+  const asr = configured?.asr;
+  const diarization = configured?.diarization;
+  const ocr = configured?.ocr;
+  const detector = configured?.visionDetector;
+  const tracker = configured?.visionTracker;
+  const videoVlm = configured?.videoVlm;
+  const queryPlanner = configured?.queryPlanner;
+  const textDimensions = textEmbedding?.dimensions ?? dbStatus?.expectedEmbeddingDimensions;
+  const visualDimensions = visualEmbedding?.dimensions ?? dbStatus?.expectedVisualEmbeddingDimensions;
+  const vlmConfigured = videoVlm?.enabled ?? capabilities?.runtimeTopology?.vlm?.enabled;
+  return [
+    {
+      category: "UI",
+      label: "React / Vite",
+      tooltip: "Assets tab rendering, state updates, detail panels, and hover chips are implemented in the React client.",
+      kind: "app"
+    },
+    {
+      category: "API",
+      label: "Express / Multer",
+      tooltip: "The Node.js API handles asset group CRUD, uploads, summaries, jobs, and runtime capability snapshots.",
+      kind: "app"
+    },
+    {
+      category: "Runtime check",
+      label: capabilities ? (capabilities.available === false ? "not checked" : "checked") : "pending",
+      tooltip: capabilities?.available === false
+        ? `Configured model names are shown, but availability check failed: ${capabilities.error ?? "unknown error"}.`
+        : `Model availability snapshot ${capabilities?.checkedAt ?? "has not loaded yet"}.`,
+      kind: "runtime",
+      disabled: capabilities?.available === false
+    },
+    {
+      category: "Media IO",
+      label: "FFmpeg / ffprobe",
+      tooltip: `Used for media probing, audio extraction, and frame extraction. ffmpeg ${availabilityText(tools.ffmpeg)}, ffprobe ${availabilityText(tools.ffprobe)}.`,
+      kind: "runtime",
+      disabled: tools.ffmpeg === false || tools.ffprobe === false
+    },
+    {
+      category: "ASR model",
+      label: `Whisper ${asr?.model ?? "large-v3"}`,
+      tooltip: `Speech transcription model. Backend ${asr?.backend ?? "auto"}, language ${asr?.language ?? "auto"}, runtime ${runtimeModeText(capabilities, "asr")}, availability ${availabilityText(modelFlags.whisper)}.`,
+      kind: "model",
+      disabled: modelFlags.whisper === false
+    },
+    {
+      category: "Diarization",
+      label: `WhisperX ${diarization?.model ?? asr?.model ?? "large-v3"}`,
+      tooltip: `Optional speaker diarization. Policy ${capabilityModeText(policy, "whisperXDiarization")}, token ${diarization?.tokenConfigured ? "configured" : "not configured"}, availability ${availabilityText(modelFlags.whisperx)}.`,
+      kind: "model",
+      disabled: policy?.whisperXDiarization === "disabled" || modelFlags.whisperx === false
+    },
+    {
+      category: "OCR model",
+      label: `PaddleOCR ${ocr?.language ?? "auto"}`,
+      tooltip: `Frame text extraction for subtitles, scoreboards, overlays, and screen text. Workers ${ocr?.workers ?? 2}, runtime ${runtimeModeText(capabilities, "ocr")}, availability ${availabilityText(modelFlags.paddleocr)}.`,
+      kind: "model",
+      disabled: modelFlags.paddleocr === false
+    },
+    {
+      category: "Text vectors",
+      label: textEmbedding?.model ?? index?.models.embedding ?? "intfloat/multilingual-e5-base",
+      tooltip: `SentenceTransformers embeddings for transcript, OCR, tags, timeline text, knowledge, and text query search${textDimensions ? ` at ${textDimensions} dimensions` : ""}. Runtime ${runtimeModeText(capabilities, "embedding")}.`,
+      kind: "model",
+      disabled: modelFlags.sentenceTransformers === false
+    },
+    {
+      category: "Visual vectors",
+      label: visualEmbedding?.model ?? "ViT-L-14/datacomp_xl_s13b_b90k",
+      tooltip: `OpenCLIP image/text embeddings for keyframes and visual search${visualDimensions ? ` at ${visualDimensions} dimensions` : ""}. Availability ${availabilityText(modelFlags.openClip)}.`,
+      kind: "model",
+      disabled: modelFlags.openClip === false
+    },
+    {
+      category: "VLM model",
+      label: videoVlm?.model ?? capabilities?.runtimeTopology?.vlm?.model ?? "qwen2.5-vl-local-worker",
+      tooltip: `Qwen2.5-VL worker for segment captions, structured visual-language analysis, query planning, and related knowledge refinement. Policy ${capabilityModeText(policy, "videoVlmAnalysis")}, service ${vlmConfigured ? "enabled" : "not configured"}, availability ${availabilityText(modelFlags.qwenVlm)}.`,
+      kind: "model",
+      disabled: policy?.videoVlmAnalysis === "disabled" || vlmConfigured === false
+    },
+    {
+      category: "Detector",
+      label: detector?.model ?? "yolo11n.pt",
+      tooltip: `Person/ball detector for sports evidence. Backend ${detector?.backend ?? "auto"}, provider ${detector?.provider ?? "Ultralytics YOLO / RF-DETR"}, confidence ${detector?.confidence ?? "0.25"}, policy ${capabilityModeText(policy, "visionDetector")}.`,
+      kind: "model",
+      disabled: policy?.visionDetector === "disabled" || (modelFlags.ultralytics === false && modelFlags.rfdetr === false)
+    },
+    {
+      category: "Tracker",
+      label: tracker?.tracker ?? "bytetrack.yaml",
+      tooltip: `Multi-object tracking for detected players/balls. Confidence ${tracker?.confidence ?? "0.2"}, vid stride ${tracker?.vidStride ?? "3"}, policy ${capabilityModeText(policy, "visionTracker")}.`,
+      kind: "model",
+      disabled: policy?.visionTracker === "disabled" || modelFlags.ultralytics === false
+    },
+    {
+      category: "Index search",
+      label: index?.models.search ?? "local-semantic-retrieval",
+      tooltip: `Selected asset group retrieval mode. Analysis label ${index?.models.analysis ?? "local-pattern-analysis"}.`,
+      kind: "policy"
+    },
+    {
+      category: "Vector DB",
+      label: "PostgreSQL / pgvector",
+      tooltip: `Stores timeline, knowledge, and visual vectors. Text column ${dbStatus?.embeddingColumn ?? "app_vectors.embedding"}, visual column ${dbStatus?.visualEmbeddingColumn ?? "app_visual_vectors.embedding"}, mode ${dbStatus?.vectorSearchMode ?? "pgvector"}.`,
+      kind: "storage",
+      disabled: dbStatus?.ready === false
+    },
+    {
+      category: "Query planner",
+      label: queryPlanner?.model ?? "gpt-5.4-mini",
+      tooltip: `Optional OpenAI planner for converting natural-language searches into retrieval filters. Planner ${queryPlanner?.enabled === false ? "disabled" : "enabled or available when configured"}.`,
+      kind: "model",
+      disabled: queryPlanner?.enabled === false
+    }
+  ];
+}
+
+function runtimeModeText(capabilities: ModelCapabilitiesSnapshot | null, kind: string) {
+  const category = capabilities?.runtimeTopology?.python?.categories?.find((item) => item.kind === kind);
+  if (!category) return capabilities?.runtimeTopology?.python?.boundary ?? "not checked";
+  return category.splitByCategory ? `${category.mode} (${category.serviceUrl ?? "category URL"})` : category.mode;
+}
+
+function capabilityModeText(policy: CapabilityPolicy | undefined, key: keyof CapabilityPolicy) {
+  return policy?.[key] ?? "optional";
+}
+
+function availabilityText(value: boolean | undefined) {
+  if (value === true) return "available";
+  if (value === false) return "unavailable";
+  return "not checked";
 }
 
 export function ConsoleLayout(props: ConsoleLayoutProps) {
@@ -244,6 +419,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     events,
     dbStatus,
     observability,
+    modelCapabilities,
     clipDetail,
     clipDetailLoading,
     setClipDetail,
@@ -275,6 +451,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           (job.indexId === selectedIndex.id || (job.assetId && visibleAssets.some((asset) => asset.id === job.assetId)))
       )
   );
+  const assetTechStacks = buildAssetTechStackTags(selectedIndex, modelCapabilities, dbStatus);
 
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
@@ -436,12 +613,13 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       <section className="section-block workflow-section">
         <div className="section-heading">
           <div>
-            <TechStackTags items={sectionTechStacks.data} />
+            <TechStackTags items={assetTechStacks} />
           </div>
         </div>
         <AssetGroupSummary
           index={selectedIndex}
           assets={visibleAssets}
+          modelCapabilities={modelCapabilities}
           busy={busy}
           onEdit={() => setDialogMode("edit-index")}
           onDelete={() => selectedIndex && void deleteIndex(selectedIndex.id)}

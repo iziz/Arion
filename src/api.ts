@@ -54,6 +54,46 @@ export type ObservabilitySnapshot = {
   recentLogs: Array<{ timestamp: string; level: string; event: string; message: string; requestId: string | null; traceId: string | null }>;
 };
 
+export type ModelCapabilitiesSnapshot = {
+  available?: boolean;
+  error?: string | null;
+  checkedAt?: string;
+  python?: string;
+  runtimeTopology?: {
+    python?: {
+      defaultMode?: string;
+      defaultServiceUrl?: string;
+      boundary?: string;
+      categories?: Array<{
+        kind: string;
+        mode: string;
+        serviceUrl: string | null;
+        splitByCategory: boolean;
+      }>;
+    };
+    vlm?: {
+      boundary: string;
+      enabled: boolean;
+      serviceUrl: string | null;
+      model: string;
+    };
+  };
+  tools?: Record<string, boolean>;
+  models?: Record<string, boolean>;
+  configuredModels?: {
+    asr?: { provider: string; model: string; backend: string; language: string };
+    diarization?: { provider: string; model: string; language: string; tokenConfigured: boolean };
+    ocr?: { provider: string; language: string; workers: number };
+    textEmbedding?: { provider: string; model: string; dimensions: number };
+    visualEmbedding?: { provider: string; model: string; dimensions: number };
+    visionDetector?: { provider: string; backend: string; model: string; fallbackModel: string | null; confidence: string };
+    visionTracker?: { provider: string; tracker: string; confidence: string; vidStride: string };
+    videoVlm?: { provider: string; model: string; enabled: boolean };
+    queryPlanner?: { provider: string; model: string; enabled: boolean };
+  };
+  raw?: Record<string, unknown>;
+};
+
 export type FootballDataImportResult = {
   competitionCode: string;
   season: number;
@@ -216,6 +256,17 @@ export function isMetricsSummary(value: unknown): value is MetricsSummary {
     ["indexes", "assets", "indexedAssets", "runningJobs", "failedJobs", "totalDuration", "segments", "vectors", "webhooks", "billingUnits"].every(
       (key) => typeof value[key] === "number"
     )
+  );
+}
+
+export function isModelCapabilitiesSnapshot(value: unknown): value is ModelCapabilitiesSnapshot {
+  return (
+    isRecord(value) &&
+    (typeof value.checkedAt === "string" ||
+      isRecord(value.runtimeTopology) ||
+      isRecord(value.configuredModels) ||
+      isRecord(value.models) ||
+      isRecord(value.tools))
   );
 }
 

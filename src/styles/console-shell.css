@@ -1197,7 +1197,10 @@ button:hover {
 
 .tech-stack-tag {
   display: inline-flex;
+  position: relative;
   align-items: center;
+  gap: 7px;
+  max-width: min(100%, 360px);
   min-height: 30px;
   border: 1px solid rgba(47, 138, 113, 0.22);
   border-radius: 999px;
@@ -1206,16 +1209,89 @@ button:hover {
   padding: 7px 12px;
   font-size: 12px;
   font-weight: 900;
+  line-height: 1.2;
   overflow-wrap: anywhere;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 18px rgba(31, 78, 64, 0.06);
 }
 
-.tech-stack-tag:nth-child(3n + 2) {
+.tech-stack-tag > b {
+  flex: 0 0 auto;
+  color: #607a72;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.tech-stack-tag > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tech-stack-tag::after {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 32px));
+  border: 1px solid rgba(37, 53, 47, 0.16);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #25352f;
+  box-shadow: 0 18px 34px rgba(31, 55, 49, 0.16);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+  opacity: 0;
+  padding: 10px 12px;
+  pointer-events: none;
+  text-align: left;
+  transform: translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: normal;
+}
+
+.tech-stack-tag:hover::after,
+.tech-stack-tag:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.tech-stack-tag[data-kind="model"] {
   border-color: rgba(42, 124, 148, 0.24);
   color: #225f73;
 }
 
-.tech-stack-tag:nth-child(3n) {
+.tech-stack-tag[data-kind="runtime"] {
+  border-color: rgba(98, 110, 171, 0.22);
+  color: #4f5792;
+}
+
+.tech-stack-tag[data-kind="storage"] {
+  border-color: rgba(126, 103, 59, 0.22);
+  color: #695126;
+}
+
+.tech-stack-tag[data-kind="policy"] {
+  border-color: rgba(105, 122, 112, 0.24);
+  color: #495c55;
+}
+
+.tech-stack-tag[data-disabled="true"] {
+  border-color: rgba(135, 91, 83, 0.24);
+  background: rgba(255, 247, 246, 0.74);
+  color: #8d4d42;
+}
+
+.tech-stack-tag:not([data-kind]):nth-child(3n + 2) {
+  border-color: rgba(42, 124, 148, 0.24);
+  color: #225f73;
+}
+
+.tech-stack-tag:not([data-kind]):nth-child(3n) {
   border-color: rgba(126, 103, 59, 0.22);
   color: #695126;
 }

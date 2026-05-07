@@ -15,10 +15,12 @@ import {
   getGuardedResult,
   isDatabaseStatus,
   isKnowledgeVectorStoreStatus,
+  isModelCapabilitiesSnapshot,
   isMetricsSummary,
   isObservabilitySnapshot,
   isKnowledgeSnapshot,
   type DatabaseStatus,
+  type ModelCapabilitiesSnapshot,
   type ObservabilitySnapshot
 } from "../api";
 import { getConsoleRefreshIntervalMs } from "./useConsoleRefreshPolicy";
@@ -31,6 +33,7 @@ export function useConsoleData() {
   const [metrics, setMetrics] = useState<MetricsSummary>(emptyMetrics);
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
+  const [modelCapabilities, setModelCapabilities] = useState<ModelCapabilitiesSnapshot | null>(null);
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<KnowledgeSnapshot | null>(null);
   const [knowledgeVectorStore, setKnowledgeVectorStore] = useState<KnowledgeVectorStoreStatus | null>(null);
   const [selectedIndexId, setSelectedIndexId] = useState("");
@@ -73,10 +76,11 @@ export function useConsoleData() {
       if (nextJobs) setJobs(nextJobs);
       if (nextEvents) setEvents(nextEvents);
 
-      const [metricsResult, dbStatusResult, observabilityResult, knowledgeSnapshotResult, knowledgeVectorStoreResult] = await Promise.allSettled([
+      const [metricsResult, dbStatusResult, observabilityResult, modelCapabilitiesResult, knowledgeSnapshotResult, knowledgeVectorStoreResult] = await Promise.allSettled([
         api.get<MetricsSummary>("/api/metrics"),
         api.get<DatabaseStatus>("/api/db/status"),
         api.get<ObservabilitySnapshot>("/api/observability"),
+        api.get<ModelCapabilitiesSnapshot>("/api/model-capabilities"),
         getWithFallback<KnowledgeSnapshot>([
           "/api/knowledge/summary",
           "/api/knowledge?summary=true",
@@ -88,12 +92,14 @@ export function useConsoleData() {
       const nextMetrics = getGuardedResult(metricsResult, "metrics", isMetricsSummary, failures);
       const nextDbStatus = getGuardedResult(dbStatusResult, "database status", isDatabaseStatus, failures);
       const nextObservability = getGuardedResult(observabilityResult, "observability", isObservabilitySnapshot, failures);
+      const nextModelCapabilities = getGuardedResult(modelCapabilitiesResult, "model capabilities", isModelCapabilitiesSnapshot, failures);
       const nextKnowledgeSnapshot = getGuardedResult(knowledgeSnapshotResult, "related knowledge", isKnowledgeSnapshot, failures);
       const nextKnowledgeVectorStore = getGuardedResult(knowledgeVectorStoreResult, "knowledge vector store", isKnowledgeVectorStoreStatus, failures);
 
       if (nextMetrics) setMetrics(nextMetrics);
       if (nextDbStatus) setDbStatus(nextDbStatus);
       if (nextObservability) setObservability(nextObservability);
+      if (nextModelCapabilities) setModelCapabilities(nextModelCapabilities);
       if (nextKnowledgeSnapshot) setKnowledgeSnapshot(nextKnowledgeSnapshot);
       if (nextKnowledgeVectorStore) setKnowledgeVectorStore(nextKnowledgeVectorStore);
 
@@ -164,6 +170,7 @@ export function useConsoleData() {
     metrics,
     dbStatus,
     observability,
+    modelCapabilities,
     knowledgeSnapshot,
     setKnowledgeSnapshot,
     knowledgeVectorStore,

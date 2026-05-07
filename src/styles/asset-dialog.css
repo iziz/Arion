@@ -50,17 +50,63 @@
 
 .asset-group-meta span {
   display: inline-flex;
+  position: relative;
   gap: 6px;
   align-items: center;
   min-width: 0;
-  white-space: nowrap;
+  max-width: min(100%, 680px);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .asset-group-meta b {
+  flex: 0 0 auto;
   color: #657970;
   font-size: 11px;
   font-weight: 950;
   text-transform: uppercase;
+}
+
+.asset-group-meta-chip::after {
+  position: absolute;
+  z-index: 45;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 32px));
+  border: 1px solid rgba(37, 53, 47, 0.16);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 34px rgba(31, 55, 49, 0.16);
+  color: #25352f;
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+  opacity: 0;
+  padding: 10px 12px;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: normal;
+}
+
+.asset-group-meta-chip:hover::after,
+.asset-group-meta-chip:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.asset-group-meta-chip[data-kind="model"] b {
+  color: #225f73;
+}
+
+.asset-group-meta-chip[data-kind="storage"] b {
+  color: #695126;
+}
+
+.asset-group-meta-chip[data-disabled="true"] {
+  color: #8d4d42;
 }
 
 .asset-group-edit {

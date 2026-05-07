@@ -4,6 +4,7 @@ import type { AssetRecord, AssetSummaryRecord, IndexRecord, JobRecord } from "..
 import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
 import { knowledgeTemplateDescriptors, sportsBaseTemplateContract, type KnowledgeTemplateDescriptor } from "../../../shared/knowledgeTemplates";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
+import type { ModelCapabilitiesSnapshot } from "../../api";
 import { formatDuration, mediaPath, truncateText } from "../../displayUtils";
 import { EmptyState } from "../common/ConsolePrimitives";
 import { OcrRoleSummary } from "../evidence/EvidenceComponents";
@@ -101,10 +102,12 @@ export function AssetGroupSummary({
   onDelete,
   deleteDisabled,
   deleteTitle,
-  onRefineVlm
+  onRefineVlm,
+  modelCapabilities
 }: {
   index: IndexRecord | null;
   assets: AssetSummaryRecord[];
+  modelCapabilities: ModelCapabilitiesSnapshot | null;
   busy: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -121,6 +124,7 @@ export function AssetGroupSummary({
       ? `${domain.groups.map(formatKnowledgeSourceLabel).join(", ")} · ${domain.stages.map((stage) => stage.replace(/_/g, " ")).join(", ")}`
       : "Off";
   const capabilityText = index?.capabilityPolicy ? summarizeCapabilityPolicy(index.capabilityPolicy) : "capabilities optional";
+  const metaChips = buildAssetGroupMetaChips(index, assets, modelCapabilities, domainText, capabilityText, vlmSummary);
   return (
     <section className="asset-group-summary" aria-label="Selected asset group summary">
       <div>
@@ -144,18 +148,20 @@ export function AssetGroupSummary({
         </span>
         {index?.description && <p>{index.description}</p>}
         <div className="asset-group-meta">
-          <span>
-            <b>Related knowledge</b>
-            {domainText}
-          </span>
-          <span>
-            <b>Policy</b>
-            {capabilityText}
-          </span>
-          <span>
-            <b>Knowledge VLM</b>
-            {vlmSummary}
-          </span>
+          {metaChips.map((chip) => (
+            <span
+              key={chip.label}
+              className="asset-group-meta-chip"
+              data-kind={chip.kind}
+              data-disabled={chip.disabled ? "true" : undefined}
+              data-tooltip={`${chip.label}: ${chip.tooltip}`}
+              tabIndex={0}
+              aria-label={`${chip.label}: ${chip.value}. ${chip.tooltip}`}
+            >
+              <b>{chip.label}</b>
+              {chip.value}
+            </span>
+          ))}
         </div>
       </div>
       <div className="asset-group-actions">
@@ -201,6 +207,77 @@ function summarizeAssetGroupVlm(assets: AssetSummaryRecord[]) {
   const attempted = counts.attempted;
   if (attempted === 0) return "not run";
   return `${counts.refined}/${attempted} refined${counts.invalid ? ` · ${counts.invalid} invalid` : ""}${counts.failed ? ` · ${counts.failed} failed` : ""}`;
+}
+
+type AssetGroupMetaChip = {
+  label: string;
+  value: string;
+  tooltip: string;
+  kind: "knowledge" | "policy" | "model" | "storage";
+  disabled?: boolean;
+};
+
+function buildAssetGroupMetaChips(
+  index: IndexRecord | null,
+  assets: AssetSummaryRecord[],
+  modelCapabilities: ModelCapabilitiesSnapshot | null,
+  domainText: string,
+  capabilityText: string,
+  vlmSummary: string
+): AssetGroupMetaChip[] {
+  const domain = index?.domainIndexing;
+  const policy = index?.capabilityPolicy;
+  const configured = modelCapabilities?.configuredModels;
+  const domainEnabled = Boolean(domain?.enabled && domain.groups.length > 0);
+  const domainStages = domain?.stages.map((stage) => stage.replace(/_/g, " ")).join(", ") || "none";
+  const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
+  const textEmbedding = configured?.textEmbedding;
+  const visualEmbedding = configured?.visualEmbedding;
+  const vlm = configured?.videoVlm;
+  const vlmConfigured = vlm?.enabled ?? modelCapabilities?.runtimeTopology?.vlm?.enabled;
+  return [
+    {
+      label: "Knowledge",
+      value: domainText,
+      tooltip: domainEnabled
+        ? `Selected related knowledge sources and indexing stages. Stages: ${domainStages}.`
+        : "Related knowledge indexing is disabled for this asset group.",
+      kind: "knowledge",
+      disabled: !domainEnabled
+    },
+    {
+      label: "Capability policy",
+      value: capabilityText,
+      tooltip: policy ? formatCapabilityPolicyTooltip(policy) : "No explicit policy was stored, so optional capability defaults apply.",
+      kind: "policy"
+    },
+    {
+      label: "Text embedding",
+      value: textEmbedding?.model ?? index?.models.embedding ?? "not selected",
+      tooltip: `Text retrieval uses this embedding model for timeline, OCR, ASR, tags, and knowledge text${textEmbedding?.dimensions ? ` at ${textEmbedding.dimensions} dimensions` : ""}.`,
+      kind: "model"
+    },
+    {
+      label: "Visual embedding",
+      value: visualEmbedding?.model ?? "OpenCLIP not checked",
+      tooltip: `Visual retrieval uses OpenCLIP vectors for keyframes and visual query matching${visualEmbedding?.dimensions ? ` at ${visualEmbedding.dimensions} dimensions` : ""}.`,
+      kind: "model",
+      disabled: modelCapabilities?.models?.openClip === false
+    },
+    {
+      label: "Knowledge VLM",
+      value: vlmSummary,
+      tooltip: `Related knowledge VLM refinement uses ${vlm?.model ?? modelCapabilities?.runtimeTopology?.vlm?.model ?? "qwen2.5-vl-local-worker"} when enabled. Policy ${policy?.domainVlmRefinement ?? "optional"}, service ${vlmConfigured ? "enabled" : "not configured"}, indexed assets ${indexedCount}/${assets.length}.`,
+      kind: "model",
+      disabled: policy?.domainVlmRefinement === "disabled" || vlmConfigured === false
+    }
+  ];
+}
+
+function formatCapabilityPolicyTooltip(policy: NonNullable<IndexRecord["capabilityPolicy"]>) {
+  return Object.entries(policy)
+    .map(([name, mode]) => `${name.replace(/([A-Z])/g, " $1").toLowerCase()}: ${mode}`)
+    .join(", ");
 }
 
 export function VideoStatusSummary({ asset }: { asset: AssetRecord }) {

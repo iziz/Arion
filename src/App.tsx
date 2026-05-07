@@ -35,6 +35,7 @@ export default function App() {
     metrics,
     dbStatus,
     observability,
+    modelCapabilities,
     knowledgeSnapshot,
     setIndexes,
     setAssets,
@@ -527,6 +528,7 @@ export default function App() {
       events={events}
       dbStatus={dbStatus}
       observability={observability}
+      modelCapabilities={modelCapabilities}
       clipDetail={clipDetail}
       clipDetailLoading={clipDetailLoading}
       setClipDetail={setClipDetail}
