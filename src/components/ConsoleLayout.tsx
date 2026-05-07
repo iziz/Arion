@@ -13,7 +13,7 @@ import {
   UploadCloud,
   X
 } from "lucide-react";
-import { useEffect, useRef, useState, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import type {
   AssetRecord,
   AssetSummaryRecord,
@@ -160,6 +160,11 @@ type AssetOverviewSummary = {
   metadataTerms: string[];
 };
 
+type SystemValueProps = {
+  children: ReactNode;
+  numeric?: boolean;
+};
+
 const countFormatter = new Intl.NumberFormat("en-US");
 
 function formatCount(value: number) {
@@ -172,6 +177,19 @@ function formatUnitCount(value: number, unit: string) {
 
 function formatCountRatio(value: number, total: number) {
   return `${formatCount(value)}/${formatCount(total)}`;
+}
+
+function SystemValue({ children, numeric = false }: SystemValueProps) {
+  return <strong className={numeric ? "system-numeric-value" : undefined}>{children}</strong>;
+}
+
+function SystemFact({ label, value, numeric = false }: { label: string; value: ReactNode; numeric?: boolean }) {
+  return (
+    <span>
+      <b>{label}</b>
+      <SystemValue numeric={numeric}>{value}</SystemValue>
+    </span>
+  );
 }
 
 function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
@@ -653,6 +671,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   } = props;
   const [searchVideoPreview, setSearchVideoPreview] = useState<SearchVideoPreview | null>(null);
   const [searchTargetOpen, setSearchTargetOpen] = useState(false);
+  const searchTargetPopoverRef = useRef<HTMLDivElement | null>(null);
   const knowledgeDomains = knowledgeSnapshot?.domains ?? defaultKnowledgeDomains();
   const effectiveKnowledgeDomain = knowledgeDomains.find((domain) => domain.id === selectedKnowledgeDomain)?.id ?? knowledgeDomains[0]?.id ?? KNOWLEDGE_SOURCES[0]?.id ?? "";
   const knowledgeRecordCount = sumKnowledgeDomainDocuments(knowledgeDomains);
@@ -680,6 +699,25 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
   }, [searching]);
+
+  useEffect(() => {
+    if (!searchTargetOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (searchTargetPopoverRef.current?.contains(target)) return;
+      setSearchTargetOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setSearchTargetOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [searchTargetOpen]);
 
   useEffect(() => {
     if (knowledgeDomains.some((domain) => domain.id === selectedKnowledgeDomain)) return;
@@ -719,7 +757,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       <nav className="view-tabs" aria-label="Console sections">
         <a className="brand-logo" href="/" aria-label="Arion.AI home">
           <span className="brand-mark" aria-hidden="true">
-            <img src="/arion-logo.png" alt="" />
+            <img src="/arion-logo.png?v=20260508" alt="" />
           </span>
           <span className="brand-copy">
             <strong>Arion.AI</strong>
@@ -1032,28 +1070,32 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </div>
           )}
           <div className="search-composer-shell">
-            <SearchScopeSummary
-              scopeLabel={searchScopeLabel}
-              trustFilters={trustFilters}
-              useKnowledgeLayer={useKnowledgeLayer}
-              knowledgeContext={searchKnowledgeContext}
-              onTargetClick={() => setSearchTargetOpen((current) => !current)}
-              targetExpanded={searchTargetOpen}
-            />
-            {searchTargetOpen && (
-              <div className="search-target-panel">
-                <SearchScopeSelector
-                  mode={searchScopeMode}
-                  onModeChange={setSearchScopeMode}
-                  indexes={indexes}
-                  assets={assets}
-                  indexId={searchIndexId}
-                  onIndexChange={setSearchIndexId}
-                  assetId={searchAssetId}
-                  onAssetChange={setSearchAssetId}
-                />
-              </div>
-            )}
+            <div className="search-target-popover-host" ref={searchTargetPopoverRef}>
+              <SearchScopeSummary
+                scopeLabel={searchScopeLabel}
+                trustFilters={trustFilters}
+                useKnowledgeLayer={useKnowledgeLayer}
+                knowledgeContext={searchKnowledgeContext}
+                onTargetClick={() => setSearchTargetOpen((current) => !current)}
+                targetExpanded={searchTargetOpen}
+                targetControlId="search-target-popover"
+              />
+              {searchTargetOpen && (
+                <div id="search-target-popover" className="search-target-panel" role="dialog" aria-label="Search target options">
+                  <SearchScopeSelector
+                    mode={searchScopeMode}
+                    onModeChange={setSearchScopeMode}
+                    indexes={indexes}
+                    assets={assets}
+                    indexId={searchIndexId}
+                    onIndexChange={setSearchIndexId}
+                    assetId={searchAssetId}
+                    onAssetChange={setSearchAssetId}
+                    onRequestClose={() => setSearchTargetOpen(false)}
+                  />
+                </div>
+              )}
+            </div>
             <form onSubmit={runSearch} className="search-row search-form ask-form chat-composer">
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask for stats, moments, clips, or patterns" />
               <button type="submit" disabled={searching} aria-label={searching ? "Searching" : "Ask"}>
@@ -1081,25 +1123,25 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <article className="system-kpi">
               <CheckCircle2 size={18} />
               <span>Indexed Assets</span>
-              <strong>{formatCountRatio(metrics.indexedAssets, metrics.assets)}</strong>
-              <em>{metrics.indexes} indexes</em>
+              <SystemValue numeric>{formatCountRatio(metrics.indexedAssets, metrics.assets)}</SystemValue>
+              <em className="system-numeric-meta">{formatUnitCount(metrics.indexes, "index")}</em>
             </article>
             <article className="system-kpi">
               <Clock3 size={18} />
               <span>Jobs</span>
-              <strong>{metrics.runningJobs}</strong>
-              <em>{failedJobCount} failed · {succeededJobCount} succeeded</em>
+              <SystemValue numeric>{formatCount(metrics.runningJobs)}</SystemValue>
+              <em className="system-numeric-meta">{formatCount(failedJobCount)} failed · {formatCount(succeededJobCount)} succeeded</em>
             </article>
             <article className="system-kpi">
               <Layers3 size={18} />
               <span>Timeline</span>
-              <strong>{metrics.segments}</strong>
-              <em>{metrics.vectors} vectors</em>
+              <SystemValue numeric>{formatCount(metrics.segments)}</SystemValue>
+              <em className="system-numeric-meta">{formatUnitCount(metrics.vectors, "vector")}</em>
             </article>
             <article className="system-kpi">
               <CreditCard size={18} />
-              <span>Billing Units</span>
-              <strong>{metrics.billingUnits}</strong>
+              <span>Compute Units</span>
+              <SystemValue numeric>{formatCount(metrics.billingUnits)}</SystemValue>
               <em>{dbStatus?.enabled ? "PostgreSQL" : dbStatus?.storage ?? "storage pending"}</em>
             </article>
           </section>
@@ -1113,11 +1155,19 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
               </div>
               {dbStatus ? (
                 <div className="system-status-facts">
-                  <span><b>Store</b>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</span>
-                  <span><b>State</b>{dbStatus.operationalState ?? (dbStatus.enabled ? "ready" : "local")}</span>
-                  <span><b>Vector</b>{dbStatus.pgvector ? `${dbStatus.vectorSearchMode ?? "pgvector"} ${dbStatus.pgvector}` : dbStatus.vectorSearchMode ?? "off"}</span>
-                  <span><b>Text</b>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
-                  <span><b>Visual</b>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} dimensions`}</span>
+                  <SystemFact label="Store" value={dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"} />
+                  <SystemFact label="State" value={dbStatus.operationalState ?? (dbStatus.enabled ? "ready" : "local")} />
+                  <SystemFact label="Vector" value={dbStatus.pgvector ? `${dbStatus.vectorSearchMode ?? "pgvector"} ${dbStatus.pgvector}` : dbStatus.vectorSearchMode ?? "off"} />
+                  <SystemFact
+                    label="Text"
+                    value={dbStatus.embeddingColumn ?? `${formatCount(dbStatus.expectedEmbeddingDimensions ?? 0)} dimensions`}
+                    numeric={!dbStatus.embeddingColumn}
+                  />
+                  <SystemFact
+                    label="Visual"
+                    value={dbStatus.visualEmbeddingColumn ?? `${formatCount(dbStatus.expectedVisualEmbeddingDimensions ?? 0)} dimensions`}
+                    numeric={!dbStatus.visualEmbeddingColumn}
+                  />
                 </div>
               ) : (
                 <span className="system-status-empty">Database status is loading.</span>
@@ -1138,17 +1188,17 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   <div className="system-observability-details">
                     <span>
                       <b>Trace</b>
-                      <strong>{observabilityView.traceStore} · {formatUnitCount(observabilityView.spanCount, "span")}</strong>
-                      <em>Recent API and worker spans are kept locally so trace IDs can connect jobs, logs, and request timing.</em>
+                      <SystemValue numeric>{formatUnitCount(observabilityView.spanCount, "span")}</SystemValue>
+                      <em>{observabilityView.traceStore} trace store keeps recent API and worker spans locally so trace IDs can connect jobs, logs, and request timing.</em>
                     </span>
                     <span>
                       <b>API p95</b>
-                      <strong>{observabilityView.httpP95}</strong>
+                      <SystemValue numeric>{observabilityView.httpP95}</SystemValue>
                       <em>{observabilityView.httpSummary}. p95 highlights the slow edge of recent HTTP traffic, not the average case.</em>
                     </span>
                     <span>
                       <b>Pipeline</b>
-                      <strong>{formatUnitCount(observabilityView.pipelineErrorCount, "error")}</strong>
+                      <SystemValue numeric>{formatUnitCount(observabilityView.pipelineErrorCount, "error")}</SystemValue>
                       <em>{observabilityView.slowestLabel}. This catches slow or failing model/runtime stages while jobs are still moving.</em>
                     </span>
                     <span>
@@ -1162,7 +1212,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                       {observabilityView.pipelineMetrics.slice(0, 3).map((metric) => (
                         <span key={metric.key} className={metric.lastStatus === "error" ? "error" : ""}>
                           <b title={formatMetricName(metric.key)}>{formatCompactMetricName(metric.key)}</b>
-                          <strong>p95 {formatLatency(metric.p95Ms)} · {formatUnitCount(metric.errorCount, "error")}</strong>
+                          <SystemValue numeric>p95 {formatLatency(metric.p95Ms)} · {formatUnitCount(metric.errorCount, "error")}</SystemValue>
                           <em>{metric.lastStatus === "error" && metric.lastError ? `Last error: ${metric.lastError}` : describeObservabilityMetricIntent(metric.key)}</em>
                         </span>
                       ))}
@@ -1183,8 +1233,8 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   <h2>Jobs</h2>
                 </div>
                 <div className="system-panel-counts">
-                  <span>{jobs.length} total</span>
-                  <span>{metrics.runningJobs} running</span>
+                  <span>{formatCount(jobs.length)} total</span>
+                  <span>{formatCount(metrics.runningJobs)} running</span>
                 </div>
               </div>
 
@@ -1222,7 +1272,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                     <p className="section-label">Event Feed</p>
                     <h2>Events</h2>
                   </div>
-                  <span className="panel-count">{events.length}</span>
+                  <span className="panel-count">{formatCount(events.length)}</span>
                 </div>
                 <div className="system-event-list">
                   {visibleEvents.map((event) => (
@@ -1339,7 +1389,7 @@ function formatJobStageLabel(job: JobRecord) {
 
 function formatJobProgressLabel(job: JobRecord) {
   if (job.stage === "stale") return getRecoveredJobDisposition(job);
-  return `${job.progress}%`;
+  return `${formatCount(job.progress)}%`;
 }
 
 function formatJobStatus(status: JobRecord["status"]) {
@@ -1427,7 +1477,7 @@ function compactLogPath(logPath: string) {
 function formatLatency(value: number) {
   if (value < 10) return `${value.toFixed(2)}ms`;
   if (value < 100) return `${value.toFixed(1)}ms`;
-  return `${Math.round(value)}ms`;
+  return `${formatCount(Math.round(value))}ms`;
 }
 
 function formatMetricName(key: string) {

@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, Library, Search, Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AskAnswerContent, AskOperation, AssetSummaryRecord, DomainQueryPlan, IndexRecord, KnowledgeSourceId, OrchestrationPlan, SearchResult, StructuredKnowledgeAnswer } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
@@ -38,7 +38,8 @@ export function SearchScopeSelector({
   indexId,
   onIndexChange,
   assetId,
-  onAssetChange
+  onAssetChange,
+  onRequestClose
 }: {
   mode: SearchScopeMode;
   onModeChange: (mode: SearchScopeMode) => void;
@@ -48,11 +49,12 @@ export function SearchScopeSelector({
   onIndexChange: (indexId: string) => void;
   assetId: string;
   onAssetChange: (assetId: string) => void;
+  onRequestClose?: () => void;
 }) {
+  const [targetQuery, setTargetQuery] = useState("");
   const selectedIndex = indexes.find((index) => index.id === indexId) ?? null;
   const selectedAsset = assets.find((asset) => asset.id === assetId) ?? null;
   const selectedAssetIndex = selectedAsset ? indexes.find((index) => index.id === selectedAsset.indexId) ?? null : null;
-  const groupAssetCount = selectedIndex ? assets.filter((asset) => asset.indexId === selectedIndex.id).length : 0;
   const groupDomain = describeIndexDomain(selectedIndex);
   const allVideoDomain = describeAllVideoDomains(indexes, assets);
   const selectedVideoDomain = describeIndexDomain(selectedAssetIndex);
@@ -61,74 +63,141 @@ export function SearchScopeSelector({
     .map((index) => ({ index, assets: assets.filter((asset) => asset.indexId === index.id) }))
     .filter((group) => group.assets.length > 0);
   const ungroupedAssets = assets.filter((asset) => !indexes.some((index) => index.id === asset.indexId));
+  const normalizedTargetQuery = targetQuery.trim().toLowerCase();
+  const filteredAssetGroups = normalizedTargetQuery
+    ? assetGroups.filter((group) =>
+        [group.index.name, describeIndexDomain(group.index).label, ...group.assets.map((asset) => asset.title)]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedTargetQuery)
+      )
+    : assetGroups;
+  const filteredGroupedAssets = filteredAssetGroups.map((group) => ({
+    ...group,
+    assets: normalizedTargetQuery ? group.assets.filter((asset) => asset.title.toLowerCase().includes(normalizedTargetQuery)) : group.assets
+  }));
+  const filteredUngroupedAssets = normalizedTargetQuery
+    ? ungroupedAssets.filter((asset) => asset.title.toLowerCase().includes(normalizedTargetQuery))
+    : ungroupedAssets;
+
+  function chooseAllVideos() {
+    onModeChange("all");
+    onRequestClose?.();
+  }
+
+  function chooseAssetGroup(nextIndexId: string) {
+    onModeChange("group");
+    onIndexChange(nextIndexId);
+    onRequestClose?.();
+  }
+
+  function chooseSpecificVideo() {
+    onModeChange("asset");
+  }
+
+  function chooseAsset(nextAssetId: string) {
+    onModeChange("asset");
+    onAssetChange(nextAssetId);
+    if (nextAssetId) onRequestClose?.();
+  }
+
   return (
-    <div className="search-scope-control" aria-label="Search scope">
-      <div className="search-scope-intents">
-        <section className={`search-scope-intent ${mode === "group" ? "active" : ""}`}>
-          <button
-            type="button"
-            className="scope-intent-button"
-            disabled={indexes.length === 0}
-            onClick={() => onModeChange("group")}
-          >
-            <strong>Asset group search</strong>
-            <span>{selectedIndex ? `${selectedIndex.name} · ${groupAssetCount} videos` : "Select asset group"}</span>
-            <em className={groupDomain.tone}>{groupDomain.label}</em>
-          </button>
-          {mode === "group" && (
-            <label className="search-scope-picker">
-              <span>Asset group</span>
-              <select value={indexId} onChange={(event) => onIndexChange(event.target.value)} disabled={indexes.length === 0}>
-                <option value="">Select an asset group</option>
-                {indexes.map((index) => (
-                  <option key={index.id} value={index.id}>{index.name}</option>
-                ))}
-              </select>
-            </label>
-          )}
-        </section>
-        <section className={`search-scope-intent video ${mode !== "group" ? "active" : ""}`}>
-          <div className="scope-intent-heading">
-            <div>
-              <strong>Video search</strong>
-              <span>{mode === "asset" && selectedAsset ? selectedAsset.title : `${assets.length} videos`}</span>
-            </div>
-            <em className={videoDomain.tone}>{videoDomain.label}</em>
-          </div>
-          <div className="scope-video-switch">
-            <button type="button" className={mode === "all" ? "active" : ""} onClick={() => onModeChange("all")}>
+    <div className="search-scope-control" aria-label="Search target">
+      <div className="scope-popover-header">
+        <div>
+          <strong>Search target</strong>
+          <span>{mode === "group" ? "Asset group scope" : "Video scope"}</span>
+        </div>
+        <em className={mode === "group" ? groupDomain.tone : videoDomain.tone}>{mode === "group" ? groupDomain.label : videoDomain.label}</em>
+      </div>
+      <label className="scope-target-search">
+        <Search size={14} aria-hidden="true" />
+        <input value={targetQuery} onChange={(event) => setTargetQuery(event.target.value)} placeholder="Search videos or groups" />
+      </label>
+      <section className="scope-choice-section" aria-label="Video scope">
+        <div className="scope-choice-section-header">
+          <span>Video scope</span>
+          <b>{assets.length} videos</b>
+        </div>
+        <div className="scope-choice-list" role="radiogroup" aria-label="Video scope">
+          <button type="button" role="radio" aria-checked={mode === "all"} className={`scope-choice-button ${mode === "all" ? "active" : ""}`} onClick={chooseAllVideos}>
+            <span className="scope-choice-icon"><Library size={15} aria-hidden="true" /></span>
+            <span className="scope-choice-copy">
               <strong>All videos</strong>
               <span>{assets.length} videos</span>
-            </button>
-            <button type="button" className={mode === "asset" ? "active" : ""} onClick={() => onModeChange("asset")} disabled={assets.length === 0}>
+            </span>
+            <span className="scope-choice-check">{mode === "all" && <Check size={14} aria-hidden="true" />}</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={mode === "asset"}
+            className={`scope-choice-button ${mode === "asset" ? "active" : ""}`}
+            disabled={assets.length === 0}
+            onClick={chooseSpecificVideo}
+          >
+            <span className="scope-choice-icon"><Video size={15} aria-hidden="true" /></span>
+            <span className="scope-choice-copy">
               <strong>Specific video</strong>
               <span>{selectedAsset ? selectedAsset.title : "Select video"}</span>
-            </button>
-          </div>
-          {mode === "asset" && (
-            <label className="search-scope-picker">
-              <span>Video</span>
-              <select value={assetId} onChange={(event) => onAssetChange(event.target.value)} disabled={assets.length === 0}>
-                <option value="">Select a video</option>
-                {assetGroups.map((group) => (
-                  <optgroup key={group.index.id} label={group.index.name}>
-                    {group.assets.map((asset) => (
-                      <option key={asset.id} value={asset.id}>{asset.title}</option>
-                    ))}
-                  </optgroup>
-                ))}
-                {ungroupedAssets.length > 0 && (
-                  <optgroup label="Ungrouped">
-                    {ungroupedAssets.map((asset) => (
-                      <option key={asset.id} value={asset.id}>{asset.title}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </label>
-          )}
-        </section>
-      </div>
+            </span>
+            <span className="scope-choice-check">{mode === "asset" && <Check size={14} aria-hidden="true" />}</span>
+          </button>
+        </div>
+        {mode === "asset" && (
+          <label className="scope-inline-select">
+            <span>Video</span>
+            <select value={assetId} onChange={(event) => chooseAsset(event.target.value)} disabled={assets.length === 0}>
+              <option value="">Select a video</option>
+              {filteredGroupedAssets.map((group) => (
+                <optgroup key={group.index.id} label={group.index.name}>
+                  {(group.assets.length > 0 ? group.assets : assetGroups.find((item) => item.index.id === group.index.id)?.assets ?? []).map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.title}</option>
+                  ))}
+                </optgroup>
+              ))}
+              {filteredUngroupedAssets.length > 0 && (
+                <optgroup label="Ungrouped">
+                  {filteredUngroupedAssets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.title}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </label>
+        )}
+      </section>
+      <section className="scope-choice-section" aria-label="Asset groups">
+        <div className="scope-choice-section-header">
+          <span>Asset groups</span>
+          <b>{assetGroups.length} groups</b>
+        </div>
+        <div className="scope-choice-list groups" role="radiogroup" aria-label="Asset group scope">
+          {filteredAssetGroups.length === 0 && <p className="scope-empty">No matching groups</p>}
+          {filteredAssetGroups.map((group) => {
+            const domain = describeIndexDomain(group.index);
+            const isActive = mode === "group" && group.index.id === indexId;
+            return (
+              <button
+                key={group.index.id}
+                type="button"
+                role="radio"
+                aria-checked={isActive}
+                className={`scope-choice-button ${isActive ? "active" : ""}`}
+                onClick={() => chooseAssetGroup(group.index.id)}
+              >
+                <span className="scope-choice-icon"><FolderOpen size={15} aria-hidden="true" /></span>
+                <span className="scope-choice-copy">
+                  <strong>{group.index.name}</strong>
+                  <span>{group.assets.length} videos</span>
+                </span>
+                <em className={domain.tone}>{domain.label}</em>
+                <span className="scope-choice-check">{isActive && <Check size={14} aria-hidden="true" />}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }
@@ -139,7 +208,8 @@ export function SearchScopeSummary({
   useKnowledgeLayer,
   knowledgeContext,
   onTargetClick,
-  targetExpanded = false
+  targetExpanded = false,
+  targetControlId
 }: {
   scopeLabel: string;
   trustFilters: SearchTrustFilters;
@@ -147,6 +217,7 @@ export function SearchScopeSummary({
   knowledgeContext: SearchKnowledgeContext;
   onTargetClick?: () => void;
   targetExpanded?: boolean;
+  targetControlId?: string;
 }) {
   const targetContent = (
     <>
@@ -157,8 +228,16 @@ export function SearchScopeSummary({
   return (
     <div className="search-scope-summary" aria-label="Current search scope">
       {onTargetClick ? (
-        <button type="button" className="search-scope-chip target" aria-expanded={targetExpanded} onClick={onTargetClick}>
+        <button
+          type="button"
+          className="search-scope-chip target"
+          aria-expanded={targetExpanded}
+          aria-haspopup="dialog"
+          aria-controls={targetExpanded ? targetControlId : undefined}
+          onClick={onTargetClick}
+        >
           {targetContent}
+          <ChevronDown size={13} aria-hidden="true" />
         </button>
       ) : (
         <span>{targetContent}</span>

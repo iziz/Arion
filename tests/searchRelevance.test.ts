@@ -685,6 +685,104 @@ test("participant filters remain active for indexed asset evidence without knowl
   assert.equal(plan.intent.role, "passer");
 });
 
+test("asset moment retrieval drops registry-inferred competition and season scope filters", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      relatedKnowledgeMode: "none",
+      competition: "Premier League",
+      season: "2025-26",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: ["The named player initiates the pass action."]
+        },
+        {
+          entity: "Scott Player",
+          relation: "action_target",
+          role: "receiver",
+          eventType: "pass_receive",
+          evidence: ["The pass is directed to another player."]
+        }
+      ],
+      semanticQuery: "Find moments where Son Heung-min passes to another player.",
+      retrieval: {
+        textQuery: "Son Heung-min pass to teammate assist pass",
+        visualQuery: "football player passing the ball to teammate",
+        evidenceTerms: ["손흥민", "son heung-min", "pass", "패스"]
+      },
+      filterEvidence: {
+        competition: ["Son Heung-min is a Premier League player"],
+        season: ["current Premier League season in May 2026 is 2025-26"],
+        player: ["named player Son Heung-min"],
+        eventType: ["asking for a pass action"]
+      },
+      confidence: 0.94,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("손흥민이 다른 선수한테 패스하는 영상 찾아줘")
+  );
+
+  assert.equal(plan.domainFilters.competition, undefined);
+  assert.equal(plan.domainFilters.season, undefined);
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, "passer");
+  assert.deepEqual(plan.intent.participants?.map((participant) => participant.entity), ["Son Heung-min"]);
+  assert.match(plan.warnings.join(" "), /Dropped inferred scope filters/);
+});
+
+test("asset moment retrieval keeps explicitly requested competition and season scope filters", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      relatedKnowledgeMode: "none",
+      competition: "Premier League",
+      season: "2025-26",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: ["The named player initiates the pass action."]
+        }
+      ],
+      semanticQuery: "Find Premier League 2025-26 moments where Son Heung-min passes to another player.",
+      retrieval: {
+        textQuery: "Premier League 2025-26 Son Heung-min pass to teammate",
+        visualQuery: "Premier League football player passing the ball to teammate",
+        evidenceTerms: ["프리미어리그", "2025-26", "손흥민", "pass"]
+      },
+      filterEvidence: {
+        competition: ["The user explicitly says 프리미어리그."],
+        season: ["The user explicitly says 2025-26."],
+        player: ["named player Son Heung-min"],
+        eventType: ["asking for a pass action"]
+      },
+      confidence: 0.94,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("프리미어리그 2025-26에서 손흥민이 다른 선수한테 패스하는 영상 찾아줘")
+  );
+
+  assert.equal(plan.domainFilters.competition, "Premier League");
+  assert.equal(plan.domainFilters.season, "2025-26");
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, "passer");
+  assert.doesNotMatch(plan.warnings.join(" "), /Dropped inferred scope filters/);
+});
+
 test("top-level planner roles are ignored unless backed by structured participants", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
