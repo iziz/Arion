@@ -767,6 +767,8 @@ Stage details:
 11. `domain-vlm`
    - Optional VLM refinement of related-knowledge event metadata.
    - A sub-stage inside the durable `domain-index` checkpoint when enabled.
+   - For `sports.football`, the VLM output can populate structured `football.passingPlayer` and `football.receivingPlayer` roles. These roles describe event evidence, not the current query target.
+   - Named player roles require supporting visible text, ASR/OCR text, metadata, or existing indexed domain text. The VLM prompt explicitly keeps passer and receiver direction separate and does not swap roles to satisfy a search term.
 12. `embed`
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
@@ -930,6 +932,9 @@ Additional planner fields are part of the retrieval contract:
 - `retrieval.requiredEvidence` defines hard evidence-channel constraints such as `visible_text` or `spoken_text`.
 - `filterEvidence` records the exact planner evidence for inferred structured filters. Inferred filters without evidence are discarded unless supplied explicitly by the caller.
 - `intent.metric` and `intent.statMode` are explicit. Route alone never implies a statistics question.
+- `intent.participants` preserves named-entity action direction. `relation=action_source` means the entity initiates the action, `relation=action_target` means the entity receives or is targeted by it, and `subject` means the entity is only the topic.
+- Participant roles are inferred from structured semantic direction and event type, not from language-specific keyword overrides. For example, a pass action with `Son Heung-min` as `action_source` becomes `player=Son Heung-min`, `role=passer`, and `eventType=pass_receive`.
+- Top-level planner `role` is treated as deprecated for participant binding. A role is promoted into `domainFilters` only when it is backed by evidence-bearing `participants` or by explicit caller filters.
 
 Current examples from the code:
 
@@ -986,6 +991,8 @@ Domain filter matching uses a production evaluation model:
 - `failed`: trusted structured evidence conflicts with the requested event, role, pass type, field zone, player, competition, or season.
 
 Weak event text can admit a candidate only when no trusted structured event is present. It is reported as `soft_pass` verification and receives lower ranking credit. If trusted structured event evidence exists and conflicts with the requested filter, the candidate is rejected before ranking.
+
+Player-role binding is checked against structured domain events. A query such as `player=Son Heung-min + role=passer + eventType=pass_receive` must match `football.passingPlayer.identity`; a segment where Son appears only as `football.receivingPlayer.identity` is rejected. There is no text fallback for role-specific player binding.
 
 Text vector query flow:
 

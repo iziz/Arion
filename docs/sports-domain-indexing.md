@@ -27,6 +27,13 @@ Asset group domain configuration
         -> sports.american_football strategy
   -> embedding/vector upsert
      -> domain and identity-enriched search text
+Ask/search query planning
+  -> model planner contract
+     -> participants[] semantic direction
+        -> action_source/action_target/subject
+     -> evidence-gated player + role + event filters
+  -> domain filter verification
+     -> structured event role identity binding
 ```
 
 ## Sports Base Template
@@ -63,10 +70,32 @@ It specializes the base contract with:
 - match minute parsing from OCR/ASR/VLM
 - SoccerNet-style action spotting evidence when available
 
+Football domain events can carry explicit pass participant roles:
+
+- `football.passingPlayer`: the player who releases or initiates the pass
+- `football.receivingPlayer`: the player who receives, controls, or is clearly targeted by the pass
+
+These roles are evidence fields on the indexed event. They are not query-time labels and must not be swapped to satisfy a user search. Named roles require supporting visible text, ASR/OCR text, metadata, VLM evidence, or existing domain text.
+
 Identity status remains conservative:
 
 - `confirmed` requires confirmed match context, strong ASR/OCR/VLM text evidence, active roster window, track evidence, and clock evidence.
 - jersey OCR is candidate evidence unless roster and track evidence also support the same player.
+
+## Participant-Aware Query Planning
+
+The Ask/search planner now represents named entities in actions through `participants[]`:
+
+- `relation=action_source`: the entity initiates the action
+- `relation=action_target`: the entity receives or is targeted by the action
+- `relation=subject`: the entity is only the topic
+- `relation=unknown`: direction is unclear
+
+For football passes, `action_source` maps to `role=passer` and `eventType=pass_receive`; `action_target` maps to `role=receiver` and `eventType=pass_receive`.
+
+Planner roles are not inferred through language-specific keyword overrides. Evidence-bearing participant constraints are required before inferred roles are promoted into search filters. A query such as `손흥민이 다른 선수한테 패스하는 장면 찾아줘` should plan as a named `action_source`, so retrieval verifies `Son Heung-min` against `football.passingPlayer.identity`.
+
+Top-level planner `role` is deprecated for participant binding. It is ignored unless the role is backed by `participants[]` or supplied as an explicit caller filter.
 
 ## American Football Strategy
 
@@ -179,11 +208,12 @@ The package-level `test` script currently runs the full test suite because `test
 
 Existing uploaded videos do not need to be uploaded again.
 
-To populate the new sports identity output for existing football or American-football assets, re-run indexing from `domain-index` or rebuild the affected indexes. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
+To populate the new sports identity output or participant role event fields for existing football or American-football assets, re-run indexing from `domain-index`, run domain VLM refinement, or rebuild the affected indexes. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
 
 ## Current Limitations
 
 - Football player identity is still evidence-gated and candidate-first unless match context, clock, roster window, and track evidence agree.
+- Football passer/receiver identity depends on structured domain event evidence from action spots, VLM refinement, OCR/ASR text, metadata, or other indexed domain evidence. Generic text alone does not prove that a named player is the passer.
 - American-football helmet assignment and contact detection are represented in the schema, but external detector integration is still model-dependent.
 - nflverse is NFL-scoped; college or generic American-football footage can receive action labels but must not receive nflverse game/play alignment from weak evidence.
 - Multi-camera synchronization and official broadcast timecode feeds are not implemented.
@@ -196,6 +226,7 @@ Any project presentation should be updated to reflect these architecture changes
 - Add the `manifest + generator + evaluator` template contract.
 - Show Knowledge action spotting as a domain-specific stage, not one SoccerNet-only path.
 - Add the sports identity resolver after domain event enrichment and before embedding/vector upsert.
+- Add participant-aware query planning with `participants[]`, including `action_source`/`action_target` direction and structured passer/receiver verification.
 - Show edited videos as multiple match/game contexts with `videoRanges[]` and `clockMappings[]`.
 - Add American-football data flow: nflverse play metadata, Big Data Bowl-style schema, helmet/contact/MOT hooks, and timestamp action JSON.
 - Clarify that `trackId -> playerId` is evidence-gated and candidate-first.

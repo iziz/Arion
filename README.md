@@ -143,7 +143,7 @@ QWEN_VLM_MLX_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
 VLM_WORKER_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
 ```
 
-Use larger VLMs only when the machine has enough unified memory. The VLM affects video segment descriptions, domain refinement, and query planning fallback. It does not replace detector/tracker evidence or visual embeddings.
+Use larger VLMs only when the machine has enough unified memory. The VLM affects video segment descriptions, domain refinement, and query planning fallback. For sports-domain assets, domain refinement can emit structured football passer/receiver roles, and query planning fallback follows the same participant-direction contract as the OpenAI planner. It does not replace detector/tracker evidence or visual embeddings.
 
 ## Common Commands
 
@@ -367,4 +367,3 @@ npm run models:doctor:ai
 - [npm Scripts](docs/npm-scripts.md)
 - [Sports Domain Indexing](docs/sports-domain-indexing.md)
 - [Domain Adaptive Video Intelligence](docs/domain-adaptive-video-intelligence.md)
-
