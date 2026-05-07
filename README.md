@@ -1,171 +1,172 @@
 # Arion
 
-Arion is a local TwelveLabs-like service prototype for video ingest, index management, asynchronous jobs, timeline search, analysis, webhook delivery, and operational event logs.
+Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, and sports-domain context.
 
-## What It Implements
+It is built as an application stack rather than a notebook or single LLM script: uploads become durable jobs, model work runs behind service boundaries, evidence is persisted into PostgreSQL/pgvector, and the React console exposes the indexing and search workflow end to end.
 
-- Index creation with model and modality configuration
-- Local video/audio upload
-- Async indexing and reindexing jobs with progress states
-- `ffprobe` metadata extraction
-- Local S3/R2-style object storage under `.data/object-storage`
-- Configurable local `/media` serving boundary for development, with production mode that disables API-process media serving
-- Redis/BullMQ worker process for indexing and reindexing jobs
-- Redis/BullMQ ask operation queue with a separate TypeScript ask worker process
-- Queue outbox dispatch for asset jobs and ask operations
-- Indexing stage checkpoints with checkpoint-aware worker recovery
-- Server-Sent Events progress updates through `/api/events/stream`
-- Python model runtime service boundary for ASR, OCR, vision, and embedding runtimes
-- Whisper `large-v3` adapter for real local ASR, without metadata-as-transcript fallback
-- FFmpeg audio extraction and local VAD/music-region detection
-- Optional WhisperX speaker diarization when `whisperx` and a Hugging Face token are configured
-- PaddleOCR adapter for real frame OCR, with metadata fallback when dependencies are unavailable
-- Local visual-understanding sampler
-- Segment-level Whisper timestamp mapping
-- Generated keyframes for timeline/search thumbnails
-- FFmpeg scene/shot boundary detection for scene-aware timeline segments
-- Timeline segment generation with modality labels and local semantic text embeddings
-- OpenCLIP keyframe image embeddings for visual search over generated thumbnails
-- Optional sports-only domain indexing for football asset groups, with ontology captions, event labels, and structured field/player/ball event placeholders
-- Persistent application and vector storage in Docker-managed PostgreSQL + pgvector
-- Hybrid search ranking over lexical matches, text semantic vectors, visual vectors, source quality, confidence, and recency
-- Analysis endpoint for selected indexed assets
-- Webhook registration and delivery logs
-- Event log persisted to `.data/events.ndjson`
-- OpenTelemetry tracing with local in-memory span export
-- Structured JSON logs persisted to `.data/logs/app.ndjson`
-- Request id correlation through `x-request-id` and `traceparent` response headers
-- Per-stage latency metrics for indexing, search, vector upserts, and model runtimes
-- Model runtime latency/error dashboard in the React console
-- Local user/API-key registry and billing ledger
-- React dashboard for indexes, ingest, asset status, search, analysis, jobs, webhooks, events, database status, and observability
+## What Arion Does
+
+- Ingests local video assets into asset groups.
+- Runs asynchronous indexing jobs with durable checkpoints and retry support.
+- Extracts media metadata, audio, speech regions, ASR, OCR, coarse visual profiles, scene windows, and keyframes.
+- Builds searchable timeline segments with evidence sources, confidence, thumbnails, and embeddings.
+- Stores text vectors and visual keyframe vectors in PostgreSQL with pgvector.
+- Supports hybrid retrieval across lexical text, semantic vectors, visual vectors, source quality, domain evidence, and recency.
+- Optionally runs a Qwen VLM worker for keyframe descriptions, domain refinement, and query planning fallback.
+- Optionally enriches sports assets with football and American-football domain events, related knowledge, action spots, match identity, and player/team context.
+- Exposes a React console for ingest, jobs, workflow inspection, search, clips, analysis, knowledge, webhooks, observability, and runtime capability checks.
+
+## Current Shape
+
+Arion is a local development and prototype system. It is designed around explicit runtime boundaries:
+
+- Application state: PostgreSQL
+- Queue execution: Redis + BullMQ
+- Media files: local object-storage namespace under `.data/object-storage`
+- Model runtimes: Python FastAPI service and optional VLM worker
+- Frontend: Vite + React
+- API and workers: TypeScript/Express services
+
+The orchestration layer is custom TypeScript workflow code. Arion does not currently use LangChain or LangGraph.
 
 ## Architecture
 
-Sports-domain indexing details live in [docs/sports-domain-indexing.md](docs/sports-domain-indexing.md).
+```mermaid
+flowchart TD
+  Console["React Console"] --> API["Express API"]
+  API --> Postgres["PostgreSQL + pgvector"]
+  API --> Media["Local object storage"]
+  API --> Outbox["Queue outbox"]
+  Outbox --> Redis["Redis / BullMQ"]
+  Redis --> AssetWorker["Asset worker"]
+  Redis --> AskWorker["Ask worker"]
+  AssetWorker --> Runtime["Python model runtime\nASR / OCR / vision / embeddings"]
+  AssetWorker --> VLM["Optional Qwen VLM worker"]
+  AskWorker --> Search["Ask and search workflow"]
+  Search --> Postgres
+  API --> SSE["SSE event stream"]
+  SSE --> Console
+```
+
+The core indexing workflow is:
 
 ```text
-React Console
-  -> Express API Process
-     -> TypeScript Application Services
-        -> Queue Outbox -> Redis/BullMQ Ask Queue -> Ask Worker Process
-        -> Queue Outbox -> Redis/BullMQ Asset Queue -> Asset Job Worker Process
-        -> SSE Event Stream: /api/events/stream
-        -> Runtime Service Boundary
-           -> Python Runtime Services: ASR / OCR / Vision / Embedding
-           -> VLM Worker Service
-           -> Node Runtime Integrations: FFmpeg / OpenAI HTTP
-        -> Application Persistence: PostgreSQL app_* tables
-        -> Media Object Storage: source media and generated artifacts
-        -> Observability Sink: OpenTelemetry spans, NDJSON logs, latency metrics
-  -> Media Delivery Boundary
-     -> Object storage / CDN / reverse proxy in production
-     -> Express /media static serving only in local-static development mode
+upload -> probe -> local model runtime -> scene detection -> timeline
+  -> keyframes -> video VLM -> detector/tracker -> domain evidence
+  -> domain VLM -> text embeddings -> visual embeddings -> finalize
 ```
 
-The indexing, search, and analysis logic is adapter-friendly. Production-oriented boundaries are explicit: application state is separate from binary media storage, long-running work runs in worker processes, and model runtimes are reached through service boundaries.
+Each major stage is checkpointed so interrupted workers can resume without rebuilding outputs that are already persisted.
 
-## Commands
+See [docs/architecture.md](docs/architecture.md) for the full system map.
 
-The full npm script reference lives in [docs/npm-scripts.md](docs/npm-scripts.md).
+## Requirements
+
+- Node.js 20 or newer
+- npm
+- Docker Desktop or a compatible Docker runtime
+- FFmpeg and ffprobe on the host for local development
+- Python 3.10-3.12 for local AI services
+
+PostgreSQL and Redis are started through Docker Compose in the standard local workflow. The app expects pgvector-backed PostgreSQL for normal operation.
+
+## Quick Start
 
 ```bash
+git clone git@github.com:iziz/Arion.git
+cd Arion
+
+cp .env.example .env
 npm install
+
 npm run dev
-npm run dev:full
-npm test
-npm run build
-npm run models:doctor:ai
-npm run models:runtime:ai
-npm run infra:check
-npm run db:check
-npm run indexes:rebuild -- --all
-npm run docker:up
-npm run docker:full
 ```
 
-Use `npm run dev` for the standard local stack and `npm run dev:full` when local AI runtime services should be started with the app.
-The web app runs on `http://localhost:5173`, the API runs on `http://localhost:8787`, and the local Python runtime service defaults to `http://127.0.0.1:8792`.
-Asset job execution, ask operation execution, and application persistence require Docker-managed Redis and PostgreSQL in the standard development path. `npm run dev`, `npm run dev:full`, `npm run dev:worker`, `npm run dev:ask-worker`, `npm run worker`, and `npm run ask-worker` run `dev:infra` first, which starts `redis` and `postgres` through Docker Compose and waits for readiness.
-`REDIS_URL` defaults to `redis://127.0.0.1:16379` for Docker-backed host development, and Docker app services use `redis://redis:6379`.
-The Vite dev server allows `.ngrok-free.dev` hosts by default for HTTPS tunnel testing. Set `VITE_DEV_ALLOWED_HOSTS` to a comma-separated list when additional tunnel or LAN hostnames need access.
-Local environment values are loaded from `.env` automatically when present.
+Default local endpoints:
 
-## API
+| Service | URL |
+| --- | --- |
+| React console | `http://localhost:5173` |
+| API | `http://localhost:8787` |
+| PostgreSQL | `localhost:15432` |
+| Redis | `localhost:16379` |
 
-- `GET /api/health`
-- `GET /api/metrics`
-- `GET /api/db/status`
-- `GET /api/storage/status`
-- `GET /api/observability`
-- `GET /api/model-capabilities`
-- `GET /api/users`
-- `GET /api/billing`
-- `GET /api/events`
-- `GET /api/indexes`
-- `POST /api/indexes`
-- `GET /api/assets`
-- `POST /api/assets`
-- `POST /api/indexes/:id/assets`
-- `POST /api/assets/:id/reindex`
-- `GET /api/jobs`
-- `POST /api/jobs/:id/retry`
-- `POST /api/ask`
-- `GET /api/ask/:id`
-- `GET /api/search?q=...`
-- `GET /api/vector-search?q=...`
-- `GET /api/visual-search?q=...`
-- `POST /api/vector-store/rebuild`
-- `POST /api/analyze`
-- `POST /api/assets/:id/analyze`
-- `GET /api/webhooks`
-- `POST /api/webhooks`
-- `POST /api/webhooks/:id/test`
-- `POST /api/webhooks/:id/retry`
-- Compatibility aliases: `GET /api/videos`, `POST /api/videos`, `POST /api/videos/:id/analyze`
+`npm run dev` starts Docker Redis/PostgreSQL, the Express API, the asset worker, the ask worker, and the Vite frontend.
 
-## Local Runtime Behavior
+## Full Local AI Setup
 
-- If `API_KEYS` is unset, the API is open for local development.
-- If `API_KEYS` is set to a comma-separated list, requests must include `x-api-key`.
-- A default local user exists with API key `local-dev-key`.
-- A lightweight in-memory rate limiter protects the local API. Set `RATE_LIMIT_PER_MINUTE` to override the default local limit of `600`.
-- Webhook URLs beginning with `log://` are marked delivered without a network call.
-- Set `LOCAL_OBJECT_PROVIDER=local-s3` or `LOCAL_OBJECT_PROVIDER=local-r2` to switch the local object-storage namespace.
-- Set `MEDIA_SERVING_MODE=local-static` to serve `.data/object-storage` through Express `/media` during local development.
-- Set `MEDIA_SERVING_MODE=disabled` for production-style deployments where media is served by object storage, CDN, or a reverse proxy boundary instead of the API process.
-- Set `MEDIA_STATIC_MAX_AGE=1h` or another cache-control max age for local static media responses.
-- Set `UPLOAD_MAX_BYTES=8589934592` or another byte value to adjust the local upload limit. The default is 8GB.
-- Set `UPLOAD_TEMP_MAX_AGE_MS=86400000` to control stale temp upload cleanup on API boot.
-- Set `ASK_QUEUE_NAME`, `ASK_WORKER_CONCURRENCY`, and `ASK_QUEUE_RECONCILE_MS` to tune the durable ask operation queue and worker reconciliation behavior.
-- Set `PYTHON_RUNTIME_MODE=service` to route Python model work through HTTP runtime services. Set `PYTHON_RUNTIME_MODE=direct` for local script execution during development.
-- Set `PYTHON_RUNTIME_SERVICE_URL=http://127.0.0.1:8792` for the default combined local runtime service.
-- Set `ASR_RUNTIME_SERVICE_URL`, `OCR_RUNTIME_SERVICE_URL`, `VISION_RUNTIME_SERVICE_URL`, or `EMBEDDING_RUNTIME_SERVICE_URL` to move those runtimes to separate hosts without changing the Node worker code.
-- Set `PYTHON_RUNTIME_SERVICE_ATTEMPTS=2` or higher to retry transient runtime-service call failures before the workflow records the stage as failed.
-- Set `LOCAL_AI_PYTHON=/path/to/python` if Whisper/PaddleOCR are installed in a dedicated virtual environment.
-- Set `WHISPER_MODEL=large-v3|large-v3-turbo|small|medium|...` to choose the local Whisper model.
-- Set `WHISPER_BACKEND=whispercpp`, `WHISPER_CPP_BIN=/path/to/whisper-cli`, and `WHISPER_CPP_MODEL=/path/to/ggml-large-v3-turbo.bin` to use whisper.cpp for ASR.
-- Set `WHISPER_LANGUAGE=auto` to let Whisper detect the spoken language, or set a specific language code.
-- Set `WHISPERX_MODEL=large-v3` and `WHISPERX_HF_TOKEN=...` to enable optional WhisperX speaker diarization.
-- Set `PADDLEOCR_LANG=auto` to run OCR language candidates based on asset metadata, or set `en|korean|ch|...` to force one language pack.
-- Set `VISION_DETECTOR_BACKEND=auto|ultralytics|rfdetr` to choose the person/ball detector. YOLO uses `VISION_DETECTOR_MODEL`, RF-DETR uses `VISION_RFDETR_MODEL`, and missing detector backends are marked unavailable.
-- Set `VISION_TRACKER=bytetrack.yaml` to run Ultralytics ByteTrack/BoT-SORT tracking when `ultralytics` is installed.
-- Set `SOCCERNET_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `SOCCERNET_ACTION_SPOTS_JSON=/path/to/predictions.json` to import SoccerNet-style action spotting results as trusted sports domain evidence.
-- Set `AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND=/path/to/spotter` or `AMERICAN_FOOTBALL_ACTION_SPOTS_JSON=/path/to/predictions.json` to import American-football action spotting results as trusted sports domain evidence. Legacy `NFL_ACTION_*` names are also accepted.
-- Set `CAPABILITY_*` values or the asset-group capability policy to `disabled|optional|required`. Required capabilities fail the indexing job when unavailable; optional capabilities only record unavailable traces.
-- Set `EMBEDDING_MODEL=intfloat/multilingual-e5-base` and `EMBEDDING_DIMENSIONS=768` to choose the local semantic embedding model.
-- Set `VISUAL_EMBEDDING_MODEL=ViT-L-14`, `VISUAL_EMBEDDING_PRETRAINED=datacomp_xl_s13b_b90k`, and `VISUAL_EMBEDDING_DIMENSIONS=768` to choose the local visual embedding model.
-- Set `SCENE_THRESHOLD=0.3` to tune FFmpeg scene-boundary detection sensitivity.
-- Enable `Sports domain indexing` when creating an asset group to add football ontology captions, event labels, and structured event metadata. This layer is asset-group scoped and is skipped for non-sports asset groups.
-- Uploaded filenames and multipart text fields are normalized to UTF-8 NFC. Run `npm run text:repair` if older local records contain mojibake from Korean or CJK filenames.
-- Every API response includes `x-request-id` and W3C `traceparent` headers for request correlation.
-- Structured JSON logs are written to stdout and `.data/logs/app.ndjson`.
-- `GET /api/observability` returns recent spans, recent logs, request latency, stage latency, and model runtime latency/error metrics.
-- `GET /api/model-capabilities` returns the current local runtime dependency/capability check.
+Install Python model dependencies into `.venv-ai`:
+
+```bash
+python3 -m venv .venv-ai
+. .venv-ai/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.local-ai.txt
+```
+
+Then run the full stack:
+
+```bash
+npm run dev:full
+```
+
+`dev:full` starts the standard app plus:
+
+- `scripts/arion_model_runtime_service.py` on `http://127.0.0.1:8792`
+- `scripts/qwen_vlm_worker.py` on `http://127.0.0.1:8791`
+
+Run diagnostics when a model backend fails to load:
+
+```bash
+npm run models:doctor:ai
+curl http://127.0.0.1:8792/health
+curl http://127.0.0.1:8791/health
+```
+
+## VLM Worker
+
+The VLM worker defaults to Qwen2.5-VL. On Apple Silicon with `mlx-vlm`, the local default can use the MLX 4-bit model from `.env.example`:
+
+```env
+QWEN_VLM_BACKEND=mlx
+QWEN_VLM_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
+QWEN_VLM_MLX_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
+VLM_WORKER_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
+```
+
+To test a larger MLX VLM, change those values before starting `npm run models:vlm:ai` or `npm run dev:full`, for example:
+
+```env
+QWEN_VLM_BACKEND=mlx
+QWEN_VLM_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
+QWEN_VLM_MLX_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
+VLM_WORKER_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
+```
+
+Use larger VLMs only when the machine has enough unified memory. The VLM affects video segment descriptions, domain refinement, and query planning fallback. It does not replace detector/tracker evidence or visual embeddings.
+
+## Common Commands
+
+| Goal | Command |
+| --- | --- |
+| Start standard local development | `npm run dev` |
+| Start full local AI development | `npm run dev:full` |
+| Start Docker Redis/PostgreSQL only | `npm run infra:up` |
+| Check Docker infrastructure | `npm run infra:check` |
+| Check PostgreSQL/pgvector | `npm run db:check` |
+| Run tests | `npm test` |
+| Type-check and build | `npm run build` |
+| Run model diagnostics | `npm run models:doctor:ai` |
+| Rebuild embeddings | `npm run embeddings:rebuild` |
+| Rebuild indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` |
+| Run containerized app stack | `npm run docker:up` |
+| Run containerized app + AI stack | `npm run docker:full` |
+
+The full script reference is in [docs/npm-scripts.md](docs/npm-scripts.md).
 
 ## Docker Runtime
 
-Docker is the required infrastructure boundary for the standard runtime.
+Standard infrastructure:
 
 ```bash
 npm run infra:up
@@ -174,7 +175,7 @@ npm run infra:logs
 npm run infra:down
 ```
 
-Containerized application runtime:
+Containerized app services:
 
 ```bash
 npm run docker:up
@@ -182,119 +183,188 @@ npm run docker:full
 npm run docker:down
 ```
 
-The Compose stack defines these service boundaries:
+Compose services:
 
-- `postgres`: `pgvector/pgvector:pg17`
-- `redis`: `redis:7.4-alpine`
-- `api`: Express API process
-- `asset-worker`: BullMQ asset job worker
-- `ask-worker`: BullMQ ask operation worker
-- `web`: Nginx static frontend with `/api` and `/media` reverse proxying
-- `model-runtime`: FastAPI Python runtime service for ASR/OCR/vision/embedding
-- `vlm`: FastAPI VLM service
+| Service | Purpose |
+| --- | --- |
+| `postgres` | PostgreSQL 17 with pgvector |
+| `redis` | Redis queue backend |
+| `api` | Express API process |
+| `asset-worker` | Long-running asset indexing jobs |
+| `ask-worker` | Async ask/search operations |
+| `web` | Nginx-served frontend |
+| `model-runtime` | Python ASR/OCR/vision/embedding service |
+| `vlm` | Qwen VLM FastAPI service |
 
-The Docker application services use `.env.docker`; host development uses `.env` plus `ARION_DOCKER_INFRA=true` from npm scripts. That flag pins Redis/PostgreSQL URLs to Docker infra ports so unrelated local services are not used accidentally.
+Host development reads `.env`. Docker application services read `.env.docker`.
 
-## Local AI Setup
+## API Overview
 
-Python 3.10-3.12 is recommended for PaddleOCR/PaddlePaddle compatibility.
+Health and operations:
+
+- `GET /api/health`
+- `GET /api/metrics`
+- `GET /api/db/status`
+- `GET /api/storage/status`
+- `GET /api/observability`
+- `GET /api/model-capabilities`
+- `GET /api/events`
+- `GET /api/events/stream`
+
+Assets and indexes:
+
+- `GET /api/indexes`
+- `POST /api/indexes`
+- `GET /api/indexes/:id`
+- `PATCH /api/indexes/:id`
+- `DELETE /api/indexes/:id`
+- `GET /api/assets`
+- `POST /api/assets`
+- `POST /api/indexes/:id/assets`
+- `GET /api/assets/:id`
+- `DELETE /api/assets/:id`
+- `POST /api/assets/:id/reindex`
+
+Search and analysis:
+
+- `POST /api/ask`
+- `GET /api/ask/:id`
+- `GET /api/search?q=...`
+- `GET /api/search/plan?q=...`
+- `GET /api/knowledge/answer?q=...`
+- `GET /api/vector-search?q=...`
+- `GET /api/visual-search?q=...`
+- `POST /api/vector-store/rebuild`
+- `POST /api/analyze`
+- `POST /api/assets/:id/analyze`
+- `GET /api/assets/:id/clips`
+- `GET /api/assets/:id/clips/:segmentId`
+
+Webhooks:
+
+- `GET /api/webhooks`
+- `POST /api/webhooks`
+- `POST /api/webhooks/:id/test`
+- `POST /api/webhooks/:id/retry`
+
+## Indexing Evidence
+
+Arion stores evidence at multiple levels:
+
+- Asset-level intelligence: ASR, OCR, audio/VAD, visual profile, model traces
+- Segment-level scene data: speech, subtitles, screen text, visual metadata, VLM descriptions, vision evidence
+- Domain evidence: sports event labels, captions, scope, players, teams, match identity, action spots
+- Embeddings: text passage vectors and visual keyframe vectors
+- Operational evidence: job stage checkpoints, runtime stage status, logs, spans, and events
+
+Coarse visual profiles are intentionally low-confidence cues. They summarize sampled frame color and frame-change signals, but they are not detector, tracker, VLM, or calibrated field evidence.
+
+## Sports Knowledge
+
+Sports-domain indexing is asset-group scoped. When enabled, Arion can attach related knowledge and structured events for:
+
+- `sports.football`
+- `sports.american_football`
+
+Supported knowledge and template sources include:
+
+- football-data imports
+- UK football-data imports
+- StatsBomb open data
+- StatBunker imports
+- nflverse imports
+- SoccerNet-style action spotting
+- American-football action spot templates
+
+Useful commands:
 
 ```bash
-python3 -m venv .venv-ai
-. .venv-ai/bin/activate
-python -m pip install -r requirements.local-ai.txt
-LOCAL_AI_PYTHON="$PWD/.venv-ai/bin/python" npm run dev
+npm run knowledge:nflverse
+npm run knowledge:sync-current
+npm run knowledge:vectors:rebuild
+npm run knowledge:american-football-action-spots
 ```
 
-Run the model runtime service with the same Python environment used for local AI dependencies:
+More detail is available in:
+
+- [docs/sports-domain-indexing.md](docs/sports-domain-indexing.md)
+- [docs/domain-adaptive-video-intelligence.md](docs/domain-adaptive-video-intelligence.md)
+
+## Configuration
+
+Important environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `POSTGRES_REQUIRE_PGVECTOR` | Requires pgvector availability when true |
+| `REDIS_URL` | Redis queue connection |
+| `MEDIA_SERVING_MODE` | `local-static` or `disabled` |
+| `UPLOAD_MAX_BYTES` | Maximum upload size |
+| `PYTHON_RUNTIME_MODE` | `service` or `direct` |
+| `PYTHON_RUNTIME_SERVICE_URL` | Combined Python model runtime URL |
+| `ASR_RUNTIME_SERVICE_URL` | Optional split ASR runtime URL |
+| `OCR_RUNTIME_SERVICE_URL` | Optional split OCR runtime URL |
+| `VISION_RUNTIME_SERVICE_URL` | Optional split vision runtime URL |
+| `EMBEDDING_RUNTIME_SERVICE_URL` | Optional split embedding runtime URL |
+| `VLM_WORKER_URL` | Optional Qwen VLM worker URL |
+| `OPENAI_API_KEY` | Optional OpenAI query planner |
+| `OPENAI_QUERY_PLANNER` | Set `off` or `false` to disable OpenAI planner |
+| `WHISPER_MODEL` | Local Whisper model name |
+| `WHISPER_BACKEND` | `auto`, `whispercpp`, `faster-whisper`, or `openai-whisper` |
+| `PADDLEOCR_LANG` | OCR language selection |
+| `VISION_DETECTOR_BACKEND` | `auto`, `ultralytics`, or `rfdetr` |
+| `VISION_TRACKER` | Ultralytics tracker config |
+| `EMBEDDING_MODEL` | Text embedding model |
+| `VISUAL_EMBEDDING_MODEL` | OpenCLIP visual embedding model |
+| `CAPABILITY_*` | Runtime capability policy: `disabled`, `optional`, or `required` |
+
+Start from [.env.example](.env.example). Do not commit local `.env` values.
+
+## Verification
+
+Run the TypeScript test suite:
 
 ```bash
-npm run models:runtime:ai
+npm test
 ```
 
-`npm run dev:full` starts the Python runtime service, the optional VLM worker, the Express API, the Redis-backed asset worker, the Redis-backed ask worker, and the Vite frontend together.
-
-The runtime extracts 16 kHz mono WAV audio with FFmpeg, derives speech/music regions with FFmpeg VAD-style silence detection, then tries `faster-whisper` first and `openai-whisper` second. WhisperX diarization is optional because pyannote-backed diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`. PaddleOCR runs over frames extracted from the uploaded video with FFmpeg and can try multiple OCR language candidates when `PADDLEOCR_LANG=auto`.
-The current local setup uses `.venv-ai` with Python 3.11, `faster-whisper`, `openai-whisper`, `whisperx`, `paddleocr`, `paddlepaddle`, `sentence-transformers`, and optional `ultralytics`/`rfdetr`/`SoccerNet` backends.
-
-`TIMELINE_MAX_SEGMENTS` controls the maximum generated timeline windows and keyframes per asset; the default is `120`. When raw scene windows exceed that limit, adjacent windows are merged across the full duration instead of truncating the tail of the video. Domain-neutral Video VLM analysis and domain-specific VLM refinement follow their eligible timeline/keyframe counts.
-
-## Local Embeddings
-
-The default semantic embedding model is `intfloat/multilingual-e5-base`, which produces normalized 768-dimensional vectors for transcript, OCR, visual labels, tags, and timeline text. Query text is embedded with the same model before vector search.
-The default visual embedding model is OpenCLIP `ViT-L-14/datacomp_xl_s13b_b90k`, which produces normalized 768-dimensional vectors for generated keyframes and visual text queries. `ViT-B-32/laion2b_s34b_b79k` remains usable by setting the environment variables back to that model and `VISUAL_EMBEDDING_DIMENSIONS=512`.
+Run type-check and frontend build:
 
 ```bash
-npm run embeddings:rebuild
+npm run build
 ```
 
-Use this command after changing `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `VISUAL_EMBEDDING_MODEL`, `VISUAL_EMBEDDING_PRETRAINED`, or `VISUAL_EMBEDDING_DIMENSIONS`. If the text model runtime is unavailable, the app falls back to deterministic keyword vectors so local indexing can continue. If the visual model runtime is unavailable, visual vectors are skipped while text search remains available.
-
-To rebuild every local index from source videos, including full asset reindexing, Video VLM analysis when configured, text/visual vectors, and sports knowledge vectors:
+Check local infrastructure:
 
 ```bash
-npm run indexes:rebuild -- --all
-```
-
-Use `--skipKnowledge` to rebuild only asset indexes, `--skipAssets` to rebuild only knowledge vectors, and `--batchSize=128` to tune knowledge vector embedding batches. Without `--all`, the command reindexes only assets that are already indexed.
-
-## PostgreSQL + pgvector
-
-The standard development and operational topology uses Docker-managed PostgreSQL with pgvector and Docker-managed Redis.
-
-```bash
-cp .env.example .env
-npm run infra:up
+npm run infra:check
 npm run db:check
-npm run legacy:migrate
-npm run db:seed
-npm run dev
 ```
 
-`npm run infra:up` runs `docker compose up -d redis postgres` and waits for Redis and PostgreSQL readiness. Host development uses project-scoped ports `16379` for Redis and `15432` for PostgreSQL by default to avoid accidentally connecting to unrelated local services. `npm run infra:down` stops the Compose stack.
-`docker-compose.yml` uses `pgvector/pgvector:pg17`, so `POSTGRES_REQUIRE_PGVECTOR=true` is the expected Docker path. The runtime requires `DATABASE_URL`; local JSON files are only accepted as input to the explicit legacy migration command.
-
-Operational settings:
-
-- `POSTGRES_POOL_MAX` controls the Node `pg` pool size.
-- `POSTGRES_CONNECTION_TIMEOUT_MS` and `POSTGRES_IDLE_TIMEOUT_MS` control pool behavior.
-- `POSTGRES_REQUIRE_PGVECTOR=true` fails startup when the `vector` extension is unavailable.
-- `PGSSLMODE=require` enables TLS for hosted Postgres connections.
-
-The app creates these tables automatically:
-
-- `app_indexes`
-- `app_assets`
-- `app_jobs`
-- `app_webhooks`
-- `app_events`
-- `app_users`
-- `app_billing`
-- `app_vectors`
-- `app_visual_vectors`
-- `app_knowledge_vectors`
-- `app_tracking_records`
-- `app_ask_operations`
-- `app_queue_outbox`
-- `app_schema_migrations`
-
-`app_vectors.embedding` and `app_knowledge_vectors.embedding` are created as `vector(EMBEDDING_DIMENSIONS)` columns and vector distance search uses pgvector. `app_visual_vectors.embedding` is created as `vector(VISUAL_EMBEDDING_DIMENSIONS)`.
-Rows with incompatible embedding dimensions fail insertion and must be rebuilt with `npm run embeddings:rebuild` or `npm run indexes:rebuild`. Search only uses compatible pgvector rows.
-`npm run db:check` reports Postgres readiness, pgvector mode, vector columns, HNSW indexes, vector row counts, migrations, and metrics.
-`npm run db:reset` truncates app tables and recreates the default local user/index. It does not delete object-storage files under `.data/object-storage`.
-
-Legacy migration from earlier local JSON development data is explicit and one-way:
+Check model dependencies:
 
 ```bash
-npm run legacy:migrate
+npm run models:doctor:ai
 ```
 
-The migration imports legacy metadata/vector/tracking JSON files into Docker PostgreSQL, copies referenced media into the Docker app-data volume, and archives the old JSON stores. Orphan source-media directories are not synthesized into new assets; they are left in place unless the migration is run with its orphan-media deletion option.
+## Repository Map
 
-## Production Extension Points
+| Path | Purpose |
+| --- | --- |
+| `src/` | React console |
+| `server/` | Express API, workers, workflows, storage, search, domain logic |
+| `shared/` | Shared TypeScript types and workflow metadata |
+| `scripts/` | Runtime services, imports, rebuilds, maintenance tools |
+| `tests/` | Node test runner suites |
+| `docs/` | Architecture, script reference, and domain indexing notes |
+| `docker-compose.yml` | Local and containerized service topology |
+| `requirements.local-ai.txt` | Python AI runtime dependencies |
 
-- Replace local uploads with S3, R2, GCS, or Azure Blob Storage.
-- Serve media through object storage, CDN, or a reverse proxy with `MEDIA_SERVING_MODE=disabled` in the API process.
-- Replace the Docker Redis instance with managed Redis, SQS, Pub/Sub, Kafka, or RabbitMQ if the deployment needs managed queue infrastructure.
-- Add multimodal image/keyframe embeddings, shot detection, and stronger ranking signals.
-- Add tenant isolation, production metering, external OpenTelemetry exporters, and hosted log/metric backends.
+## Related Docs
+
+- [Architecture](docs/architecture.md)
+- [npm Scripts](docs/npm-scripts.md)
+- [Sports Domain Indexing](docs/sports-domain-indexing.md)
+- [Domain Adaptive Video Intelligence](docs/domain-adaptive-video-intelligence.md)
+
