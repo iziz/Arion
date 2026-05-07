@@ -163,7 +163,7 @@ export function searchAssets(
           segment,
           matchReasons,
           verification,
-          clip: clipFromSegment(asset, segment, verification, matchReasons)
+          clip: clipFromSegment(asset, segment, verification, matchReasons, options.domainFilters)
         };
       });
       return {
@@ -288,7 +288,7 @@ function searchPlayerInventoryResults(
           segment,
           matchReasons,
           verification,
-          clip: clipFromSegment(asset, segment, verification, matchReasons)
+          clip: clipFromSegment(asset, segment, verification, matchReasons, inventoryFilters)
         };
       });
       const index = indexes.find((item) => item.id === asset.indexId) ?? null;

@@ -64,13 +64,14 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   const scrambleIntent = relatedKnowledgeContext && hasAny(normalized, ["scramble", "scramble play", "스크램블"]);
   const pocketEscapeIntent = relatedKnowledgeContext && hasAny(normalized, ["pocket escape", "escapes the pocket", "out of the pocket", "포켓 탈출"]);
   const throwOnRunIntent = relatedKnowledgeContext && hasAny(normalized, ["throw on the run", "throws on the run", "rolling right", "rolling left", "이동 중 패스"]);
-  if (receiveIntent || inferred.passType) {
+  if (receiveIntent) {
     inferred.eventType = "pass_receive";
-    inferred.role = "receiver";
-    confidence += receiveIntent ? 0.12 : 0.06;
+    confidence += 0.12;
+  } else if (inferred.passType) {
+    inferred.eventType = "pass_receive";
+    confidence += 0.06;
   } else if (shotIntent) {
     inferred.eventType = "shot";
-    inferred.role = "shooter";
     confidence += 0.1;
   } else if (dribbleIntent) {
     inferred.eventType = "dribble";
@@ -97,9 +98,6 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
   }
   if (statQuestion && isMomentSearchQuery(originalQuery)) {
     warnings.push("This query needs related-knowledge grounding before searching indexed video moments.");
-  }
-  if (inferred.player && inferred.role === "receiver") {
-    warnings.push("Player role is inferred from language; detector/tracker evidence is not available yet.");
   }
   if (inferred.fieldZone) {
     warnings.push("Field zone is matched from indexed domain labels, not calibrated pitch geometry.");

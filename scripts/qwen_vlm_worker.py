@@ -271,8 +271,8 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
         "\"confidence\":0.0,\"labels\":[\"sports.football\"],\"evidence\":[\"...\"],"
         "\"football\":{\"phase\":\"attack|transition|set_piece|unknown\",\"fieldZone\":\"defensive_third|middle_third|final_third|penalty_area|unknown\","
         "\"passType\":\"through_ball|cross|cutback|short_pass|long_ball|unknown\","
-        "\"receivingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
-        "\"passingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0},"
+        "\"receivingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0,\"evidence\":[\"...\"]},"
+        "\"passingPlayer\":{\"present\":false,\"name\":null,\"confidence\":0.0,\"evidence\":[\"...\"]},"
         "\"ballState\":\"in_play|pass_travel|shot|unknown\",\"attackingDirection\":\"left_to_right|right_to_left|unknown\"}}"
     )
     if request.domain == "sports.american_football":
@@ -309,7 +309,13 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
             "existingCaptions": existing_domain.get("captions"),
             "existingLabels": existing_domain.get("labels"),
         },
-        "instruction": "Set player name to null unless supported by visible shirt/name text or indexed text.",
+        "instruction": (
+            "Set player name to null unless supported by visible shirt/name text, ASR/OCR text, metadata, or existing indexed domain text. "
+            "For football passes, passingPlayer is the action source who releases or initiates the pass, and receivingPlayer is the action target who receives, controls, or is clearly targeted by the pass. "
+            "Never swap passingPlayer and receivingPlayer to match a requested search term; these fields must describe the event evidence. "
+            "When a pass target is visible or text-evidenced but unnamed, set receivingPlayer.present=true and name=null. "
+            "Include short evidence strings for any named player role."
+        ),
     }
     content: list[dict[str, Any]] = []
     if _image_path(request):
@@ -373,6 +379,9 @@ def _build_query_plan_messages(request: QueryPlanRequest) -> list[dict[str, Any]
         "\"statMode\":\"leaderboard|player_total|null\",\"analysisSubject\":null,"
         "\"competition\":null,\"season\":null,\"player\":null,\"eventType\":null,"
         "\"passType\":null,\"fieldZone\":null,\"role\":null,\"semanticQuery\":\"...\","
+        "\"participants\":[{\"entity\":\"...\",\"relation\":\"action_source|action_target|subject|unknown\","
+        "\"role\":\"receiver|passer|shooter|any|null\",\"eventType\":\"pass_receive|shot|dribble|progressive_pass|save|pressure|scramble|pocket_escape|throw_on_run|null\","
+        "\"evidence\":[\"...\"]}],"
         "\"retrieval\":{\"textQuery\":\"...\",\"visualQuery\":\"...\","
         "\"evidenceTerms\":[\"...\"],\"requiredEvidence\":[{\"kind\":\"visible_text|spoken_text\","
         "\"terms\":[\"literal text only\"],\"match\":\"all|any\"}]},"
@@ -393,6 +402,9 @@ def _build_query_plan_messages(request: QueryPlanRequest) -> list[dict[str, Any]
             "For sports statistics, set statMode to leaderboard for top/ranking/leader questions, player_total for a specific player's total, otherwise null.",
             "For analysis questions, set analysisSubject to the normalized subject being analyzed when the user names one.",
             "Return filterEvidence for every inferred structured filter, statMode, or analysisSubject. Each value must be a short exact phrase or planner rationale. Caller explicitFilters do not need filterEvidence.",
+            "When a named entity participates in an action, output participants to preserve semantic direction: relation=action_source for the entity initiating the action, action_target for the entity receiving or targeted by it, subject when the entity is only the topic, and unknown when direction is unclear.",
+            "For pass actions, action_source implies role=passer and eventType=pass_receive; action_target implies role=receiver and eventType=pass_receive. Keep top-level role null for participant binding; participant roles belong in participants.",
+            "Do not derive participant roles from language-specific keyword rules. Use the sentence semantics: who performs the action, who receives/is targeted by it, and what the action is.",
             "Use retrieval.requiredEvidence for hard evidence constraints. For visible text, OCR, subtitle, caption, logo text, or on-screen text requests, requiredEvidence must contain the literal required text with kind=visible_text.",
             "For spoken dialogue requests such as says, speaks, said, uttered, 말하는, or 라고 말, requiredEvidence must contain the literal spoken phrase and direct translation aliases with kind=spoken_text.",
             "If the user quotes a phrase or uses X라고 말, preserve the literal phrase and do not broaden it to same-language paraphrases. Use broader polite, casual, stem, and translation variants only when the user asks for a concept such as thank-you expressions rather than an exact utterance.",
@@ -474,6 +486,7 @@ def _normalize_query_plan_response(parsed: dict[str, Any], raw: str) -> dict[str
         "passType": _optional_text(parsed.get("passType")),
         "fieldZone": _optional_text(parsed.get("fieldZone")),
         "role": _optional_text(parsed.get("role")),
+        "participants": _participants(parsed.get("participants") or parsed.get("participantConstraints")),
         "semanticQuery": _optional_text(parsed.get("semanticQuery")),
         "retrieval": _query_retrieval(parsed.get("retrieval")),
         "filterEvidence": _filter_evidence(parsed.get("filterEvidence")),
@@ -507,6 +520,31 @@ def _filter_evidence(value: Any) -> dict[str, list[str]]:
         "analysisSubject",
     )
     return {key: evidence for key in keys if (evidence := _string_list(source.get(key), 6))}
+
+
+def _participants(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    participants: list[dict[str, Any]] = []
+    relations = {"action_source", "action_target", "subject", "unknown"}
+    roles = {"receiver", "passer", "shooter", "any"}
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        entity = _optional_text(item.get("entity") or item.get("player") or item.get("name"))
+        evidence = _string_list(item.get("evidence"), 4)
+        if not entity or not evidence:
+            continue
+        relation = item.get("relation")
+        role = item.get("role")
+        participants.append({
+            "entity": entity,
+            "relation": relation if relation in relations else "unknown",
+            "role": role if role in roles else "any",
+            "eventType": _optional_text(item.get("eventType")),
+            "evidence": evidence,
+        })
+    return participants
 
 
 def _required_evidence(value: Any) -> list[dict[str, Any]]:
@@ -604,6 +642,7 @@ def _role(value: Any) -> dict[str, Any]:
         "name": role.get("name") if role.get("name") else None,
         "confidence": _confidence(role.get("confidence")),
         "trackId": role.get("trackId") if role.get("trackId") else None,
+        "evidence": _string_list(role.get("evidence"), 4),
     }
 
 

@@ -1,4 +1,4 @@
-import type { DomainQueryFilterEvidence, DomainQueryPlan, DomainSearchFilters } from "../shared/types";
+import type { DomainParticipantConstraint, DomainQueryFilterEvidence, DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { buildRetrievalPlan, sanitizeEvidenceTerms, sanitizeRequiredEvidence } from "./queryRetrievalPlan";
 import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayer } from "./knowledge/registry";
 import { planQueryWithVlmWorker } from "./vlmWorkerClient";
@@ -18,6 +18,8 @@ type ModelQueryPlan = {
   passType?: string | null;
   fieldZone?: string | null;
   role?: DomainSearchFilters["role"] | null;
+  participants?: unknown;
+  participantConstraints?: unknown;
   semanticQuery?: string | null;
   retrieval?: {
     textQuery?: string | null;
@@ -66,6 +68,7 @@ const allowedMetrics = new Set([
   "interceptions"
 ]);
 const allowedRoles = new Set(["receiver", "passer", "shooter", "any"]);
+const allowedParticipantRelations = new Set(["action_source", "action_target", "subject", "unknown"]);
 const allowedStatModes = new Set(["leaderboard", "player_total"]);
 const allowedEventTypes = new Set(["pass_receive", "shot", "dribble", "progressive_pass", "save", "pressure", "scramble", "pocket_escape", "throw_on_run"]);
 const allowedPassTypes = new Set(["through_ball", "cross", "cutback"]);
@@ -148,6 +151,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 "Choose knowledgeMode by how related knowledge is used: none, grounding, or direct_answer. Extract structured constraints only when supported by the selected related-knowledge context or explicit wording, and do not invent statistics or facts.",
                 "For sports statistics, set statMode to leaderboard when the user asks for the top/ranking/leader, player_total when the user asks for a specific player's total, otherwise null. Do not rely on route alone to imply this.",
                 "For analysis questions, set analysisSubject to the normalized subject being analyzed when the user names one. For example, a player, team, object, or person visible in the requested video evidence.",
+                "When the user asks for a named entity participating in an action, use participants to preserve semantic direction. relation=action_source means the entity initiates the action, relation=action_target means the entity receives or is targeted by the action, subject means the entity is only the topic. Set a concrete role only when the role follows from that semantic direction and the action; otherwise use any or null. Do not derive participant roles from language-specific keyword rules.",
                 "Return filterEvidence for every inferred structured filter or analysis/stat subject. Each key must contain the exact short phrase or planner rationale that justifies the value. ExplicitFilters supplied by the caller do not need filterEvidence.",
                 "Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown.",
                 "Use retrieval.requiredEvidence for hard constraints that must be present in a specific evidence source. For visible text/OCR/subtitle/logo text requests, set requiredEvidence to [{kind:'visible_text', terms:['literal text'], match:'all'}]. For spoken dialogue requests such as says/speaks/said/uttered or Korean 말하는/라고 말, set requiredEvidence to [{kind:'spoken_text', terms:['literal phrase','direct translation alias'], match:'any'}]. If the user quotes a phrase or uses X라고 말, preserve the literal phrase and do not broaden it to same-language paraphrases. Use broader polite/casual/stem variants only when the user asks for a concept such as thank-you expressions rather than an exact utterance. Source labels such as OCR, subtitle, caption, logo, speech, ASR, transcript, or visible text are evidence channels, not required literal terms."
@@ -176,7 +180,16 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 eventType: "string | null",
                 passType: "string | null",
                 fieldZone: "string | null",
-                role: "receiver | passer | shooter | any | null",
+                role: "null (deprecated; participant roles must be represented in participants)",
+                participants: [
+                  {
+                    entity: "canonical entity or player name",
+                    relation: "action_source | action_target | subject | unknown",
+                    role: "receiver | passer | shooter | any | null",
+                    eventType: "string | null",
+                    evidence: ["short semantic rationale, not keyword-matching code"]
+                  }
+                ],
                 semanticQuery: "English retrieval query",
                 retrieval: {
                   textQuery: "normalized text retrieval query for multilingual semantic embeddings",
@@ -215,7 +228,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
           }
         },
         temperature: 0.1,
-        max_output_tokens: 700
+        max_output_tokens: 900
       })
     });
     const body = await response.json();
@@ -250,15 +263,19 @@ function mergeModelPlan(
 ): DomainQueryPlan {
   const explicit = compactFilters(explicitFilters);
   const filterEvidence = sanitizeFilterEvidence(llm.filterEvidence);
-  const llmFilters = compactFilters({
+  const participants = sanitizeParticipantConstraints(llm.participants ?? llm.participantConstraints);
+  const directFilters = compactFilters({
     competition: resolveCompetition(llm.competition),
     season: stringOrUndefined(llm.season),
     player: resolvePlayer(llm.player),
     eventType: allowedValue(llm.eventType, allowedEventTypes),
     passType: allowedValue(llm.passType, allowedPassTypes),
-    fieldZone: allowedValue(llm.fieldZone, allowedFieldZones),
-    role: allowedValue(llm.role, allowedRoles) as DomainSearchFilters["role"] | undefined
+    fieldZone: allowedValue(llm.fieldZone, allowedFieldZones)
   });
+  const participantFilters = participantDomainFilters(participants, directFilters.player);
+  applyParticipantFilterEvidence(filterEvidence, participants, participantFilters);
+  const llmFilters = compactFilters({ ...directFilters, ...participantFilters });
+  const normalizationWarnings: string[] = [];
   const statMode = (allowedValue(llm.statMode, allowedStatModes) as DomainQueryPlan["intent"]["statMode"] | undefined) ?? null;
   const analysisSubject = stringOrUndefined(llm.analysisSubject) ?? null;
   const metric = normalizeMetricForCompetition(
@@ -277,7 +294,6 @@ function mergeModelPlan(
     (allowedValue(llm.knowledgeMode, allowedKnowledgeModes) as DomainQueryPlan["knowledgeMode"] | undefined) ??
     legacyPlan?.knowledgeMode ??
     defaultKnowledgeModeForRoute(route);
-  const normalizationWarnings: string[] = [];
   if (shouldPreserveAssetEvidencePlan(route, responseMode, llm)) {
     route = "asset_evidence";
     responseMode = responseMode === "summary" || responseMode === "analysis" || responseMode === "grounded_answer" ? responseMode : "moment_retrieval";
@@ -364,6 +380,7 @@ function mergeModelPlan(
       metric: responseMode === "structured_answer" || route === "knowledge_seeded_asset_evidence" ? metric : null,
       statMode: responseMode === "structured_answer" || route === "knowledge_seeded_asset_evidence" ? statMode : null,
       analysisSubject: responseMode === "analysis" ? analysisSubject : null,
+      participants,
       eventType: domainFilters.eventType ?? null,
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
@@ -437,6 +454,84 @@ function hasActiveDomainFilters(filters: DomainSearchFilters) {
 
 function hasVideoMomentRetrievalIntent(query: string) {
   return /장면|영상|클립|하이라이트|순간|나오는|보이는|찾아|보여|scene|clip|moment|highlight|footage|video|find|show/i.test(query);
+}
+
+function sanitizeParticipantConstraints(value: unknown): DomainParticipantConstraint[] {
+  if (!Array.isArray(value)) return [];
+  const participants: DomainParticipantConstraint[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const rawEntity = stringOrUndefined(record.entity) ?? stringOrUndefined(record.player) ?? stringOrUndefined(record.name);
+    if (!rawEntity) continue;
+    const rawEventType = allowedValue(record.eventType, allowedEventTypes);
+    const rawRole = allowedValue(record.role, allowedRoles) as DomainSearchFilters["role"] | undefined;
+    const relation = (allowedValue(record.relation, allowedParticipantRelations) as DomainParticipantConstraint["relation"] | undefined) ?? "unknown";
+    const role = participantRole(rawRole, relation, rawEventType);
+    const eventType = participantEventType(rawEventType, role);
+    const evidence = stringList(record.evidence, 4);
+    if (evidence.length === 0) continue;
+    participants.push({
+      entity: resolvePlayer(rawEntity) ?? rawEntity,
+      relation,
+      role,
+      eventType,
+      evidence
+    });
+  }
+  return participants.slice(0, 4);
+}
+
+function participantRole(
+  role: DomainSearchFilters["role"] | undefined,
+  relation: DomainParticipantConstraint["relation"],
+  eventType: string | undefined
+): DomainParticipantConstraint["role"] {
+  if (role && role !== "any") return role;
+  if (eventType === "pass_receive" && relation === "action_source") return "passer";
+  if (eventType === "pass_receive" && relation === "action_target") return "receiver";
+  if (eventType === "shot" && (relation === "action_source" || relation === "subject")) return "shooter";
+  return "any";
+}
+
+function participantEventType(eventType: string | undefined, role: DomainParticipantConstraint["role"]) {
+  if (eventType) return eventType;
+  if (role === "passer" || role === "receiver") return "pass_receive";
+  if (role === "shooter") return "shot";
+  return null;
+}
+
+function participantDomainFilters(participants: DomainParticipantConstraint[], plannedPlayer: string | undefined): DomainSearchFilters {
+  const participant = participants.find((item) => {
+    if (!plannedPlayer) return item.role !== "any";
+    return sameEntity(item.entity, plannedPlayer) && item.role !== "any";
+  });
+  if (!participant) return {};
+  return compactFilters({
+    player: plannedPlayer ?? participant.entity,
+    role: participant.role === "any" ? undefined : participant.role,
+    eventType: participant.eventType ?? undefined
+  });
+}
+
+function applyParticipantFilterEvidence(
+  filterEvidence: DomainQueryFilterEvidence,
+  participants: DomainParticipantConstraint[],
+  filters: DomainSearchFilters
+) {
+  if (participants.length === 0 || !hasActiveDomainFilters(filters)) return;
+  const participant = participants.find((item) => (filters.player ? sameEntity(item.entity, filters.player) : true) && (!filters.role || item.role === filters.role));
+  if (!participant) return;
+  const evidence = participant.evidence.length > 0 ? participant.evidence : [`Participant ${participant.entity} is ${participant.relation}.`];
+  if (filters.player && !filterEvidence.player) filterEvidence.player = [`Participant entity: ${participant.entity}.`];
+  if (filters.role && !filterEvidence.role) filterEvidence.role = evidence;
+  if (filters.eventType && !filterEvidence.eventType) filterEvidence.eventType = evidence;
+}
+
+function sameEntity(left: string, right: string) {
+  const normalizedLeft = normalizePlannerText(left);
+  const normalizedRight = normalizePlannerText(right);
+  return Boolean(normalizedLeft && normalizedRight && (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)));
 }
 
 function sanitizeFilterEvidence(value: unknown): DomainQueryFilterEvidence {
@@ -672,6 +767,7 @@ function allowedPlannerValues() {
     passType: Array.from(allowedPassTypes),
     fieldZone: Array.from(allowedFieldZones),
     role: Array.from(allowedRoles),
+    participantRelation: Array.from(allowedParticipantRelations),
     requiredEvidenceKind: ["visible_text", "spoken_text"]
   };
 }

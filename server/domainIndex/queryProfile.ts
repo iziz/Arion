@@ -13,7 +13,7 @@ export function expandDomainQuery(query: string): DomainQueryProfile {
   const eventTypes: string[] = [];
   const americanFootballEventTypes: string[] = [];
 
-  if (matchingTerms(normalized, [...footballRules.domain.terms, "final third", "through ball", "스루패스", "받는 선수"]).length > 0) {
+  if (matchingTerms(normalized, [...footballRules.domain.terms, "final third", "through ball", "스루패스"]).length > 0) {
     domains.push("sports.football");
     labels.push("sports.football");
   }
@@ -43,15 +43,13 @@ export function expandDomainQuery(query: string): DomainQueryProfile {
     americanFootballEventTypes.push(eventTypeFromLabel(rule.label));
   }
 
-  const receiverRequired = matchingTerms(normalized, footballRules.eventTypes[0].terms).length > 0 || /받는\s*선수|receiver|receiving player/.test(normalized);
-  const playerRequired = receiverRequired || /선수|player/.test(normalized);
+  const playerRequired = /선수|player/.test(normalized);
   const pressureRequired = matchingTerms(normalized, americanFootballRules.eventTypes[1].terms).length > 0;
   const quarterbackRequired = /quarterback|qb/.test(normalized);
   const expandedText = unique([
     query,
     ...labels,
     ...labels.map(readableLabel),
-    receiverRequired ? "receive receiver receiving player 받는 선수" : "",
     passTypes.includes("through_ball") ? "through ball 스루패스 침투패스 ball in behind in die tiefe ueber die spitze" : "",
     fieldZones.includes("final_third") ? "final third attacking third 파이널 서드 공격 진영" : "",
     domains.includes("sports.football") ? "football soccer 축구" : "",
@@ -68,7 +66,7 @@ export function expandDomainQuery(query: string): DomainQueryProfile {
       fieldZones: unique(fieldZones).filter((zone) => zone !== "unknown"),
       passTypes: unique(passTypes).filter((passType) => passType !== "unknown"),
       eventTypes: unique(eventTypes),
-      receiverRequired,
+      receiverRequired: false,
       playerRequired
     },
     americanFootball: {
@@ -101,7 +99,6 @@ export function scoreDomainMatch(segment: TimelineSegment, profile: DomainQueryP
       if (profile.football.passTypes.includes(football.passType)) score += 1.6;
       if (profile.football.fieldZones.includes(football.fieldZone)) score += 1.2;
       if (profile.football.fieldZones.includes("final_third") && football.fieldZone === "penalty_area") score += 0.8;
-      if (profile.football.receiverRequired && football.receivingPlayer.present) score += 1.2;
     }
     const americanFootball = event.americanFootball;
     if (americanFootball) {

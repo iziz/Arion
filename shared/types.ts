@@ -752,6 +752,14 @@ export type DomainSearchFilters = {
   role?: "receiver" | "passer" | "shooter" | "any";
 };
 
+export type DomainParticipantConstraint = {
+  entity: string;
+  role: "receiver" | "passer" | "shooter" | "any";
+  relation: "action_source" | "action_target" | "subject" | "unknown";
+  eventType: string | null;
+  evidence: string[];
+};
+
 export type QueryRoute =
   | "asset_evidence"
   | "knowledge_seeded_asset_evidence"
@@ -806,6 +814,7 @@ export type DomainQueryPlan = {
       | null;
     statMode?: "leaderboard" | "player_total" | null;
     analysisSubject?: string | null;
+    participants?: DomainParticipantConstraint[];
     eventType: string | null;
     passType: string | null;
     fieldZone: string | null;
