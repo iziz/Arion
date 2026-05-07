@@ -1,10 +1,29 @@
 import { BarChart3, Database, Layers3, Route, X } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { KnowledgeSourceId, KnowledgeVectorStoreStatus, KnowledgeSnapshot } from "../../../shared/types";
 import { knowledgeTemplateDescriptors, sportsBaseTemplateContract, type KnowledgeTemplateDescriptor } from "../../../shared/knowledgeTemplates";
 import { EmptyState } from "../common/ConsolePrimitives";
 
 type KnowledgePanelTab = "overview" | "manifest" | "generator" | "evaluator";
+
+const countFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const metricFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 });
+
+function formatCount(value: number) {
+  return countFormatter.format(value);
+}
+
+function formatMetricNumber(value: number) {
+  return metricFormatter.format(value);
+}
+
+function formatCountRatio(value: number, total: number) {
+  return `${formatCount(value)}/${formatCount(total)}`;
+}
+
+function formatPercent(value: number) {
+  return `${formatMetricNumber(value)}%`;
+}
 
 export function KnowledgePanel({
   knowledgeSnapshot,
@@ -81,12 +100,12 @@ export function KnowledgePanel({
               <p>{selectedDomain} · {domainSport.replace(/_/g, " ")}</p>
             </div>
             <div className="knowledge-domain-metrics">
-              <span><b>Players</b>{domainTotals.players}</span>
-              <span><b>Teams</b>{domainTotals.teams}</span>
-              <span><b>Competitions</b>{domainTotals.competitions}</span>
-              <span><b>Activities</b>{domainTotals.activities}</span>
-              <span><b>Facts</b>{domainTotals.facts}</span>
-              {selectedDomain === "sports.american_football" && <span><b>Plays</b>{domainTotals.plays}</span>}
+              <KnowledgeMetric label="Players" value={formatCount(domainTotals.players)} numeric />
+              <KnowledgeMetric label="Teams" value={formatCount(domainTotals.teams)} numeric />
+              <KnowledgeMetric label="Competitions" value={formatCount(domainTotals.competitions)} numeric />
+              <KnowledgeMetric label="Activities" value={formatCount(domainTotals.activities)} numeric />
+              <KnowledgeMetric label="Facts" value={formatCount(domainTotals.facts)} numeric />
+              {selectedDomain === "sports.american_football" && <KnowledgeMetric label="Plays" value={formatCount(domainTotals.plays)} numeric />}
             </div>
           </section>
           <KnowledgePanelTabs activeTab={activeTab} onChange={setActiveTab} templateAvailable={Boolean(selectedTemplate)} />
@@ -296,11 +315,15 @@ function KnowledgeTemplatePanel({ template, view }: { template: KnowledgeTemplat
           <article className="knowledge-template-card">
             <h4>Generator contract</h4>
             <div className="knowledge-template-metrics">
-              <span><b>Kind</b>{generator.kind}</span>
-              <span><b>Output</b>{generator.outputVersion}</span>
-              <span><b>Strategy</b>{template.strategy.strategyId}</span>
-              <span><b>Min confidence</b>{generator.actionSpotting.minCandidateConfidence}</span>
-              <span><b>Alignment</b>{generator.actionSpotting.alignment.minScore}/{generator.actionSpotting.alignment.minStrongScore}</span>
+              <KnowledgeMetric label="Kind" value={generator.kind} />
+              <KnowledgeMetric label="Output" value={generator.outputVersion} />
+              <KnowledgeMetric label="Strategy" value={template.strategy.strategyId} />
+              <KnowledgeMetric label="Min confidence" value={formatMetricNumber(generator.actionSpotting.minCandidateConfidence)} numeric />
+              <KnowledgeMetric
+                label="Alignment"
+                value={`${formatMetricNumber(generator.actionSpotting.alignment.minScore)}/${formatMetricNumber(generator.actionSpotting.alignment.minStrongScore)}`}
+                numeric
+              />
             </div>
           </article>
           <TemplateList title="Consumes" items={generator.consumes} />
@@ -385,16 +408,16 @@ function KnowledgeRagCard({
           <p className="section-label">Knowledge RAG</p>
           <h3>{ready ? "Vectorized knowledge retrieval" : "Vector store not built"}</h3>
           <p>
-            {status?.storage ?? "unknown"} · {domainVectors}/{availableKnowledgeDocuments} selected knowledge documents · {status?.vectors ?? 0} total vectors
+            {status?.storage ?? "unknown"} · {formatCountRatio(domainVectors, availableKnowledgeDocuments)} selected knowledge documents · {formatCount(status?.vectors ?? 0)} total vectors
           </p>
         </div>
-        <span className="rag-status-pill">{ready ? `${coverage}% coverage` : "not ready"}</span>
+        <span className="rag-status-pill">{ready ? `${formatPercent(coverage)} coverage` : "not ready"}</span>
       </div>
       <div className="knowledge-rag-metrics">
-        <span><b>Storage</b>{status?.storage ?? "unknown"}</span>
-        <span><b>Knowledge vectors</b>{domainVectors}</span>
-        <span><b>Total vectors</b>{status?.vectors ?? 0}</span>
-        <span><b>Coverage</b>{ready ? `${coverage}%` : "0%"}</span>
+        <KnowledgeMetric label="Storage" value={status?.storage ?? "unknown"} />
+        <KnowledgeMetric label="Knowledge vectors" value={formatCount(domainVectors)} numeric />
+        <KnowledgeMetric label="Total vectors" value={formatCount(status?.vectors ?? 0)} numeric />
+        <KnowledgeMetric label="Coverage" value={ready ? formatPercent(coverage) : "0%"} numeric />
       </div>
       <div className="knowledge-rag-flow" aria-label="Knowledge RAG search flow">
         {["Query plan", "Query embedding", "Knowledge vector search", "Evidence grounding", "Video ranking"].map((step, index, steps) => (
@@ -425,7 +448,7 @@ function KnowledgeStatCard({ title, items }: { title: string; items: Array<{ lab
           {items.slice(0, 5).map((item) => (
             <li key={item.label}>
               <span>{item.label}</span>
-              <b>{item.count}</b>
+              <b>{formatCount(item.count)}</b>
             </li>
           ))}
         </ul>
@@ -433,6 +456,15 @@ function KnowledgeStatCard({ title, items }: { title: string; items: Array<{ lab
         <p>No data</p>
       )}
     </article>
+  );
+}
+
+function KnowledgeMetric({ label, value, numeric = false }: { label: string; value: ReactNode; numeric?: boolean }) {
+  return (
+    <span>
+      <b>{label}</b>
+      <strong className={`knowledge-metric-value ${numeric ? "numeric" : ""}`}>{value}</strong>
+    </span>
   );
 }
 

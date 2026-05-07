@@ -91,18 +91,32 @@
   padding: 22px 0 4px;
 }
 
+.search-target-popover-host {
+  position: relative;
+  z-index: 6;
+  display: grid;
+  justify-items: start;
+  max-width: 100%;
+}
+
 .search-composer-shell .search-scope-summary {
   justify-content: flex-start;
   margin-top: 0;
 }
 
 .search-target-panel {
-  width: 100%;
-  border: 1px solid #d7e1dc;
-  border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 18px 44px rgba(44, 70, 61, 0.12);
-  padding: 12px;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 18;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(610px, calc(100vh - 210px));
+  overflow: auto;
+  border: 1px solid rgba(43, 139, 112, 0.24);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 24px 70px rgba(29, 56, 48, 0.22);
+  padding: 10px;
 }
 
 .chat-composer {
@@ -161,130 +175,47 @@
 
 .search-scope-control {
   display: grid;
-  gap: 8px;
-  width: min(980px, 100%);
-}
-
-.search-scope-intents {
-  display: grid;
-  grid-template-columns: minmax(240px, 0.9fr) minmax(320px, 1.25fr);
   gap: 10px;
+  width: 100%;
 }
 
-.search-scope-intent {
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  min-width: 0;
-  border: 1px solid #d7e1dc;
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 9px;
-}
-
-.search-scope-intent.active {
-  border-color: rgba(43, 139, 112, 0.62);
-  background: #edf6f2;
-}
-
-.scope-intent-button,
-.scope-video-switch button {
-  display: grid;
-  justify-items: start;
-  gap: 3px;
-  min-width: 0;
-  min-height: 48px;
-  border: 1px solid #d7e1dc;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #25352f;
-  box-shadow: none;
-  padding: 9px 10px;
-  text-align: left;
-}
-
-.scope-intent-button {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-}
-
-.scope-intent-button strong,
-.scope-intent-button span {
-  grid-column: 1;
-}
-
-.scope-intent-button:disabled,
-.scope-video-switch button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.scope-video-switch button.active {
-  border-color: rgba(43, 139, 112, 0.58);
-  background: #ffffff;
-  color: #0d7d65;
-}
-
-.scope-intent-heading {
+.scope-popover-header {
   display: flex;
-  gap: 10px;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
+  padding: 4px 4px 0;
+}
+
+.scope-popover-header > div {
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
-.scope-intent-heading > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.scope-video-switch {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.scope-intent-button strong,
-.scope-intent-heading strong,
-.scope-video-switch strong,
-.scope-intent-button span,
-.scope-intent-heading span,
-.scope-video-switch span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.scope-intent-button strong,
-.scope-intent-heading strong,
-.scope-video-switch strong {
+.scope-popover-header strong {
   color: #25352f;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 950;
 }
 
-.scope-intent-button span,
-.scope-intent-heading span,
-.scope-video-switch span {
+.scope-popover-header span {
   color: #647871;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 820;
 }
 
-.scope-intent-button em,
-.scope-intent-heading em {
+.scope-popover-header em,
+.scope-choice-button em {
   display: inline-flex;
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: center;
-  max-width: 132px;
+  align-items: center;
+  max-width: 150px;
+  min-height: 26px;
   overflow: hidden;
   border-radius: 999px;
   background: #eef7f3;
   color: #287862;
-  padding: 6px 8px;
+  padding: 0 9px;
   font-size: 10px;
   font-style: normal;
   font-weight: 950;
@@ -292,36 +223,197 @@
   white-space: nowrap;
 }
 
-.scope-intent-button em.off,
-.scope-intent-heading em.off {
+.scope-popover-header em.off,
+.scope-choice-button em.off {
   background: #f1f4f2;
   color: #61736c;
 }
 
-.scope-intent-button em.mixed,
-.scope-intent-heading em.mixed {
+.scope-popover-header em.mixed,
+.scope-choice-button em.mixed {
   background: #fff7e8;
   color: #8b651f;
 }
 
-.search-scope-picker {
+.scope-target-search {
   display: grid;
-  grid-template-columns: 94px minmax(180px, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  max-width: 100%;
+  min-height: 40px;
+  border: 1px solid #d7e1dc;
+  border-radius: 10px;
+  background: #f8faf9;
+  color: #2b8b70;
+  padding: 0 10px;
 }
 
-.search-scope-picker > span {
+.scope-target-search input {
+  min-width: 0;
+  min-height: 38px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #25352f;
+  font-size: 12px;
+  font-weight: 820;
+  box-shadow: none;
+}
+
+.scope-target-search input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.scope-choice-section {
+  display: grid;
+  gap: 7px;
+}
+
+.scope-choice-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 4px;
+}
+
+.scope-choice-section-header span {
   color: #2b8b70;
   font-size: 10px;
   font-weight: 950;
   text-transform: uppercase;
 }
 
-.search-scope-picker select {
+.scope-choice-section-header b {
+  color: #6a7b75;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.scope-choice-list {
+  display: grid;
+  gap: 6px;
+}
+
+.scope-choice-list.groups {
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.scope-choice-button {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
   min-width: 0;
-  min-height: 36px;
+  min-height: 48px;
+  border: 1px solid #dce5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #25352f;
+  box-shadow: none;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.scope-choice-button:hover {
+  border-color: rgba(43, 139, 112, 0.34);
+  background: #f7fbf9;
+  box-shadow: none;
+  transform: none;
+}
+
+.scope-choice-button.active {
+  border-color: rgba(43, 139, 112, 0.58);
+  background: #eef7f3;
+}
+
+.scope-choice-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.scope-choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #f1f5f3;
+  color: #2b8b70;
+}
+
+.scope-choice-button.active .scope-choice-icon {
+  background: #dff0ea;
+  color: #0d7d65;
+}
+
+.scope-choice-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.scope-choice-copy strong,
+.scope-choice-copy span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-choice-copy strong {
+  color: #25352f;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.scope-choice-copy span {
+  color: #647871;
+  font-size: 10px;
+  font-weight: 820;
+}
+
+.scope-choice-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #0d7d65;
+}
+
+.scope-inline-select {
+  display: grid;
+  gap: 5px;
+  padding: 0 4px 2px;
+}
+
+.scope-inline-select > span {
+  color: #2b8b70;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.scope-inline-select select {
+  min-width: 0;
+  min-height: 38px;
+  border-radius: 10px;
+}
+
+.scope-empty {
+  margin: 4px;
+  border-radius: 10px;
+  background: #f8faf9;
+  color: #6a7b75;
+  padding: 14px;
+  font-size: 12px;
+  font-weight: 820;
+  text-align: center;
 }
 
 .search-option-actions {
@@ -434,6 +526,15 @@
   background: #eef7f3;
   color: #25352f;
   transform: none;
+}
+
+.search-scope-summary .search-scope-chip svg {
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+
+.search-scope-summary .search-scope-chip[aria-expanded="true"] svg {
+  transform: rotate(180deg);
 }
 
 .search-scope-summary .search-scope-chip:focus-visible {
@@ -731,13 +832,31 @@
     width: 100%;
   }
 
-  .search-scope-intents,
-  .scope-video-switch {
-    grid-template-columns: 1fr;
+  .search-target-panel {
+    left: 0;
+    width: calc(100vw - 32px);
+    max-height: min(580px, calc(100vh - 170px));
   }
 
-  .search-scope-picker {
-    grid-template-columns: 1fr;
+  .scope-popover-header,
+  .scope-choice-section-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .scope-choice-button {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+  }
+
+  .scope-choice-button em {
+    grid-column: 2 / span 2;
+    max-width: 100%;
+  }
+
+  .scope-choice-button .scope-choice-check {
+    grid-column: 3;
+    grid-row: 1;
   }
 
   .filter-toggle {

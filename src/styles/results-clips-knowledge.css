@@ -702,6 +702,23 @@
   text-transform: uppercase;
 }
 
+.knowledge-metric-value {
+  min-width: 0;
+  overflow: hidden;
+  color: #12322b;
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-metric-value.numeric {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .knowledge-stat-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1152,6 +1169,8 @@
   color: #12322b;
   font-size: 12px;
   font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .knowledge-stat-card p {

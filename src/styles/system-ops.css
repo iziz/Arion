@@ -309,7 +309,7 @@
     "icon label"
     "icon value"
     "icon meta";
-  align-items: center;
+  align-items: start;
   column-gap: 12px;
   min-width: 0;
   min-height: 86px;
@@ -322,7 +322,9 @@
 
 .system-kpi svg {
   grid-area: icon;
+  align-self: start;
   color: #2b8b70;
+  margin-top: 1px;
 }
 
 .system-kpi span {
@@ -344,6 +346,11 @@
   line-height: 1.05;
 }
 
+.system-kpi .system-numeric-value {
+  justify-self: end;
+  text-align: right;
+}
+
 .system-kpi em {
   grid-area: meta;
   min-width: 0;
@@ -354,6 +361,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.system-kpi .system-numeric-meta {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .system-workspace {
@@ -427,7 +440,18 @@
   margin-left: 25px;
 }
 
-.system-status-facts span,
+.system-status-facts span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 5px;
+  min-width: 136px;
+  color: #52665d;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
 .system-inline-metrics span,
 .system-status-empty {
   display: inline-flex;
@@ -446,6 +470,27 @@
   font-size: 10px;
   font-weight: 950;
   text-transform: uppercase;
+}
+
+.system-status-facts strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #22372f;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-numeric-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.system-status-facts .system-numeric-value,
+.system-observability-details .system-numeric-value,
+.system-inline-metrics .system-numeric-value {
+  justify-self: end;
+  text-align: right;
 }
 
 .system-status-purpose {
@@ -482,10 +527,12 @@
 
 .system-observability-details strong,
 .system-inline-metrics strong {
+  justify-self: end;
   min-width: 0;
   color: #22372f;
   font-size: 12px;
   font-weight: 950;
+  text-align: right;
 }
 
 .system-observability-details em,
@@ -581,6 +628,12 @@
   white-space: nowrap;
 }
 
+.system-panel-counts span,
+.system-events-panel .panel-count {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .system-status-pill.succeeded {
   background: #e6f6ee;
   color: #1f7a52;
@@ -662,6 +715,12 @@
   color: #6e8078;
   font-size: 11px;
   font-weight: 780;
+}
+
+.system-job-main span:nth-of-type(3),
+.system-event-row time {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .system-job-row .retry-button {

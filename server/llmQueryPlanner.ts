@@ -73,6 +73,12 @@ const allowedStatModes = new Set(["leaderboard", "player_total"]);
 const allowedEventTypes = new Set(["pass_receive", "shot", "dribble", "progressive_pass", "save", "pressure", "scramble", "pocket_escape", "throw_on_run"]);
 const allowedPassTypes = new Set(["through_ball", "cross", "cutback"]);
 const allowedFieldZones = new Set(["final_third", "penalty_area", "middle_third", "defensive_third"]);
+const fallbackCompetitionAliases: Record<string, string[]> = {
+  "Premier League": ["Premier League", "EPL", "프리미어 리그", "프리미어리그"],
+  "Champions League": ["Champions League", "UCL", "챔피언스 리그", "챔피언스리그"],
+  Bundesliga: ["Bundesliga", "분데스리가"],
+  NFL: ["NFL", "National Football League", "미식축구", "미국 football"]
+};
 
 export async function planDomainQueryWithLlm(query: string, explicitFilters: DomainSearchFilters = {}): Promise<DomainQueryPlan> {
   const base = buildNeutralQueryPlan(query, explicitFilters);
@@ -263,7 +269,7 @@ function mergeModelPlan(
 ): DomainQueryPlan {
   const explicit = compactFilters(explicitFilters);
   const filterEvidence = sanitizeFilterEvidence(llm.filterEvidence);
-  const participants = sanitizeParticipantConstraints(llm.participants ?? llm.participantConstraints);
+  const participants = sanitizeParticipantConstraints(llm.participants ?? llm.participantConstraints, base.originalQuery);
   const directFilters = compactFilters({
     competition: resolveCompetition(llm.competition),
     season: stringOrUndefined(llm.season),
@@ -346,7 +352,15 @@ function mergeModelPlan(
         }
       : { ...base.domainFilters, ...llmFilters, ...explicit }
   );
-  const domainFilters = sanitizeInferredFilters(rawDomainFilters, responseMode, explicit, filterEvidence);
+  const sanitizedFilters = sanitizeInferredFilters(rawDomainFilters, {
+    route,
+    responseMode,
+    relatedKnowledgeMode,
+    explicitFilters: explicit,
+    filterEvidence,
+    originalQuery: base.originalQuery
+  });
+  const domainFilters = sanitizedFilters.filters;
   const semanticQuery = !llmRoute && !legacyPlan && hasActiveDomainFilters(base.domainFilters) && !hasActiveDomainFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
   const llmRequiredEvidence = sanitizeRequiredEvidence(llm.retrieval?.requiredEvidence ?? []);
   const retrieval = buildRetrievalPlan(base.originalQuery, semanticQuery, {
@@ -385,7 +399,7 @@ function mergeModelPlan(
       role: domainFilters.role ?? null
     },
     confidence: Number(confidence.toFixed(2)),
-    warnings: [...base.warnings, ...(planner.warnings ?? []), ...normalizationWarnings, ...llmWarnings],
+    warnings: [...base.warnings, ...(planner.warnings ?? []), ...normalizationWarnings, ...sanitizedFilters.warnings, ...llmWarnings],
     planner: {
       source: planner.source,
       model: planner.model,
@@ -396,10 +410,16 @@ function mergeModelPlan(
 
 function sanitizeInferredFilters(
   filters: DomainSearchFilters,
-  responseMode: DomainQueryPlan["responseMode"],
-  explicitFilters: DomainSearchFilters,
-  filterEvidence: DomainQueryFilterEvidence
+  context: {
+    route: DomainQueryPlan["route"];
+    responseMode: DomainQueryPlan["responseMode"];
+    relatedKnowledgeMode: DomainQueryPlan["relatedKnowledgeMode"];
+    explicitFilters: DomainSearchFilters;
+    filterEvidence: DomainQueryFilterEvidence;
+    originalQuery: string;
+  }
 ) {
+  const { route, responseMode, relatedKnowledgeMode, explicitFilters, filterEvidence, originalQuery } = context;
   const next = { ...filters };
   if (!explicitFilters.season && !hasFilterEvidence(filterEvidence, "season")) delete next.season;
   if (!explicitFilters.fieldZone && !hasFilterEvidence(filterEvidence, "fieldZone")) delete next.fieldZone;
@@ -414,7 +434,25 @@ function sanitizeInferredFilters(
     delete next.fieldZone;
     delete next.role;
   }
-  return compactFilters(next);
+  const warnings: string[] = [];
+  if (usesIndexedAssetEvidenceOnly(route, responseMode, relatedKnowledgeMode)) {
+    const droppedScopeFilters: string[] = [];
+    if (next.competition && !explicitFilters.competition && !queryMentionsCompetition(originalQuery, next.competition)) {
+      droppedScopeFilters.push(`competition=${next.competition}`);
+      delete next.competition;
+    }
+    if (next.season && !explicitFilters.season && !queryMentionsSeason(originalQuery, next.season)) {
+      droppedScopeFilters.push(`season=${next.season}`);
+      delete next.season;
+    }
+    if (droppedScopeFilters.length > 0) {
+      warnings.push(`Dropped inferred scope filters not stated in the query: ${droppedScopeFilters.join(", ")}.`);
+    }
+  }
+  return {
+    filters: compactFilters(next),
+    warnings
+  };
 }
 
 function responseModeFromLegacyQuestionType(questionType: ModelQueryPlan["questionType"], metric: DomainQueryPlan["intent"]["metric"]) {
@@ -451,7 +489,7 @@ function hasVideoMomentRetrievalIntent(query: string) {
   return /장면|영상|클립|하이라이트|순간|나오는|보이는|찾아|보여|scene|clip|moment|highlight|footage|video|find|show/i.test(query);
 }
 
-function sanitizeParticipantConstraints(value: unknown): DomainParticipantConstraint[] {
+function sanitizeParticipantConstraints(value: unknown, originalQuery: string): DomainParticipantConstraint[] {
   if (!Array.isArray(value)) return [];
   const participants: DomainParticipantConstraint[] = [];
   for (const item of value) {
@@ -459,6 +497,8 @@ function sanitizeParticipantConstraints(value: unknown): DomainParticipantConstr
     const record = item as Record<string, unknown>;
     const rawEntity = stringOrUndefined(record.entity) ?? stringOrUndefined(record.player) ?? stringOrUndefined(record.name);
     if (!rawEntity) continue;
+    const entity = resolvePlayer(rawEntity) ?? rawEntity;
+    if (!queryMentionsParticipantEntity(originalQuery, rawEntity, entity)) continue;
     const rawEventType = allowedValue(record.eventType, allowedEventTypes);
     const rawRole = allowedValue(record.role, allowedRoles) as DomainSearchFilters["role"] | undefined;
     const relation = (allowedValue(record.relation, allowedParticipantRelations) as DomainParticipantConstraint["relation"] | undefined) ?? "unknown";
@@ -467,7 +507,7 @@ function sanitizeParticipantConstraints(value: unknown): DomainParticipantConstr
     const evidence = stringList(record.evidence, 4);
     if (evidence.length === 0) continue;
     participants.push({
-      entity: resolvePlayer(rawEntity) ?? rawEntity,
+      entity,
       relation,
       role,
       eventType,
@@ -475,6 +515,26 @@ function sanitizeParticipantConstraints(value: unknown): DomainParticipantConstr
     });
   }
   return participants.slice(0, 4);
+}
+
+function queryMentionsParticipantEntity(query: string, rawEntity: string, resolvedEntity: string) {
+  const normalizedQuery = normalizePlannerText(query);
+  const knownPlayer = matchKnowledgePlayer(rawEntity)?.value ?? matchKnowledgePlayer(resolvedEntity)?.value;
+  if (knownPlayer) {
+    return knownPlayer.aliases.some((alias) => {
+      const normalized = normalizePlannerText(alias);
+      return Boolean(normalized && normalizedQuery.includes(normalized));
+    });
+  }
+  return meaningfulEntityTokens(rawEntity, resolvedEntity).some((token) => normalizedQuery.includes(token));
+}
+
+function meaningfulEntityTokens(...values: string[]) {
+  const generic = new Set(["a", "an", "the", "other", "another", "player", "teammate", "someone", "somebody", "선수", "다른"]);
+  return values
+    .flatMap((value) => normalizePlannerText(value).split(/[\s._-]+/))
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !generic.has(token));
 }
 
 function participantRole(
@@ -554,6 +614,49 @@ function sanitizeFilterEvidence(value: unknown): DomainQueryFilterEvidence {
 
 function hasFilterEvidence(evidence: DomainQueryFilterEvidence, key: keyof DomainSearchFilters) {
   return (evidence[key]?.length ?? 0) > 0;
+}
+
+function usesIndexedAssetEvidenceOnly(
+  route: DomainQueryPlan["route"],
+  responseMode: DomainQueryPlan["responseMode"],
+  relatedKnowledgeMode: DomainQueryPlan["relatedKnowledgeMode"]
+) {
+  return route === "asset_evidence" && relatedKnowledgeMode === "none" && isAssetEvidenceGenerationMode(responseMode);
+}
+
+function queryMentionsCompetition(query: string, competition: string) {
+  const normalizedQuery = normalizePlannerText(query);
+  const matched = matchKnowledgeCompetition(competition)?.value;
+  const aliases = getKnowledgeSnapshot().competitions
+    .filter((candidate) => candidate.value === (matched ?? competition))
+    .flatMap((candidate) => [candidate.value, ...candidate.aliases]);
+  const candidates = [...aliases, ...(fallbackCompetitionAliases[matched ?? competition] ?? [competition])];
+  return candidates.some((candidate) => {
+    const normalized = normalizePlannerText(candidate);
+    return Boolean(normalized && normalizedQuery.includes(normalized));
+  });
+}
+
+function queryMentionsSeason(query: string, season: string) {
+  const normalizedQuery = normalizePlannerText(query).replace(/[–—]/g, "-");
+  const normalizedSeason = normalizePlannerText(season).replace(/[–—]/g, "-");
+  if (normalizedSeason && normalizedQuery.includes(normalizedSeason)) return true;
+  if (mentionsRelativeSeason(normalizedQuery)) return true;
+  const seasonRange = /^(\d{4})-(\d{2})$/.exec(normalizedSeason);
+  if (seasonRange) {
+    const [, startYear, endYearSuffix] = seasonRange;
+    const fullEndYear = `${startYear.slice(0, 2)}${endYearSuffix}`;
+    return [
+      `${startYear}/${endYearSuffix}`,
+      `${startYear}-${fullEndYear}`,
+      `${startYear}/${fullEndYear}`
+    ].some((candidate) => normalizedQuery.includes(candidate));
+  }
+  return Boolean(normalizedSeason && normalizedQuery.includes(normalizedSeason));
+}
+
+function mentionsRelativeSeason(normalizedQuery: string) {
+  return /이번\s*시즌|올\s*시즌|현재\s*시즌|current\s+season|this\s+season/.test(normalizedQuery);
 }
 
 function shouldPreserveAssetEvidencePlan(route: DomainQueryPlan["route"], responseMode: DomainQueryPlan["responseMode"], llm: ModelQueryPlan) {
