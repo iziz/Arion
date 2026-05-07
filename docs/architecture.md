@@ -768,7 +768,8 @@ Stage details:
    - Optional VLM refinement of related-knowledge event metadata.
    - A sub-stage inside the durable `domain-index` checkpoint when enabled.
    - For `sports.football`, the VLM output can populate structured `football.passingPlayer` and `football.receivingPlayer` roles. These roles describe event evidence, not the current query target.
-   - Named player roles require supporting visible text, ASR/OCR text, metadata, or existing indexed domain text. The VLM prompt explicitly keeps passer and receiver direction separate and does not swap roles to satisfy a search term.
+   - Named passer/receiver identities require segment-local evidence. ASR/OCR/subtitle/VLM evidence can bind a role only when the player alias and action-direction cue are local to the segment. Asset titles, tags, broad metadata, and asset-level scope can identify catalog context or player mentions, but they do not prove that the named player is the passer or receiver.
+   - Domain VLM merge preserves observed segment-local role evidence from the base domain index when the VLM response omits a role identity. It does not swap passer and receiver direction to satisfy a search term.
 12. `embed`
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
@@ -777,6 +778,7 @@ Stage details:
 14. `visual-embedding`
    - `embedKeyframes` calls the Embedding runtime service in OpenCLIP image mode.
    - Visual embedding dimension is validated against `VISUAL_EMBEDDING_DIMENSIONS` or the default `768`.
+   - The generated visual vector records are transient workflow output; a completed `visual-embedding` checkpoint is reusable only after `vector-upsert-visual` has also completed.
 15. `vector-upsert-visual`
    - Writes visual vectors to PostgreSQL/pgvector.
 16. `finalize`
@@ -815,6 +817,7 @@ Each checkpoint stores status, message, progress, timestamps, errors, and attemp
 - VLM and vision stages require matching model trace output.
 - `embed` requires persisted segment embeddings.
 - Vector upsert stages use checkpoint completion because vector writes are external to the asset JSON but are idempotent by asset/vector IDs.
+- `visual-embedding` is coupled to `vector-upsert-visual`: because visual vector records are not stored in the checkpoint, resume reruns visual embedding if visual vector upsert has not completed yet.
 - `finalize` requires the asset to be persisted as `indexed`.
 
 Worker recovery now preserves checkpoint state. `recoverDurableWorkerJobs` sets `parameters.resumeFromStage` to the failed, running, or current checkpoint stage instead of resetting progress to the beginning. Manual retry stages still override the resume gate and rerun the requested stage plus downstream stages.
@@ -853,6 +856,7 @@ Special retry paths:
 - `audio` and `vad` run `runAudioExtractionJob`.
 - Other stages run the full indexing workflow with `retryStage`.
 - Domain VLM refinement can run as a standalone `asset.domain-vlm.refine` job.
+- The standalone domain VLM refinement path rebuilds the base domain layer before merging VLM output. This prevents stale `segment.domain` JSON from preserving old passer/receiver role binding after the role-evidence policy changes.
 
 Duplicate active asset jobs are rejected by returning the active job with `x-existing-job: true`.
 
@@ -936,6 +940,7 @@ Terminology used by the query and retrieval layers:
 | Participants | Query-time semantic action constraints. `action_source` means the named entity initiates the action, `action_target` means the named entity receives or is targeted by it, and `subject` means the named entity is only the topic. |
 | Related knowledge | Selected asset-group knowledge outside the raw indexed video evidence, such as imported sports stats, rosters, provider rows, related documents, and knowledge vectors. |
 | Domain lexicon / registry | Canonical name and alias normalization used by planners and indexers. Using a registry to normalize `Son` to `Son Heung-min` is not the same as using related knowledge as an answer or retrieval source. |
+| Role-bound identity | A structured event identity attached to a participant role, such as `football.passingPlayer.identity`. It must come from segment-local role evidence and is compared through the canonical player registry before falling back to text normalization. |
 
 Additional planner fields are part of the retrieval contract:
 
@@ -1005,6 +1010,16 @@ Domain filter matching uses a production evaluation model:
 Weak event text can admit a candidate only when no trusted structured event is present. It is reported as `soft_pass` verification and receives lower ranking credit. If trusted structured event evidence exists and conflicts with the requested filter, the candidate is rejected before ranking.
 
 Player-role binding is checked against structured domain events. A query such as `player=Son Heung-min + role=passer + eventType=pass_receive` must match `football.passingPlayer.identity`; a segment where Son appears only as `football.receivingPlayer.identity` is rejected. There is no text fallback for role-specific player binding.
+
+Role-specific player checks compare player identities through the domain registry first. For example, `손흥민`, `Son`, `Sonny`, and `Son Heung-min` resolve to the same canonical player ID before the search verifier decides whether the structured role identity satisfies the query. Raw string matching is only a fallback for values that are not present in the registry.
+
+Role-bound indexing is stricter than generic player mention indexing:
+
+- Segment-local `손흥민의 패스`, `Son Heung-min cutback`, or `Son passes` can bind `football.passingPlayer.identity`.
+- Segment-local `finds Son`, `to Son`, or `Son receives` can bind `football.receivingPlayer.identity`.
+- Asset titles, tags, broad metadata, or a player appearing in scope can support catalog/search context but cannot bind a passer/receiver role by themselves.
+
+Because domain events and vector text are materialized into `app_assets.data.timeline[].domain` and `app_vectors`, policy changes require re-materializing affected assets. Full media extraction is not required when ASR/OCR/VLM/vision evidence is unchanged; rerun the `domain-index` retry stage, standalone `asset.domain-vlm.refine`, or an affected-index rebuild so domain JSON, text vectors, and tracking records are regenerated from the current policy.
 
 Text vector query flow:
 

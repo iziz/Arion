@@ -11,7 +11,7 @@ import type { AssetRecord, IndexRecord, TimelineSegment } from "../../shared/typ
 
 export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
   const assetWithTimeline = { ...asset, timeline };
-  return timeline.map((segment) => withDomainSegment(assetWithTimeline, index, segment));
+  return timeline.map((segment) => withDomainSegment(assetWithTimeline, index, segment, { rebuild: true }));
 }
 
 export async function runDomainVlmRefineJob(jobId: string, assetId: string) {

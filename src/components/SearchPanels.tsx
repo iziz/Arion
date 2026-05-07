@@ -239,6 +239,15 @@ export function KnowledgeAnswerCard({ answer }: { answer: StructuredKnowledgeAns
 
 type WorkflowItemStatus = AskOperation["steps"][number]["status"] | OrchestrationPlan["steps"][number]["status"];
 
+type WorkflowBreakdownItem = {
+  id: string;
+  label: string;
+  owner: OrchestrationPlan["steps"][number]["owner"];
+  action: string;
+  output: string;
+  status: OrchestrationPlan["steps"][number]["status"];
+};
+
 type WorkflowItem = {
   id: string;
   owner: AskOperation["steps"][number]["owner"];
@@ -246,6 +255,7 @@ type WorkflowItem = {
   summary: string;
   detail?: string;
   details?: Array<{ label: string; value: string }>;
+  trace?: WorkflowBreakdownItem[];
   status: WorkflowItemStatus;
   durationMs?: number | null;
   chips: Array<{ label: string; value: string }>;
@@ -345,6 +355,20 @@ export function SearchWorkflowTrace({
                         </span>
                       ))}
                     </div>
+                  )}
+                  {item.trace && item.trace.length > 0 && (
+                    <ol className="workflow-breakdown-list" aria-label={`${item.title} plan steps`}>
+                      {item.trace.map((traceItem) => (
+                        <li key={`${item.id}-${traceItem.id}`} className={traceItem.status}>
+                          <div>
+                            <b>{traceItem.label}</b>
+                            <em>{ownerLabel(traceItem.owner)} · {formatWorkflowStatus(traceItem.status)}</em>
+                          </div>
+                          <p>{traceItem.action}</p>
+                          <small>{traceItem.output}</small>
+                        </li>
+                      ))}
+                    </ol>
                   )}
                   {item.detail && <small>{item.detail}</small>}
                   {item.details && item.details.length > 0 && (
@@ -805,10 +829,14 @@ function buildOrchestrationWorkflowItem(orchestrationPlan: OrchestrationPlan | n
     orchestrationPlan ? { label: "confidence", value: `${Math.round(orchestrationPlan.confidence * 100)}%` } : null,
     ...decisionChips
   ].filter(Boolean) as Array<{ label: string; value: string }>;
-  const detail = orchestrationPlan?.steps
-    .slice(0, 4)
-    .map((planStep) => `${ownerLabel(planStep.owner)}: ${planStep.action} -> ${planStep.output}`)
-    .join(" · ");
+  const trace = orchestrationPlan?.steps.slice(0, 5).map((planStep) => ({
+    id: planStep.id,
+    label: planStep.label,
+    owner: planStep.owner,
+    action: planStep.action,
+    output: planStep.output,
+    status: planStep.status
+  }));
   return {
     id: "orchestrate",
     owner: step?.owner ?? "router",
@@ -816,7 +844,8 @@ function buildOrchestrationWorkflowItem(orchestrationPlan: OrchestrationPlan | n
     summary: orchestrationPlan
       ? `${orchestrationPlan.mode.replace(/_/g, " ")} workflow using ${orchestrationPlan.retrieval.engine.replace(/_/g, " ")}`
       : step?.output ?? "Choosing the search and analysis path.",
-    detail: detail || step?.input,
+    detail: orchestrationPlan ? undefined : step?.input,
+    trace,
     status: step?.status ?? (orchestrationPlan ? "succeeded" : "queued"),
     durationMs: step?.durationMs,
     chips

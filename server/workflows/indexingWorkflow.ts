@@ -521,7 +521,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       await traceAsync("stage.vector_upsert.text", { jobId, assetId, segments: timeline.length }, () => upsertAssetVectors(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, timeline), "stage.vector_upsert.text");
     });
 
-    const visualStage = await runCheckpointedIndexingStage(jobId, "visual-embedding", 92, "Visual embedding stage complete", options.retryStage, () => assetHasCompletedCheckpoint(jobId, "visual-embedding"), async () => {
+    const visualStage = await runCheckpointedIndexingStage(jobId, "visual-embedding", 92, "Visual embedding stage complete", options.retryStage, () => visualEmbeddingCheckpointCanBeReused(jobId), async () => {
       await updateJob(jobId, { stage: "visual-embedding", progress: 92 }, `Computing visual embeddings with ${getVisualEmbeddingModelName()}`);
       await updateAsset(assetId, { status: "embedding", progress: 92 });
       let visualEmbeddingTrace = `visual-embedding:${getVisualEmbeddingModelName()}`;
@@ -1070,6 +1070,20 @@ async function assetIsIndexed(assetId: string) {
 async function assetHasCompletedCheckpoint(jobId: string, stage: string) {
   const job = await getJob(jobId);
   const checkpoint = job?.stageCheckpoints?.[stage];
+  return checkpoint?.status === "succeeded" || checkpoint?.status === "skipped";
+}
+
+async function visualEmbeddingCheckpointCanBeReused(jobId: string) {
+  const job = await getJob(jobId);
+  return canReuseVisualEmbeddingCheckpoint(job?.stageCheckpoints);
+}
+
+export function canReuseVisualEmbeddingCheckpoint(stageCheckpoints: JobRecord["stageCheckpoints"] | undefined) {
+  // Visual vector records are transient until the downstream pgvector upsert completes.
+  return isReusableCheckpoint(stageCheckpoints?.["visual-embedding"]) && isReusableCheckpoint(stageCheckpoints?.["vector-upsert-visual"]);
+}
+
+function isReusableCheckpoint(checkpoint: NonNullable<JobRecord["stageCheckpoints"]>[string] | undefined) {
   return checkpoint?.status === "succeeded" || checkpoint?.status === "skipped";
 }
 

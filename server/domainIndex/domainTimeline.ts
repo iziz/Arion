@@ -64,7 +64,7 @@ export function buildDomainSegmentIndex(asset: AssetRecord, index: IndexRecord, 
     searchText,
     confidence: event.confidence,
     generatedBy: "domain-ontology-heuristic-v1",
-    trust: "heuristic"
+    trust: event.trust === "observed" || event.trust === "detected" || event.trust === "aligned" ? event.trust : "heuristic"
   };
 }
 
@@ -76,8 +76,8 @@ export function enrichTimelineWithDomain(asset: AssetRecord, index: IndexRecord)
   return asset.timeline.map((segment) => withDomainSegment(asset, index, segment));
 }
 
-export function withDomainSegment(asset: AssetRecord, index: IndexRecord, segment: TimelineSegment): TimelineSegment {
-  const domain = segment.domain ?? buildDomainSegmentIndex(asset, index, segment);
+export function withDomainSegment(asset: AssetRecord, index: IndexRecord, segment: TimelineSegment, options: { rebuild?: boolean } = {}): TimelineSegment {
+  const domain = options.rebuild ? buildDomainSegmentIndex(asset, index, { ...segment, domain: undefined }) : segment.domain ?? buildDomainSegmentIndex(asset, index, segment);
   if (!domain) return segment;
   const domainTagText = domain.labels.flatMap((label) => [label, readableLabel(label)]).join(" ");
   return {

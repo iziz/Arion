@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getForcedRuntimeStages, invalidateAssetForRetryStage, mapRetryStageToCheckpoint, normalizeWorkflowStage } from "../server/workflows/indexingWorkflow";
+import {
+  canReuseVisualEmbeddingCheckpoint,
+  getForcedRuntimeStages,
+  invalidateAssetForRetryStage,
+  mapRetryStageToCheckpoint,
+  normalizeWorkflowStage
+} from "../server/workflows/indexingWorkflow";
 import type { AssetRecord, JobRecord, LocalIntelligence } from "../shared/types";
 
 test("fresh ASR retry forces ASR and diarization even when previous data exists", () => {
@@ -97,6 +103,36 @@ test("detector retry invalidates detector descendants without dropping timeline 
   assert.ok(!next.intelligence.modelTrace.some((trace) => trace.startsWith("vision-detector") || trace.startsWith("vision-tracker") || trace.startsWith("domain-vlm") || trace.startsWith("embedding:")));
 });
 
+test("visual embedding checkpoint is reusable only after visual vectors were persisted", () => {
+  assert.equal(
+    canReuseVisualEmbeddingCheckpoint({
+      "visual-embedding": checkpoint("visual-embedding", "succeeded")
+    }),
+    false
+  );
+  assert.equal(
+    canReuseVisualEmbeddingCheckpoint({
+      "visual-embedding": checkpoint("visual-embedding", "succeeded"),
+      "vector-upsert-visual": checkpoint("vector-upsert-visual", "failed")
+    }),
+    false
+  );
+  assert.equal(
+    canReuseVisualEmbeddingCheckpoint({
+      "visual-embedding": checkpoint("visual-embedding", "succeeded"),
+      "vector-upsert-visual": checkpoint("vector-upsert-visual", "succeeded")
+    }),
+    true
+  );
+  assert.equal(
+    canReuseVisualEmbeddingCheckpoint({
+      "visual-embedding": checkpoint("visual-embedding", "skipped"),
+      "vector-upsert-visual": checkpoint("vector-upsert-visual", "skipped")
+    }),
+    true
+  );
+});
+
 function baseJob(): JobRecord {
   return {
     id: "job-1",
@@ -126,6 +162,20 @@ function runtimeStage(stage: string, status: "running" | "succeeded" | "failed")
     startedAt: "2026-05-05T00:00:00.000Z",
     updatedAt: "2026-05-05T00:01:00.000Z",
     completedAt: status === "running" ? null : "2026-05-05T00:01:00.000Z"
+  };
+}
+
+function checkpoint(stage: string, status: "running" | "succeeded" | "failed" | "skipped"): NonNullable<JobRecord["stageCheckpoints"]>[string] {
+  return {
+    stage,
+    status,
+    message: `${stage} ${status}`,
+    progress: 92,
+    error: status === "failed" ? `${stage} failed` : null,
+    startedAt: "2026-05-05T00:00:00.000Z",
+    updatedAt: "2026-05-05T00:01:00.000Z",
+    completedAt: status === "running" ? null : "2026-05-05T00:01:00.000Z",
+    attempts: 1
   };
 }
 

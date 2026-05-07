@@ -991,6 +991,14 @@ test("passer role searches reject moments where the named player is not the stru
     }),
     [footballPassEvent({ passingPlayer: "Son Heung-min", receivingPlayer: "Dejan Kulusevski" })]
   );
+  const sonAliasPasser = withDomainEvents(
+    segment({
+      id: "son-alias-passer",
+      transcript: "손흥민의 굉장한 패스가 이어지고요.",
+      embedding: [0, 1]
+    }),
+    [footballPassEvent({ passingPlayer: "손흥민", receivingPlayer: "Unknown Receiver" })]
+  );
   const unnamedPassEvent = footballPassEvent({ passingPlayer: "Unknown Player", receivingPlayer: "Unknown Receiver" });
   const unnamedPasser = withDomainEvents(
     segment({
@@ -1024,14 +1032,17 @@ test("passer role searches reject moments where the named player is not the stru
   });
   const rejectedChecks = buildVerificationChecks(asset, sonReceiver, queryPlan.domainFilters);
   const unboundChecks = buildVerificationChecks(asset, unnamedPasser, queryPlan.domainFilters);
+  const aliasChecks = buildVerificationChecks(asset, sonAliasPasser, queryPlan.domainFilters);
 
   assert.equal(evaluateSegmentDomainFilters(asset, sonReceiver, queryPlan.domainFilters).accepted, false);
   assert.equal(evaluateSegmentDomainFilters(asset, unnamedPasser, queryPlan.domainFilters).accepted, false);
+  assert.equal(evaluateSegmentDomainFilters(asset, sonAliasPasser, queryPlan.domainFilters).accepted, true);
   assert.equal(results.length, 1);
   assert.deepEqual(results[0]?.segments.map((item) => item.id), ["son-passer"]);
   assert.equal(results[0]?.clips[0]?.player, "Son Heung-min");
   assert.equal(rejectedChecks.find((check) => check.constraint === "player")?.status, "fail");
   assert.equal(unboundChecks.find((check) => check.constraint === "player")?.status, "fail");
+  assert.equal(aliasChecks.find((check) => check.constraint === "player")?.status, "pass");
 });
 
 test("heuristic football indexing binds segment-local pass source text to passer identity", () => {
@@ -1047,6 +1058,59 @@ test("heuristic football indexing binds segment-local pass source text to passer
   assert.equal(event?.football?.passType, "cutback");
   assert.equal(event?.football?.passingPlayer.identity?.name, "Son Heung-min");
   assert.equal(event?.football?.receivingPlayer.identity, null);
+});
+
+test("heuristic football indexing treats Korean local pass ownership as observed passer evidence", () => {
+  const source = segment({
+    id: "son-korean-pass-source",
+    transcript: "손흥민의 굉장한 패스가 이어지고요.",
+    embedding: [0, 1]
+  });
+  const domain = buildDomainSegmentIndex(assetWithSegments([source]), knowledgeIndexRecord(), source);
+  const event = domain?.events[0];
+
+  assert.equal(domain?.trust, "observed");
+  assert.equal(event?.trust, "observed");
+  assert.equal(event?.eventType, "pass_receive");
+  assert.equal(event?.football?.passingPlayer.present, true);
+  assert.equal(event?.football?.passingPlayer.identity?.name, "Son Heung-min");
+  assert.equal(event?.football?.passingPlayer.identity?.source, "asr");
+  assert.equal(event?.football?.receivingPlayer.identity, null);
+});
+
+test("heuristic football indexing does not bind asset-level pass text to a local player mention", () => {
+  const source = segment({
+    id: "son-mention-only",
+    transcript: "Son!",
+    embedding: [0, 1]
+  });
+  const asset = {
+    ...assetWithSegments([source]),
+    title: "Son Heung-Min Scoring STREAK Continues! 9 GOALS in 9 GAMES!",
+    tags: ["soccer", "goal", "pass"]
+  };
+  const domain = buildDomainSegmentIndex(asset, knowledgeIndexRecord(), source);
+  const event = domain?.events[0];
+
+  assert.equal(event?.football?.passingPlayer.identity, null);
+  assert.notEqual(event?.trust, "observed");
+});
+
+test("heuristic football indexing keeps local target wording out of passer identity", () => {
+  const source = segment({
+    id: "son-target-source",
+    transcript: "Transition finds Son.",
+    embedding: [0, 1]
+  });
+  const asset = {
+    ...assetWithSegments([source]),
+    tags: ["soccer", "pass"]
+  };
+  const domain = buildDomainSegmentIndex(asset, knowledgeIndexRecord(), source);
+  const event = domain?.events[0];
+
+  assert.equal(event?.football?.passingPlayer.identity, null);
+  assert.equal(event?.football?.receivingPlayer.identity?.name, "Son Heung-min");
 });
 
 test("heuristic football indexing keeps receive text bound to receiver identity", () => {
@@ -1112,6 +1176,83 @@ test("VLM football refinement records named passers as action-source role eviden
   assert.equal(event?.football?.receivingPlayer.present, true);
   assert.equal(event?.football?.ball.state, "pass_travel");
   assert.match(refined.domain?.searchText ?? "", /passer=Son Heung-min/);
+});
+
+test("VLM football refinement preserves observed passer evidence when the VLM omits the role identity", () => {
+  const source = segment({
+    id: "vlm-son-korean-passer",
+    transcript: "손흥민의 굉장한 패스가 이어지고요.",
+    embedding: [0, 1]
+  });
+  const asset = assetWithSegments([source]);
+  const domain = buildDomainSegmentIndex(asset, knowledgeIndexRecord(), source);
+  const refined = mergeVlmResponse(
+    asset,
+    { ...source, domain },
+    {
+      domain: "sports.football",
+      provider: "test-vlm",
+      model: "test-model",
+      caption: "손흥민의 굉장한 패스가 이어지고요",
+      eventType: "pass_receive",
+      confidence: 0.62,
+      labels: ["sports.football"],
+      evidence: ["손흥민의 굉장한 패스가 이어지고요"],
+      football: {
+        phase: "unknown",
+        fieldZone: "middle_third",
+        passType: "short_pass",
+        passingPlayer: {
+          present: false,
+          name: null,
+          confidence: 0.62,
+          evidence: ["손흥민의 굉장한 패스가 이어지고요"]
+        },
+        receivingPlayer: {
+          present: false,
+          name: null,
+          confidence: 0.62,
+          evidence: ["손흥민의 굉장한 패스가 이어지고요"]
+        },
+        ballState: "pass_travel",
+        attackingDirection: "unknown"
+      }
+    },
+    "sports.football",
+    "test-model"
+  );
+  const queryPlan: DomainQueryPlan = {
+    ...queryPlanForBirthday(),
+    route: "asset_evidence",
+    responseMode: "moment_retrieval",
+    relatedKnowledgeMode: "none",
+    rewrittenQuery: "player=Son Heung-min · role=passer · event=pass_receive",
+    domainFilters: {
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: "passer"
+    },
+    intent: {
+      ...queryPlanForBirthday().intent,
+      domain: "sports.football",
+      player: "Son Heung-min",
+      eventType: "pass_receive",
+      role: "passer"
+    }
+  };
+  const results = searchAssets([{ ...asset, timeline: [refined] }], [knowledgeIndexRecord()], "손흥민이 다른 선수한테 패스하는 영상 찾아줘", {
+    queryPlan,
+    domainFilters: queryPlan.domainFilters,
+    queryVector: [1, 0]
+  });
+  const event = refined.domain?.events.find((item) => item.id.endsWith("-domain-vlm-1"));
+
+  assert.equal(event?.football?.passingPlayer.present, true);
+  assert.equal(event?.football?.passingPlayer.identity?.name, "Son Heung-min");
+  assert.match(refined.domain?.searchText ?? "", /passer=Son Heung-min/);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.segments[0]?.id, "vlm-son-korean-passer");
+  assert.equal(results[0]?.clips[0]?.player, "Son Heung-min");
 });
 
 test("birthday moment search keeps scenes with direct birthday evidence", () => {

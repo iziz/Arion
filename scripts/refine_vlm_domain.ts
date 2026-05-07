@@ -1,11 +1,11 @@
 import "../server/env";
-import { buildDomainSegmentIndex } from "../server/domainIndex";
 import { embedTimelineSegments } from "../server/localEmbeddingRuntime";
 import { refineSportsDomainTimelineWithVlm } from "../server/vlmWorkerClient";
 import { upsertAssetVectors } from "../server/localVectorStore";
 import { upsertAssetTracking } from "../server/trackingStore";
 import { listAssets, listIndexes, saveAsset } from "../server/store";
 import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../server/intelligenceCore/extractiveSummary";
+import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../shared/types";
 
 async function main() {
@@ -53,16 +53,7 @@ async function main() {
 }
 
 function ensureDomainTimeline(asset: AssetRecord, index: IndexRecord): TimelineSegment[] {
-  const assetWithTimeline = { ...asset, timeline: asset.timeline };
-  return asset.timeline.map((segment) => {
-    const domain = segment.domain ?? buildDomainSegmentIndex(assetWithTimeline, index, segment);
-    if (!domain) return segment;
-    return {
-      ...segment,
-      domain,
-      sources: Array.from(new Set([...segment.sources, "domain" as const]))
-    };
-  });
+  return enrichDomainTimeline(asset, index, asset.timeline);
 }
 
 main().catch((error) => {

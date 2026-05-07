@@ -1,6 +1,6 @@
 import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, PlayerIdentity, SearchMatchReason, TimelineSegment, VerificationCheck } from "../../shared/types";
 import { isTrustedDomainSegment, isTrustedDomainEvent, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "../evidenceTrust";
-import { playerTeamForSeason } from "../knowledge/registry";
+import { matchKnowledgePlayer, playerTeamForSeason } from "../knowledge/registry";
 import { isObjectEvidenceReady, segmentSearchText } from "./sceneTimeline";
 import { SEMANTIC_ONLY_THRESHOLD, VISUAL_ONLY_THRESHOLD } from "./searchThresholds";
 import { formatTime, normalizeSearchValue, unique } from "./textUtils";
@@ -436,6 +436,9 @@ function identityMatchesPlayer(identity: PlayerIdentity | null | undefined, play
 }
 
 function scopeValueMatchesPlayer(value: string, player: string) {
+  const valuePlayer = matchKnowledgePlayer(value)?.value;
+  const expectedPlayer = matchKnowledgePlayer(player)?.value;
+  if (valuePlayer && expectedPlayer) return valuePlayer.id === expectedPlayer.id;
   const normalized = normalizeSearchValue(value);
   const expected = normalizeSearchValue(player);
   return Boolean(normalized && expected && (normalized.includes(expected) || expected.includes(normalized)));

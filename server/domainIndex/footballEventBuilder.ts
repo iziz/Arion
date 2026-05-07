@@ -1,5 +1,6 @@
 import type { AssetRecord, DomainEvent, TimelineSegment } from "../../shared/types";
 import { ONTOLOGY_VERSION, footballRules } from "../domainCore/ontology";
+import { matchKnowledgePlayer } from "../knowledge/registry";
 import { inferPlayerIdentity } from "./scopeInference";
 import {
   bestRule,
@@ -10,6 +11,7 @@ import {
   isObjectEvidenceReady,
   matchingTerms,
   normalizeLabel,
+  normalizeText,
   passTypeFromClassifier,
   passTypeFromLabel,
   readableLabel,
@@ -40,10 +42,12 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
   const ballState = eventRule?.rule.label.endsWith("shot") || classifier?.label === "shot" ? "shot" : passType !== "unknown" ? "pass_travel" : "unknown";
   const playerIdentity = inferPlayerIdentity(asset, segment);
   const roleIdentity = playerIdentity && isSegmentLocalIdentity(playerIdentity) ? playerIdentity : null;
-  const receiveCue = eventRule ? eventTypeFromLabel(eventRule.rule.label) === "pass_receive" : false;
-  const passSourceCue = Boolean(passRule && !receiveCue);
+  const localNormalized = normalizeText(segmentLocalRoleText(segment));
+  const receiveCue = Boolean(roleIdentity && hasReceiveTargetCue(localNormalized, roleIdentity));
+  const passSourceCue = Boolean(roleIdentity && !receiveCue && hasPassSourceCue(localNormalized, roleIdentity));
   const passingIdentity = passerPresent && passSourceCue ? roleIdentity : null;
-  const receivingIdentity = receiverPresent && !passSourceCue ? roleIdentity : null;
+  const receivingIdentity = receiverPresent && receiveCue ? roleIdentity : null;
+  const roleBoundIdentity = Boolean(passingIdentity || receivingIdentity);
   const evidenceAsr = snippets(segment.sceneData?.text.speech || segment.transcript);
   const evidenceOcr = [
     ...(segment.sceneData?.text.subtitles ?? []),
@@ -112,7 +116,7 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
     eventType,
     labels,
     confidence,
-    trust: "heuristic",
+    trust: roleBoundIdentity ? "observed" : "heuristic",
     evidence: {
       asr: evidenceAsr,
       ocr: evidenceOcr,
@@ -170,6 +174,95 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
 
 function isSegmentLocalIdentity(identity: NonNullable<ReturnType<typeof inferPlayerIdentity>>) {
   return identity.source === "asr" || identity.source === "ocr" || identity.source === "vlm";
+}
+
+function segmentLocalRoleText(segment: TimelineSegment) {
+  const sceneText = segment.sceneData?.text;
+  return unique([
+    segment.label,
+    segment.transcript,
+    sceneText?.speech,
+    ...(sceneText?.subtitles ?? []),
+    ...(sceneText?.screenText ?? []),
+    ...(sceneText?.overlays ?? [])
+  ]
+    .filter(Boolean)
+  ).join(" . ");
+}
+
+function hasPassSourceCue(normalized: string, identity: NonNullable<ReturnType<typeof inferPlayerIdentity>>) {
+  return playerAliasPatterns(identity).some((alias) => {
+    const pattern = aliasPattern(alias);
+    const targetParticle = new RegExp(`${pattern}(?:${TARGET_PARTICLE_PATTERN})`, "iu");
+    if (targetParticle.test(normalized)) return false;
+    const sourceAfterAlias = new RegExp(
+      `${pattern}(?:\\s+s|\\s|${ROLE_PARTICLE_PATTERN})?[\\p{L}\\p{N}\\s-]{0,28}(?:${PASS_SOURCE_CUE_PATTERN})`,
+      "iu"
+    );
+    const possessivePass = new RegExp(`${pattern}(?:\\s+s|\\s|${POSSESSIVE_PARTICLE_PATTERN})[\\p{L}\\p{N}\\s-]{0,18}(?:${PASS_SOURCE_CUE_PATTERN})`, "iu");
+    return sourceAfterAlias.test(normalized) || possessivePass.test(normalized);
+  });
+}
+
+function hasReceiveTargetCue(normalized: string, identity: NonNullable<ReturnType<typeof inferPlayerIdentity>>) {
+  return playerAliasPatterns(identity).some((alias) => {
+    const pattern = aliasPattern(alias);
+    const directReceive = new RegExp(`${pattern}[\\p{L}\\p{N}\\s-]{0,18}(?:${RECEIVE_TARGET_CUE_PATTERN})`, "iu");
+    const targetBeforeAlias = new RegExp(
+      `(?:${TARGET_BEFORE_ALIAS_CUE_PATTERN})[\\p{L}\\p{N}\\s-]{0,18}${aliasPattern(alias, false)}`,
+      "iu"
+    );
+    return directReceive.test(normalized) || targetBeforeAlias.test(normalized);
+  });
+}
+
+function playerAliasPatterns(identity: NonNullable<ReturnType<typeof inferPlayerIdentity>>) {
+  const player = matchKnowledgePlayer(identity.name)?.value;
+  return unique([identity.name, ...(player?.aliases ?? [])])
+    .map((alias) => normalizeText(alias))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+}
+
+function aliasPattern(alias: string, leadingBoundary = true) {
+  const escaped = escapeRegExp(alias).replace(/\s+/g, "\\s+");
+  if (!/^[a-z0-9\s-]+$/i.test(alias)) return escaped;
+  return `${leadingBoundary ? "(?:^|[^a-z0-9])" : ""}${escaped}(?=$|[^a-z0-9])`;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const ROLE_PARTICLE_PATTERN = cuePattern(["의", "이", "가", "은", "는"]);
+const POSSESSIVE_PARTICLE_PATTERN = cuePattern(["의"]);
+const TARGET_PARTICLE_PATTERN = cuePattern(["에게", "한테", "쪽으로", "향해"]);
+const PASS_SOURCE_CUE_PATTERN = cuePattern([
+  "패스",
+  "크로스",
+  "컷백",
+  "스루패스",
+  "pass",
+  "passes",
+  "passing",
+  "cross",
+  "crosses",
+  "cutback",
+  "cutbacks",
+  "cut back",
+  "plays",
+  "sends",
+  "feeds",
+  "sets up"
+]);
+const RECEIVE_TARGET_CUE_PATTERN = cuePattern(["받는", "받아", "받았다", "리시브", "receive", "receives", "received", "controls", "gets on the end"]);
+const TARGET_BEFORE_ALIAS_CUE_PATTERN = cuePattern(["에게", "한테", "쪽으로", "향해", "to", "toward", "towards", "find", "finds", "found", "into", "for"]);
+
+function cuePattern(terms: string[]) {
+  return terms
+    .map((term) => escapeRegExp(normalizeText(term)).replace(/\s+/g, "\\s+"))
+    .filter(Boolean)
+    .join("|");
 }
 
 function inferFieldZone(normalized: string, explicitLabel: string | undefined, passType: NonNullable<DomainEvent["football"]>["passType"]) {

@@ -223,16 +223,41 @@ export function buildEvidenceLedger(
 }
 
 export function filterSearchResultsByTrust(results: SearchResult[], filters: SearchTrustFilters) {
-  return results.filter((result) => {
-    const ledger = buildEvidenceLedger(result.verification, result.matchReasons, result.segments);
-    if (filters.verifiedOnly && ledger.tone !== "verified") return false;
-    if (!filters.includeSoft && ledger.soft.length > 0) return false;
-    if (filters.hideFailed && ledger.failed.length > 0) return false;
-    if (ledger.score < filters.minScore) return false;
-    if (filters.requireHardPlayer && !hasHardConstraint(ledger, "Player")) return false;
-    if (filters.requireHardFieldZone && !hasHardConstraint(ledger, "Field zone")) return false;
-    return true;
-  });
+  return results
+    .map((result) => {
+      const visibleSegments = result.segments.filter((segment) => {
+        const ledger = buildEvidenceLedger(
+          result.verification.filter((check) => check.segmentId === segment.id),
+          result.matchReasons.filter((reason) => reason.segmentId === segment.id),
+          [segment]
+        );
+        return passesTrustFilter(ledger, filters);
+      });
+      if (visibleSegments.length === 0) return null;
+      const visibleSegmentIds = new Set(visibleSegments.map((segment) => segment.id));
+      const explain = visibleSegments.length === result.segments.length
+        ? result.explain
+        : [...result.explain, `${visibleSegments.length}/${result.segments.length} moments passed current evidence threshold`];
+      return {
+        ...result,
+        segments: visibleSegments,
+        clips: result.clips.filter((clip) => visibleSegmentIds.has(clip.segmentId)),
+        matchReasons: result.matchReasons.filter((reason) => visibleSegmentIds.has(reason.segmentId)),
+        verification: result.verification.filter((check) => visibleSegmentIds.has(check.segmentId)),
+        explain
+      };
+    })
+    .filter((result): result is SearchResult => Boolean(result));
+}
+
+function passesTrustFilter(ledger: EvidenceLedger, filters: SearchTrustFilters) {
+  if (filters.verifiedOnly && ledger.tone !== "verified") return false;
+  if (!filters.includeSoft && ledger.soft.length > 0) return false;
+  if (filters.hideFailed && ledger.failed.length > 0) return false;
+  if (ledger.score < filters.minScore) return false;
+  if (filters.requireHardPlayer && !hasHardConstraint(ledger, "Player")) return false;
+  if (filters.requireHardFieldZone && !hasHardConstraint(ledger, "Field zone")) return false;
+  return true;
 }
 
 function hasHardConstraint(ledger: EvidenceLedger, label: string) {

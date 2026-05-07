@@ -75,7 +75,7 @@ Football domain events can carry explicit pass participant roles:
 - `football.passingPlayer`: the player who releases or initiates the pass
 - `football.receivingPlayer`: the player who receives, controls, or is clearly targeted by the pass
 
-These roles are evidence fields on the indexed event. They are not query-time labels and must not be swapped to satisfy a user search. Named roles require supporting visible text, ASR/OCR text, metadata, VLM evidence, or existing domain text.
+These roles are evidence fields on the indexed event. They are not query-time labels and must not be swapped to satisfy a user search. Named roles require segment-local ASR/OCR/subtitle/VLM evidence that binds the player alias to the action direction. Asset titles, tags, broad metadata, and asset-level scope can support player mention or catalog context, but they do not bind `passingPlayer` or `receivingPlayer` by themselves.
 
 Identity status remains conservative:
 
@@ -208,12 +208,12 @@ The package-level `test` script currently runs the full test suite because `test
 
 Existing uploaded videos do not need to be uploaded again.
 
-To populate the new sports identity output or participant role event fields for existing football or American-football assets, re-run indexing from `domain-index`, run domain VLM refinement, or rebuild the affected indexes. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
+To populate the new sports identity output or participant role event fields for existing football or American-football assets, re-run indexing from `domain-index`, run domain VLM refinement, or rebuild the affected indexes. The domain VLM refinement path rebuilds the base domain layer before merging VLM output, so it can refresh stale stored role evidence without re-uploading media. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
 
 ## Current Limitations
 
 - Football player identity is still evidence-gated and candidate-first unless match context, clock, roster window, and track evidence agree.
-- Football passer/receiver identity depends on structured domain event evidence from action spots, VLM refinement, OCR/ASR text, metadata, or other indexed domain evidence. Generic text alone does not prove that a named player is the passer.
+- Football passer/receiver identity depends on structured domain event evidence from action spots, VLM refinement, and segment-local OCR/ASR/subtitle text. Generic text, asset metadata, title aliases, or asset-level scope alone do not prove that a named player is the passer.
 - American-football helmet assignment and contact detection are represented in the schema, but external detector integration is still model-dependent.
 - nflverse is NFL-scoped; college or generic American-football footage can receive action labels but must not receive nflverse game/play alignment from weak evidence.
 - Multi-camera synchronization and official broadcast timecode feeds are not implemented.

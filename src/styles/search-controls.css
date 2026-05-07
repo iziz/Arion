@@ -1490,6 +1490,77 @@
   gap: 8px;
 }
 
+.workflow-breakdown-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-breakdown-list li {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border-left: 3px solid #cfe4dc;
+  border-radius: 8px;
+  background: #f7fbf9;
+  padding: 9px 11px;
+}
+
+.workflow-breakdown-list li.needs_review {
+  border-left-color: #dfbd58;
+  background: #fff9e8;
+}
+
+.workflow-breakdown-list li.fallback {
+  border-left-color: #d2a94a;
+  background: #fff7df;
+}
+
+.workflow-breakdown-list > li > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.workflow-breakdown-list b {
+  min-width: 0;
+  color: #25352f;
+  font-size: 12px;
+  font-weight: 920;
+  line-height: 1.25;
+}
+
+.workflow-breakdown-list em {
+  color: #5f736c;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 850;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.workflow-breakdown-list p {
+  min-width: 0;
+  margin: 0;
+  color: #40534d;
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.45;
+}
+
+.workflow-breakdown-list small {
+  min-width: 0;
+  color: #657a73;
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .workflow-detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1538,6 +1609,15 @@
 
   .search-workflow-actions {
     justify-content: flex-start;
+  }
+
+  .workflow-breakdown-list > li > div {
+    display: grid;
+    gap: 4px;
+  }
+
+  .workflow-breakdown-list em {
+    white-space: normal;
   }
 
   .workflow-step {

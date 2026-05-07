@@ -1,5 +1,5 @@
 import type { AssetRecord, DomainEvent, DomainVlmQuality, PlayerIdentity, TimelineSegment } from "../../shared/types";
-import { isTrustedDomainSegment } from "../evidenceTrust";
+import { isTrustedDomainEvent, isTrustedDomainSegment } from "../evidenceTrust";
 
 export type VlmSportsEventResponse = {
   domain?: string;
@@ -50,13 +50,15 @@ type VlmPlayerRole = {
 
 export function mergeVlmResponse(asset: AssetRecord, segment: TimelineSegment, response: VlmSportsEventResponse, requestedDomain: string, modelName: string): TimelineSegment {
   const domain = normalizeDomain(response.domain ?? requestedDomain);
-  const event = buildVlmDomainEvent(segment, response, domain, modelName);
-  if (!event) return segment;
   const base = segment.domain;
-  const trustedBase = isTrustedDomainSegment(base);
+  const baseEvents = (base?.events ?? []).filter(isTrustedDomainEvent);
+  const trustedBase = isTrustedDomainSegment(base) || baseEvents.length > 0;
+  const rawEvent = buildVlmDomainEvent(segment, response, domain, modelName);
+  if (!rawEvent) return segment;
+  const event = mergeObservedFootballRoleEvidence(rawEvent, baseEvents);
   const captions = unique([response.caption, ...(trustedBase ? (base?.captions ?? []) : [])].filter(isNonEmpty));
   const labels = unique([domain, ...event.labels, ...(response.labels ?? []), ...(trustedBase ? (base?.labels ?? []) : [])].filter(isNonEmpty));
-  const events = [event, ...(trustedBase ? (base?.events ?? []) : [])].sort((a, b) => b.confidence - a.confidence).slice(0, 4);
+  const events = uniqueEvents([event, ...(trustedBase ? baseEvents : [])]).sort((a, b) => b.confidence - a.confidence).slice(0, 4);
   const searchText = [
     trustedBase ? base?.searchText : "",
     `VLM caption: ${event.caption}.`,
@@ -212,6 +214,71 @@ function buildVlmDomainEvent(
       ]
     }
   };
+}
+
+function mergeObservedFootballRoleEvidence(event: DomainEvent, baseEvents: DomainEvent[]): DomainEvent {
+  if (!event.football || event.domain !== "sports.football" || event.eventType !== "pass_receive") return event;
+  const basePassEvents = baseEvents.filter((baseEvent) => baseEvent.domain === "sports.football" && baseEvent.eventType === "pass_receive" && baseEvent.football);
+  if (basePassEvents.length === 0) return event;
+
+  const passingIdentity = event.football.passingPlayer.identity ?? observedRoleIdentity(basePassEvents, "passingPlayer");
+  const receivingIdentity = event.football.receivingPlayer.identity ?? observedRoleIdentity(basePassEvents, "receivingPlayer");
+  if (!passingIdentity && !receivingIdentity) return event;
+
+  const mergedFootball = {
+    ...event.football,
+    passingPlayer: mergeFootballRole(event.football.passingPlayer, passingIdentity),
+    receivingPlayer: mergeFootballRole(event.football.receivingPlayer, receivingIdentity)
+  };
+  const mergedLabels = unique([
+    ...event.labels,
+    passingIdentity ? "role.passer" : "",
+    receivingIdentity ? "role.receiver" : "",
+    passingIdentity ? `player.${normalizeLabel(passingIdentity.name)}` : "",
+    receivingIdentity ? `player.${normalizeLabel(receivingIdentity.name)}` : ""
+  ].filter(isNonEmpty));
+  const mergedHeuristics = unique([
+    ...event.evidence.heuristics,
+    passingIdentity && !event.football.passingPlayer.identity ? "Merged segment-local observed passer identity from the base domain index." : "",
+    receivingIdentity && !event.football.receivingPlayer.identity ? "Merged segment-local observed receiver identity from the base domain index." : ""
+  ].filter(isNonEmpty));
+
+  return {
+    ...event,
+    labels: mergedLabels,
+    evidence: {
+      ...event.evidence,
+      heuristics: mergedHeuristics
+    },
+    football: mergedFootball
+  };
+}
+
+function observedRoleIdentity(baseEvents: DomainEvent[], role: "passingPlayer" | "receivingPlayer"): PlayerIdentity | null {
+  for (const event of baseEvents) {
+    const identity = event.football?.[role].identity;
+    if (!identity || !isSegmentLocalIdentity(identity)) continue;
+    return identity;
+  }
+  return null;
+}
+
+function mergeFootballRole(
+  role: NonNullable<DomainEvent["football"]>["passingPlayer"],
+  identity: PlayerIdentity | null
+): NonNullable<DomainEvent["football"]>["passingPlayer"] {
+  if (!identity) return role;
+  return {
+    ...role,
+    present: true,
+    identity,
+    confidence: Math.max(role.confidence, identity.confidence),
+    trackingStatus: role.trackingStatus === "not_configured" ? "estimated" : role.trackingStatus
+  };
+}
+
+function isSegmentLocalIdentity(identity: PlayerIdentity) {
+  return identity.source === "asr" || identity.source === "ocr" || identity.source === "vlm";
 }
 
 function buildVlmAmericanFootballEvent(
@@ -462,6 +529,14 @@ function snippets(text: string) {
 
 function unique<T>(items: T[]) {
   return Array.from(new Set(items));
+}
+
+function uniqueEvents(events: DomainEvent[]) {
+  const byId = new Map<string, DomainEvent>();
+  for (const event of events) {
+    if (!byId.has(event.id)) byId.set(event.id, event);
+  }
+  return Array.from(byId.values());
 }
 
 function isNonEmpty(value: unknown): value is string {
