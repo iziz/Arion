@@ -27,8 +27,11 @@ Primary code references:
 - `server/llmQueryPlanner.ts`
 - `server/queryRetrievalPlan.ts`
 - `server/intelligenceCore/evidence.ts`
+- `server/domainIndex/*`
 - `server/sceneDetection.ts`
 - `server/modelRuntime/pythonRuntimeService.ts`
+- `server/knowledgeAdapters.ts`
+- `server/knowledge/adapters/sports/*`
 - `server/services/redisJobQueue.ts`
 - `server/services/askJobQueue.ts`
 - `server/services/queueOutboxStore.ts`
@@ -42,7 +45,11 @@ Primary code references:
 - `server/observability.ts`
 - `server/vlmWorkerClient.ts`
 - `server/knowledge/*`
+- `shared/knowledgeSources.ts`
+- `shared/knowledgeTemplates.ts`
 - `scripts/arion_model_runtime_service.py`
+- `scripts/import_nflverse.ts`
+- `scripts/build_american_football_action_spots.ts`
 - `scripts/qwen_vlm_worker.py`
 - `shared/types.ts`
 
@@ -689,19 +696,20 @@ flowchart TD
   VisionTracks -.->|required unavailable| Failure
   VisionTracks --> Classify["Apply event classification"]
   Classify --> KnowledgeAction{"knowledgeActionSpotting enabled\nand selected source supports it?"}
-  KnowledgeAction -->|yes| KnowledgeActionRun["Adapter action spotting\nsports.football -> SoccerNet\nsports.american_football -> American football"]
+  KnowledgeAction -->|yes| KnowledgeActionRun["Domain template action source\nsports.football -> SoccerNet external source\nsports.american_football -> inline NFL generator or explicit override"]
   KnowledgeActionRun -.->|required unavailable| Failure
   KnowledgeAction -->|no| DomainIndex
   KnowledgeActionRun --> DomainIndex{"domainIndexing enabled?"}
   DomainIndex -->|yes| Domain["Domain timeline enrichment\nrelated knowledge events and scope"]
   DomainIndex -->|no| TextEmbed
   Domain --> DomainVlm{"domainVlmRefinement enabled?"}
-  DomainVlm -->|no| TextEmbed
+  DomainVlm -->|no| SportsIdentity["Sports identity resolver\nmatch/game context, clock mappings,\nroster windows, trackId/playerId candidates"]
   DomainVlm -->|yes| DomainVlmWorker{"VLM_WORKER_URL configured?"}
   DomainVlmWorker -->|yes| DomainVlmRun["Refine related knowledge events\nVLM worker"]
-  DomainVlmWorker -->|no and optional| TextEmbed
+  DomainVlmWorker -->|no and optional| SportsIdentity
   DomainVlmWorker -->|no and required| Failure
-  DomainVlmRun --> TextEmbed["Text embeddings\nsentence-transformers script"]
+  DomainVlmRun --> SportsIdentity
+  SportsIdentity --> TextEmbed["Text embeddings\nsentence-transformers script"]
   TextEmbed --> TextVector["Upsert text vectors"]
   TextVector --> VisualEmbed["Try visual embeddings\nOpenCLIP script"]
   VisualEmbed --> VisualVector["Upsert visual vectors\npossibly empty on unavailable visual embedding"]
@@ -744,12 +752,21 @@ Stage details:
 8. Event classification
    - `applyEventClassification` derives event labels from text and vision features.
 9. `knowledge-action`
-   - Optional adapter-provided action spotting when the selected related-knowledge source supports it.
-   - The current implementation maps `sports.football` to the SoccerNet action spotting adapter and `sports.american_football` to the American-football action spotting adapter.
+   - A sub-stage inside the durable `domain-index` checkpoint, exposed to the UI as its own workflow node.
+   - Runs only when `knowledgeActionSpotting` is enabled and the selected related-knowledge source supports a registered adapter.
+   - The current implementation maps `sports.football` to the SoccerNet action spotting adapter.
+   - The current implementation maps `sports.american_football` to the American-football action spotting adapter, which uses the inline template generator by default and switches to an explicit JSON/command/runtime source only when `AMERICAN_FOOTBALL_ACTION_*` or legacy `NFL_ACTION_*` variables are set.
+   - The selected adapter receives the already-built timeline, detector output, tracker output, asset metadata, and related sports snapshot. It returns timestamp action JSON that is merged back into timeline domain events.
 10. `domain-index`
    - Related-knowledge-enabled indexes enrich segments with domain captions, labels, events, scope, and search text.
+   - For sports domains, after optional domain VLM refinement, the same checkpoint runs `resolveTimelineMatchIdentity` from `server/domainIndex/matchIdentityResolver.ts`.
+   - `sports.football` resolves match context, match clock mappings, active roster windows, and track/player identity candidates from match activities, OCR/ASR/VLM text, domain events, and track evidence.
+   - `sports.american_football` resolves game/play context, quarter clock mappings, down-distance/yardline, active participants, and track/player identity candidates from nflverse plays, action spots, OCR/ASR/VLM text, domain events, and MOT evidence.
+   - `asset.identity` stores the asset-level identity index; each affected segment also receives `segment.identity` with context IDs, clock mappings, roster windows, identity candidates, and track assignments.
+   - Identity assignment is candidate-first. It is not face-recognition-first, and stable `trackId -> playerId` assignment requires context, clock, participant/roster evidence, and track evidence to agree.
 11. `domain-vlm`
    - Optional VLM refinement of related-knowledge event metadata.
+   - A sub-stage inside the durable `domain-index` checkpoint when enabled.
 12. `embed`
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
@@ -815,8 +832,16 @@ Supported normalized retry stages include:
 - `ocr`
 - `visual`
 - `timeline`
+- `scene`
+- `keyframes`
 - `domain`
+- `domainVlm`
+- `knowledgeAction`
+- `detector`
+- `tracker`
 - `vector`
+- `textEmbedding`
+- `visualEmbedding`
 - `ready`
 - `videoVlm`
 
@@ -1022,6 +1047,7 @@ The knowledge snapshot includes:
 - players
 - match activities
 - facts
+- American-football plays from nflverse
 
 ### Provider Imports
 
@@ -1087,6 +1113,45 @@ When enabled, timeline segments can receive:
 - optional domain VLM quality metadata
 
 Capability policies control whether VLM, detector, tracker, adapter action spotting, domain VLM, and diarization steps are disabled, optional, or required.
+
+### Domain-Specific Sports Templates
+
+Sports domain behavior is described in `shared/knowledgeTemplates.ts` as a fixed `manifest + generator + evaluator` contract.
+
+`sports.base` is the shared contract. It defines:
+
+- common evidence rules for ASR, OCR, VLM, detector, tracker, and registry evidence
+- edited-video support through multiple `matchContexts[].videoRanges[]`
+- clock mappings per match/game context
+- candidate-first player identity rules
+- skip policies for missing domain context, missing action sources, or missing identity evidence
+- evaluator policies for schema stability, benchmark coverage, and false-alignment regression gates
+
+`sports.football` specializes the base contract with football match activities, lineup windows, SoccerNet-style timestamp action spots, match clocks, field zones, pass/player/ball fields, and football registry grounding.
+
+`sports.american_football` specializes the base contract with nflverse play metadata, `gameId`, `playId`, quarter clock, down-distance, yardline, participant fields, Big Data Bowl-style tracking schema hooks, MOT track IDs, and planned helmet/contact evidence.
+
+The frontend exposes this contract in two places:
+
+- `src/components/knowledge/KnowledgePanel.tsx` shows `Overview`, `Manifest`, `Generator`, and `Evaluator` tabs for the selected related knowledge.
+- `src/components/assets/AssetComponents.tsx` shows the same template contract inside the asset workflow `knowledgeAction` node, including runtime gates, skip conditions, output schema count, benchmark coverage, and stored traces.
+
+### Sports Identity Resolution
+
+`server/domainIndex/matchIdentityResolver.ts` runs after domain event construction and optional domain VLM refinement, before text embeddings and vector upsert. It keeps generic video evidence separate from sports identity decisions.
+
+The resolver supports multiple context ranges inside one edited asset:
+
+- one video can contain multiple matches or games
+- each context stores independent `videoRanges[]`
+- each context stores independent `clockMappings[]`
+- segment-level identity points back to one or more context IDs
+
+For football, the resolver builds match candidates from imported match activities and roster windows. It restricts player identity candidates by match context, clock, lineup/substitution/red-card windows, text evidence, and track evidence.
+
+For American football, the resolver builds game/play candidates from nflverse play metadata and action-spot play metadata. It uses `gameId`, `playId`, quarter, clock, down, distance, yardline, participant metadata, and MOT track evidence when available.
+
+The resolver intentionally does not claim stable visual identity from generic face recognition. Face, jersey OCR, team-kit classification, helmet assignment, ReID, contact, and calibrated tracking can be added as evidence sources, but current stable identity remains evidence-gated and candidate-first unless the required evidence agrees.
 
 ## Storage Architecture
 
@@ -1469,7 +1534,7 @@ Selected environment variables used by the implementation:
 | `VISION_DETECTOR_BACKEND` | Selects vision detector backend. |
 | `VISION_TRACKER` | Selects Ultralytics tracker config. |
 | `SOCCERNET_ACTION_SPOTTING_COMMAND` / `SOCCERNET_ACTION_SPOTS_JSON` | Enables SoccerNet-style action spotting. |
-| `AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND` / `AMERICAN_FOOTBALL_ACTION_SPOTS_JSON` | Enables American-football action spotting. Legacy `NFL_ACTION_*` names are also accepted. |
+| `AMERICAN_FOOTBALL_ACTION_SPOTTING_COMMAND` / `AMERICAN_FOOTBALL_ACTION_SPOTS_JSON` | Overrides the built-in American-football inline template generator with an explicit prediction source. Legacy `NFL_ACTION_*` names are also accepted. |
 
 ## Maintenance Scripts
 
@@ -1492,11 +1557,12 @@ The repo includes TypeScript and Python maintenance scripts. Use [npm-scripts.md
   - `scripts/rebuild_knowledge_vectors.ts`
   - `scripts/rebuild_all_indexes.ts`
   - `scripts/refine_vlm_domain.ts`
+  - `scripts/build_american_football_action_spots.ts`
 - Runtime diagnostics:
   - `scripts/model_doctor.py`
 - Runtime workers and adapters:
   - `scripts/arion_model_runtime_service.py`
-  - ASR, OCR, VLM, embedding, scene detection, object detection, tracking, and SoccerNet scripts.
+  - ASR, OCR, VLM, embedding, scene detection, object detection, tracking, SoccerNet, and American-football action spotting scripts.
 
 ## Extension Boundaries
 
@@ -1530,3 +1596,4 @@ These are direct consequences of the code shape:
 - OpenCV heuristic object detection is not a runtime fallback. Detector failures remain unavailable detector evidence, and capability policy decides whether indexing can continue.
 - Direct structured answers come from the current sports related-knowledge adapter. It answers aggregate stat questions from imported related knowledge, not from video moment counts.
 - Knowledge-seeded asset retrieval must resolve the ranked/stat subject from selected related knowledge before searching video evidence; unresolved seeds complete with a knowledge limitation instead of broad moment retrieval.
+- Sports player identity is candidate-first. The current resolver can use match/game context, roster or lineup windows, nflverse play metadata, OCR/ASR/VLM text, jersey/helmet/ReID/contact evidence hooks, and MOT track IDs, but it does not implement face-first stable identity.

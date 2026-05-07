@@ -12,6 +12,23 @@ test("coarse visual profile is presented as source preparation, not scene eviden
   assert.doesNotMatch(sceneGroup, /step\.id === "visual"/);
 });
 
+test("input source and probe metadata render distinct result panels", async () => {
+  const component = await readFile(path.resolve("src", "components", "assets", "AssetComponents.tsx"), "utf8");
+  const resultRouting = functionBlock(component, "function WorkflowResultContent");
+  const inputResult = functionBlock(component, "function InputSourceResult");
+  const probeResult = functionBlock(component, "function ProbeMetadataResult");
+
+  assert.match(resultRouting, /stepId === "input"\) return <InputSourceResult/);
+  assert.match(resultRouting, /stepId === "probe"\) return <ProbeMetadataResult/);
+  assert.doesNotMatch(resultRouting, /stepId === "input" \|\| stepId === "probe"/);
+  assert.match(inputResult, /Object key/);
+  assert.match(inputResult, /Checksum/);
+  assert.doesNotMatch(inputResult, /Frame rate/);
+  assert.match(probeResult, /Frame rate/);
+  assert.match(probeResult, /Video codec/);
+  assert.doesNotMatch(probeResult, /Object key/);
+});
+
 test("detector and tracker are presented as domain evidence", async () => {
   const component = await readFile(path.resolve("src", "components", "assets", "AssetComponents.tsx"), "utf8");
   const sceneGroup = groupBlock(component, "3. Scene and vision evidence");
@@ -29,4 +46,11 @@ function groupBlock(source: string, label: string) {
   const next = source.indexOf("},", source.indexOf("steps:", start));
   assert.notEqual(next, -1, `Missing workflow group end: ${label}`);
   return source.slice(start, next);
+}
+
+function functionBlock(source: string, signature: string) {
+  const start = source.indexOf(signature);
+  assert.notEqual(start, -1, `Missing function: ${signature}`);
+  const next = source.indexOf("\nfunction ", start + signature.length);
+  return source.slice(start, next === -1 ? source.length : next);
 }

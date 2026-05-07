@@ -12,6 +12,8 @@ import { answerSportsKnowledgeQuestion } from "../server/knowledge/adapters/spor
 import { buildStatSeedKnowledgePlan, buildStatSeededMomentPlan, shouldContinueWithMomentRetrieval } from "../server/workflows/ask/statMomentSeed";
 import { buildAskAnalysisAnswerContent, buildAskVideoAnswerContent } from "../server/workflows/ask/answerBuilder";
 import { buildSearchAssistantAnswer } from "../src/searchTrust";
+import { applyExtractiveVideoSummaries } from "../server/intelligenceCore/extractiveSummary";
+import { segmentToEmbeddingText } from "../server/localEmbeddingRuntime";
 import type { AssetRecord, DomainEvent, DomainQueryPlan, IndexRecord, StructuredKnowledgeAnswer, TimelineSegment } from "../shared/types";
 
 test("planned semantic query is used as the lexical retrieval anchor", () => {
@@ -819,6 +821,55 @@ test("birthday moment search keeps scenes with VLM-only birthday evidence", () =
   assert.equal(results[0]?.segments[0]?.id, "vlm-birthday");
 });
 
+test("extractive summaries are indexed as searchable moment text", () => {
+  const queryPlan = queryPlanForBirthday();
+  const summarizedSegment = segment({
+    id: "summary-birthday",
+    transcript: "People gather in a room.",
+    summary: "A birthday celebration with a cake and candles.",
+    embedding: [0, 1]
+  });
+  const results = searchAssets([assetWithSegments([summarizedSegment])], [indexRecord()], "생일 축하 장면 찾아줘", {
+    queryPlan,
+    queryVector: [1, 0]
+  });
+
+  assert.match(segmentSearchText(summarizedSegment), /birthday celebration/);
+  assert.match(vectorRecordText(summarizedSegment), /cake and candles/);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.segments[0]?.id, "summary-birthday");
+});
+
+test("deterministic summaries are built from existing evidence before embedding", () => {
+  const source = assetWithSegments([
+    segment({
+      id: "vlm-birthday",
+      transcript: "The group reacts to the song.",
+      vlm: birthdayVlmEvidence(),
+      embedding: []
+    }),
+    withDomainEvents(
+      segment({
+        id: "structured-shot",
+        transcript: "The crowd gets louder.",
+        vision: sportsVisionEvidence(),
+        embedding: []
+      }),
+      [domainEvent("shot")]
+    )
+  ]);
+  const summarized = applyExtractiveVideoSummaries(source, knowledgeIndexRecord(), source.timeline);
+  const birthday = summarized.timeline[0];
+  const shot = summarized.timeline[1];
+
+  assert.match(birthday?.summary ?? "", /birthday celebration|생일 서프라이즈/);
+  assert.match(shot?.summary ?? "", /Structured shot event/);
+  assert.match(summarized.summary, /Content summary:/);
+  assert.match(summarized.summary, /Evidence coverage: 2 timeline segments/);
+  assert.match(segmentToEmbeddingText(birthday!), /Summary: .*birthday/);
+  assert.match(vectorRecordText(birthday!), /birthday/);
+});
+
 test("multi-term moment search does not pass generic single-term lexical matches", () => {
   const queryPlan = queryPlanForBirthday();
   const results = searchAssets(
@@ -1258,6 +1309,7 @@ function assetWithSegments(timeline: TimelineSegment[]): AssetRecord {
 function segment({
   id,
   transcript,
+  summary,
   embedding = [0, 1],
   vision,
   vlm,
@@ -1267,6 +1319,7 @@ function segment({
 }: {
   id: string;
   transcript: string;
+  summary?: string;
   embedding?: number[];
   vision?: NonNullable<TimelineSegment["sceneData"]>["vision"];
   vlm?: NonNullable<TimelineSegment["sceneData"]>["vlm"];
@@ -1280,6 +1333,7 @@ function segment({
     end: 5,
     label: "Scene",
     transcript,
+    summary,
     tags: [],
     modalities: ["transcription"],
     confidence: 0.8,

@@ -52,6 +52,9 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmJobProgress = getVideoVlmJobProgress(job);
   const videoVlmJobFailed = Boolean(videoVlmJobProgress?.failed && videoVlmJobProgress.failed > 0 && videoVlmJobProgress.described === 0);
   const domainVlmSummary = getDomainVlmSummary(asset);
+  const summaryTrace = findTrace(traces, "summary:extractive-v1");
+  const summarizedSegmentCount = asset.timeline.filter((segment) => Boolean(segment.summary?.trim())).length;
+  const hasExtractiveSummaries = Boolean(asset.summary.trim() && summarizedSegmentCount > 0);
   const domainIndexingEnabled = Boolean(index?.domainIndexing?.enabled && index.domainIndexing.groups.length > 0);
   const knowledgeActionSupported = sourceListSupportsKnowledgeActionSpotting(index?.domainIndexing?.groups);
   const isFailed = asset.status === "failed" || (asset.status !== "indexed" && job?.status === "failed");
@@ -117,6 +120,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const detectorPassCompleted = assetIndexingInProgress && activeJobProgress >= 80;
   const trackerPassCompleted = assetIndexingInProgress && activeJobProgress >= 81;
   const knowledgeActionPassCompleted = assetIndexingInProgress && activeJobProgress >= 82;
+  const summaryPassCompleted = assetIndexingInProgress && activeJobProgress >= 84;
   const textEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 88;
   const visualEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 96;
 
@@ -622,6 +626,29 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       trace: compactModelTrace(findTrace(traces, "domain-vlm:") ?? findTrace(traces, "domain-vlm-refine:"))
     },
     {
+      id: "summary",
+      label: "Extractive summaries",
+      detail: hasExtractiveSummaries
+        ? `${summarizedSegmentCount}/${asset.timeline.length} moment summaries · asset summary ready`
+        : activeJobStage === "summary"
+          ? "Building deterministic asset and moment summaries"
+          : summaryPassCompleted
+            ? waitingForIndexedAssetSave("Extractive summaries")
+            : isIndexed
+              ? skipped("indexing finished without stored extractive summaries")
+              : "Waiting for extractive summaries",
+      state: hasExtractiveSummaries || summaryTrace
+        ? "done"
+        : activeJobStage === "summary"
+          ? "active"
+          : summaryPassCompleted || hasActiveJob
+            ? "waiting"
+            : isIndexed
+              ? "skipped"
+              : "waiting",
+      trace: compactModelTrace(summaryTrace)
+    },
+    {
       id: "textEmbedding",
       label: "Text embedding",
       detail: textEmbeddingTrace
@@ -748,6 +775,7 @@ function getCurrentWorkflowActiveDetail(stepId: string, job: JobRecord, fallback
     knowledgeAction: "Running configured action spotter",
     domain: "Building related knowledge event layer",
     domainVlm: `Related knowledge VLM refinement running · ${job.progress}%`,
+    summary: "Building deterministic asset and moment summaries",
     textEmbedding: "Computing semantic text embeddings",
     visualEmbedding: "Computing visual keyframe embeddings",
     vector: job.stage === "finalize" ? "Saving indexed asset record" : `Writing vectors (${job.stage})`,

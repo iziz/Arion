@@ -5,6 +5,7 @@ import { refineSportsDomainTimelineWithVlm } from "../server/vlmWorkerClient";
 import { upsertAssetVectors } from "../server/localVectorStore";
 import { upsertAssetTracking } from "../server/trackingStore";
 import { listAssets, listIndexes, saveAsset } from "../server/store";
+import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../server/intelligenceCore/extractiveSummary";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../shared/types";
 
 async function main() {
@@ -24,9 +25,11 @@ async function main() {
     console.log(`refine ${asset.id} ${asset.title}`);
     const domainTimeline = ensureDomainTimeline(asset, index);
     const refined = await refineSportsDomainTimelineWithVlm({ ...asset, timeline: domainTimeline }, index, domainTimeline);
-    const embeddedTimeline = await embedTimelineSegments(refined.timeline);
+    const summarized = applyExtractiveVideoSummaries({ ...asset, timeline: refined.timeline }, index, refined.timeline);
+    const embeddedTimeline = await embedTimelineSegments(summarized.timeline);
     const nextAsset: AssetRecord = {
       ...asset,
+      summary: summarized.summary,
       timeline: embeddedTimeline,
       status: "indexed",
       progress: 100,
@@ -34,7 +37,8 @@ async function main() {
       intelligence: {
         ...asset.intelligence,
         modelTrace: [
-          ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:")),
+          ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:") && !trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)),
+          summarized.trace,
           `domain-vlm-refine:${refined.model}:${refined.refinedSegments}/${refined.attemptedSegments}:invalid=${refined.invalidSegments}:failed=${refined.failedSegments}`
         ]
       },

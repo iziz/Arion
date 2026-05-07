@@ -113,8 +113,8 @@ export function segmentSearchText(segment: TimelineSegment) {
   const text = segment.sceneData?.text;
   const domainText = isTrustedDomainSegment(segment.domain) ? domainSearchText(segment) : "";
   const vlmText = videoVlmSearchText(segment);
-  if (!text) return [segment.transcript, domainText, vlmText].filter(Boolean).join(" ");
-  return [text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, vlmText].filter(Boolean).join(" ");
+  if (!text) return [segment.summary, segment.transcript, domainText, vlmText].filter(Boolean).join(" ");
+  return [segment.summary, text.speech, ...text.subtitles, ...text.screenText, ...text.overlays, domainText, vlmText].filter(Boolean).join(" ");
 }
 
 function hexToRgb(value: string) {

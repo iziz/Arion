@@ -5,6 +5,7 @@ export {
   AssetFlow,
   AssetGroupForm,
   AssetGroupSummary,
+  AssetGroupStatusMarker,
   AssetStatusIndicator,
   FailStatusIcon,
   FlowConnector,

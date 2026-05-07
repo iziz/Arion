@@ -14,6 +14,7 @@ const indexingCheckpointOrder = [
   "vision-detection",
   "vision-tracking",
   "domain-index",
+  "summary",
   "embed",
   "vector-upsert-text",
   "visual-embedding",

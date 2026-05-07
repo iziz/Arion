@@ -454,6 +454,7 @@ export type TimelineSegment = {
   end: number;
   label: string;
   transcript: string;
+  summary?: string;
   sceneData?: {
     image: {
       thumbnailPath: string | null;

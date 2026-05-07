@@ -19,6 +19,7 @@ export type WorkflowEvidence =
   | "knowledge-action"
   | "domain"
   | "domain-vlm"
+  | "summary"
   | "text-embedding"
   | "visual-embedding"
   | "vector"
@@ -240,12 +241,24 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
     searchImpact: "Search impact: knowledge-event refinement",
     skippedSearchImpact: "Search impact: knowledge-event refinement not applied"
   },
+  summary: {
+    id: "summary",
+    description: "Builds deterministic asset and moment summaries from indexed evidence before semantic embedding.",
+    retryStage: "summary",
+    produces: ["summary"],
+    dependsOn: ["timeline", "video-vlm", "vision-detector", "vision-tracker", "domain", "domain-vlm"],
+    stageAliases: ["summary"],
+    runtimeStages: [],
+    logTokens: ["summary", "extractive"],
+    searchImpact: "Search impact: summary text",
+    skippedSearchImpact: "Search impact: summaries not used"
+  },
   textEmbedding: {
     id: "textEmbedding",
     description: "Turns timeline text into vectors for semantic moment ranking.",
     retryStage: "textEmbedding",
     produces: ["text-embedding"],
-    dependsOn: ["timeline", "video-vlm", "vision-detector", "vision-tracker", "domain", "domain-vlm"],
+    dependsOn: ["timeline", "video-vlm", "vision-detector", "vision-tracker", "domain", "domain-vlm", "summary"],
     stageAliases: ["embed"],
     runtimeStages: [],
     logTokens: ["semantic text", "embedding started", "embedding complete", "embed"],
@@ -403,6 +416,12 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
     activeNodeIds: ["domainVlm"],
     produces: ["domain-vlm"],
     waitingLabel: "related knowledge VLM refinement to finish"
+  },
+  summary: {
+    stage: "summary",
+    activeNodeIds: ["summary"],
+    produces: ["summary"],
+    waitingLabel: "extractive summaries to finish"
   },
   embed: {
     stage: "embed",

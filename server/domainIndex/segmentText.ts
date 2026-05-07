@@ -12,6 +12,7 @@ export function collectSegmentText(asset: AssetRecord, index: IndexRecord, segme
     asset.originalName,
     asset.tags.join(" "),
     segment.label,
+    segment.summary,
     segment.transcript,
     sceneText?.speech,
     ...(sceneText?.subtitles ?? []),

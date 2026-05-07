@@ -15,7 +15,6 @@ import {
   indexFormPayload,
   isAssetUploadPayload,
   readJson,
-  type DomainVlmBulkRefineResult,
 } from "./api";
 import { getLatestAssetJob } from "./assetFlow";
 import type { ConsoleTab, DialogMode } from "./consoleTypes";
@@ -57,7 +56,6 @@ export default function App() {
   const [selectedAssetLoading, setSelectedAssetLoading] = useState(false);
   const [clipDetail, setClipDetail] = useState<ClipDetailResult | null>(null);
   const [clipDetailLoading, setClipDetailLoading] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingSeek, setPendingSeek] = useState<{ assetId: string; at: number } | null>(null);
   const [activeTab, setActiveTab] = useState<ConsoleTab>("system");
   const [assetDetailTab, setAssetDetailTab] = useState<AssetDetailTab>("overview");
@@ -102,7 +100,6 @@ export default function App() {
   );
   const selectedAsset = selectedAssetDetail?.id === selectedAssetId ? selectedAssetDetail : null;
   const selectedAssetJob = selectedAsset ? getLatestAssetJob(jobs, selectedAsset.id) : null;
-  const selectedJob = jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null;
   const selectedSegment = selectedAsset?.timeline.find((segment) => segment.id === selectedSegmentId) ?? selectedAsset?.timeline[0] ?? null;
 
   function buildCurrentRoute(overrides: Partial<ConsoleRouteState> = {}): ConsoleRouteState {
@@ -416,18 +413,6 @@ export default function App() {
     await refresh();
   }
 
-  async function refineAssetGroupVlm(indexId: string) {
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await api.post<DomainVlmBulkRefineResult>(`/api/indexes/${indexId}/domain-vlm/refine`, {});
-      setMessage(`Queued ${result.queued} related knowledge VLM refinement jobs${result.skipped ? `, skipped ${result.skipped} active assets` : ""}.`);
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function selectIndex(indexId: string) {
     setActiveTab("data");
     setSelectedIndexId(indexId);
@@ -481,7 +466,6 @@ export default function App() {
       selectedAssetLoading={selectedAssetLoading}
       selectedAssetJob={selectedAssetJob}
       selectedSegment={selectedSegment}
-      selectedJob={selectedJob}
       runningJobCount={runningJobCount}
       refresh={refresh}
       metrics={metrics}
@@ -494,7 +478,6 @@ export default function App() {
       deleteIndex={deleteIndex}
       deleteAsset={deleteAsset}
       busy={busy}
-      refineAssetGroupVlm={refineAssetGroupVlm}
       assetDetailTab={assetDetailTab}
       setAssetDetailTab={navigateAssetDetailTab}
       selectedKnowledgeDomain={selectedKnowledgeDomain}
@@ -523,7 +506,6 @@ export default function App() {
       filteredSearchResults={filteredSearchResults}
       queryPlan={queryPlan}
       jobs={jobs}
-      setSelectedJobId={setSelectedJobId}
       retryJob={retryJob}
       events={events}
       dbStatus={dbStatus}

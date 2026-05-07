@@ -34,6 +34,7 @@ import { resolveTimelineMatchIdentity } from "../domainIndex/matchIdentityResolv
 import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
 import { getWorkflowRetryImpactedEvidence, type WorkflowEvidence } from "../../shared/workflowNodes";
 import type { AssetRecord, IndexRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
+import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../intelligenceCore/extractiveSummary";
 
 export { analyzeAndEmit } from "./analysisWorkflow";
 export { enrichDomainTimeline, runDomainVlmRefineJob } from "./domainVlmWorkflow";
@@ -114,6 +115,7 @@ const indexingCheckpointOrder = [
   "vision-detection",
   "vision-tracking",
   "domain-index",
+  "summary",
   "embed",
   "vector-upsert-text",
   "visual-embedding",
@@ -460,20 +462,48 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       };
     });
 
+    const summaryStage = await runCheckpointedIndexingStage(jobId, "summary", 84, "Extractive summaries ready", options.retryStage, () => assetHasExtractiveSummaries(assetId), async () => {
+      await updateJob(jobId, { stage: "summary", progress: 83 }, "Building deterministic asset and moment summaries");
+      const result = applyExtractiveVideoSummaries(
+        { ...timelineStage.refreshed, tags: timelineStage.output.tags, timeline: domainStage.timelineForDomain },
+        timelineStage.embeddingIndex,
+        domainStage.timelineForDomain
+      );
+      await persistIndexingSnapshot(assetId, {
+        status: "embedding",
+        progress: 84,
+        tags: timelineStage.output.tags,
+        summary: result.summary,
+        timeline: result.timeline,
+        keyframes: timelineStage.keyframes,
+        modelTrace: [result.trace]
+      });
+      await updateJob(jobId, { stage: "summary", progress: 84 }, `Extractive summaries ready for ${result.summarizedSegments}/${result.timeline.length} timeline segments`);
+      return result;
+    }, async () => {
+      const asset = await requireAsset(assetId);
+      return {
+        summary: asset.summary,
+        timeline: asset.timeline,
+        trace: traceFromAsset(asset, EXTRACTIVE_SUMMARY_TRACE_PREFIX) ?? `${EXTRACTIVE_SUMMARY_TRACE_PREFIX}:0/${asset.timeline.length}`,
+        summarizedSegments: asset.timeline.filter((segment) => Boolean(segment.summary?.trim())).length
+      };
+    });
+
     const timeline = await runCheckpointedIndexingStage(jobId, "embed", 86, "Semantic text embeddings complete", options.retryStage, () => assetHasEmbeddedTimeline(assetId), async () => {
       await updateJob(jobId, { stage: "embed", progress: 84 }, `Computing semantic text embeddings with ${getEmbeddingModelName()}`);
       await emitForAsset("asset.indexing.progress", "Embedding started", assetId, jobId, { progress: 84, model: getEmbeddingModelName() });
       const embeddedTimeline = await traceAsync(
         "model.embedding.text",
-        { jobId, assetId, segments: domainStage.timelineForDomain.length },
-        () => embedTimelineSegments(domainStage.timelineForDomain),
+        { jobId, assetId, segments: summaryStage.timeline.length },
+        () => embedTimelineSegments(summaryStage.timeline),
         "model.embedding.text"
       );
       await persistIndexingSnapshot(assetId, {
         status: "embedding",
         progress: 86,
         tags: timelineStage.output.tags,
-        summary: timelineStage.output.summary,
+        summary: summaryStage.summary,
         timeline: embeddedTimeline,
         keyframes: timelineStage.keyframes,
         modelTrace: [`embedding:${getEmbeddingModelName()}`]
@@ -537,12 +567,13 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             trackingStage.trackerTrace,
             domainStage.domainVlmTrace,
             domainStage.knowledgeActionTrace,
+            summaryStage.trace,
             `embedding:${getEmbeddingModelName()}`,
             visualStage.visualEmbeddingTrace
           ])
         },
         tags: timelineStage.output.tags,
-        summary: timelineStage.output.summary,
+        summary: summaryStage.summary,
         timeline,
         keyframes: timelineStage.keyframes,
         status: "indexed",
@@ -611,6 +642,9 @@ export function normalizeWorkflowStage(value: unknown) {
     domain: "domain",
     domainvlm: "domainVlm",
     "domain-vlm": "domainVlm",
+    summary: "summary",
+    extractivesummary: "summary",
+    "extractive-summary": "summary",
     textembedding: "textEmbedding",
     "text-embedding": "textEmbedding",
     embed: "textEmbedding",
@@ -801,6 +835,10 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
     timeline = invalidateTimelineEvidence(timeline, evidence);
   }
   if (evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) identity = undefined;
+  if (evidence.has("summary")) {
+    summary = "";
+    timeline = timeline.map(stripTimelineSummary);
+  }
 
   return {
     ...asset,
@@ -830,8 +868,9 @@ function invalidateTimelineEvidence(timeline: AssetRecord["timeline"], evidence:
   const clearVideoVlm = evidence.has("video-vlm");
   const clearVision = evidence.has("vision-detector") || evidence.has("vision-tracker");
   const clearDomain = evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm");
+  const clearSummary = evidence.has("summary");
   const clearTextEmbedding = evidence.has("text-embedding") || evidence.has("vector") || evidence.has("ready");
-  if (!clearVideoVlm && !clearVision && !clearDomain && !clearTextEmbedding) return timeline;
+  if (!clearVideoVlm && !clearVision && !clearDomain && !clearSummary && !clearTextEmbedding) return timeline;
   return timeline.map((segment) => {
     const sceneData = segment.sceneData
       ? {
@@ -841,16 +880,22 @@ function invalidateTimelineEvidence(timeline: AssetRecord["timeline"], evidence:
         }
       : segment.sceneData;
     const withoutDomain = clearDomain ? stripTimelineDomain(segment) : segment;
+    const withoutSummary = clearSummary ? stripTimelineSummary(withoutDomain) : withoutDomain;
     return {
-      ...withoutDomain,
+      ...withoutSummary,
       sceneData,
-      embedding: clearTextEmbedding ? [] : withoutDomain.embedding
+      embedding: clearTextEmbedding ? [] : withoutSummary.embedding
     };
   });
 }
 
 function stripTimelineDomain(segment: AssetRecord["timeline"][number]): AssetRecord["timeline"][number] {
   const { domain: _domain, identity: _identity, ...rest } = segment;
+  return rest;
+}
+
+function stripTimelineSummary(segment: AssetRecord["timeline"][number]): AssetRecord["timeline"][number] {
+  const { summary: _summary, ...rest } = segment;
   return rest;
 }
 
@@ -870,6 +915,7 @@ function traceMatchesRetryEvidence(trace: string, evidence: Set<WorkflowEvidence
   if (evidence.has("knowledge-action") && traceHasPrefix(trace, ["knowledge-action", "knowledge-action-unavailable:", "soccernet-action", "soccernet-action-unavailable:"])) return true;
   if ((evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) && trace.startsWith("match-identity:")) return true;
   if (evidence.has("domain-vlm") && traceHasPrefix(trace, ["domain-vlm", "domain-vlm-refine:"])) return true;
+  if (evidence.has("summary") && trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)) return true;
   if (evidence.has("text-embedding") && trace.startsWith("embedding:")) return true;
   if (evidence.has("visual-embedding") && traceHasPrefix(trace, ["visual-embedding", "visual-embedding-unavailable:"])) return true;
   return false;
@@ -1006,6 +1052,11 @@ async function assetHasDomainSnapshot(assetId: string, index: IndexRecord) {
   return true;
 }
 
+async function assetHasExtractiveSummaries(assetId: string) {
+  const asset = await getAsset(assetId);
+  return Boolean(asset?.summary.trim() && asset.timeline.length > 0 && asset.timeline.every((segment) => Boolean(segment.summary?.trim())));
+}
+
 async function assetHasEmbeddedTimeline(assetId: string) {
   const asset = await getAsset(assetId);
   return Boolean(asset?.timeline.length && asset.timeline.every((segment) => Array.isArray(segment.embedding) && segment.embedding.length > 0));
@@ -1059,6 +1110,7 @@ export function mapRetryStageToCheckpoint(retryStage: string | null | undefined)
   if (normalized === "detector") return "vision-detection";
   if (normalized === "tracker") return "vision-tracking";
   if (normalized === "knowledgeAction" || normalized === "domain" || normalized === "domainVlm") return "domain-index";
+  if (normalized === "summary") return "summary";
   if (normalized === "textEmbedding") return "embed";
   if (normalized === "visualEmbedding") return "visual-embedding";
   if (normalized === "vector") return "vector-upsert-text";
@@ -1087,6 +1139,7 @@ function modelTraceGroup(trace: string) {
   if (trace.startsWith("knowledge-action")) return "knowledge-action";
   if (trace.startsWith("soccernet-action")) return "knowledge-action";
   if (trace.startsWith("domain-vlm")) return "domain-vlm";
+  if (trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)) return "summary";
   if (trace.startsWith("embedding:")) return "embedding";
   if (trace.startsWith("visual-embedding")) return "visual-embedding";
   return null;

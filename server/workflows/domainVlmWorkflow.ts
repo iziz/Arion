@@ -6,6 +6,7 @@ import { updateJob } from "../services/jobState";
 import { getAsset, getIndex, saveAsset } from "../store";
 import { upsertAssetTracking } from "../trackingStore";
 import { getVlmWorkerModelName, isVlmWorkerEnabled, refineRelatedKnowledgeTimelineWithVlm } from "../vlmWorkerClient";
+import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../intelligenceCore/extractiveSummary";
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../../shared/types";
 
 export function enrichDomainTimeline(asset: AssetRecord, index: IndexRecord, timeline: TimelineSegment[]) {
@@ -50,10 +51,11 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
     );
 
     await updateJob(jobId, { stage: "embed", progress: 84 }, "Rebuilding text embeddings after related knowledge VLM refinement");
+    const summarized = applyExtractiveVideoSummaries({ ...asset, timeline: result.timeline }, index, result.timeline);
     const timeline = await traceAsync(
       "model.embedding.text.domain_vlm",
-      { jobId, assetId, segments: result.timeline.length },
-      () => embedTimelineSegments(result.timeline),
+      { jobId, assetId, segments: summarized.timeline.length },
+      () => embedTimelineSegments(summarized.timeline),
       "model.embedding.text.domain_vlm"
     );
     await updateJob(jobId, { stage: "vector-upsert-text", progress: 92 }, "Writing refined related knowledge timeline vectors");
@@ -65,11 +67,13 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
     );
 
     const modelTrace = [
-      ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:")),
+      ...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith("domain-vlm-refine:") && !trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)),
+      summarized.trace,
       `domain-vlm-refine:${result.model}:${result.refinedSegments}/${result.attemptedSegments}:invalid=${result.invalidSegments}:failed=${result.failedSegments}`
     ];
     const refinedAsset: AssetRecord = {
       ...asset,
+      summary: summarized.summary,
       timeline,
       intelligence: {
         ...asset.intelligence,

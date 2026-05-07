@@ -57,7 +57,7 @@ export function segmentToEmbeddingText(segment: TimelineSegment) {
     : segment.transcript;
   const videoVlmEvidence = videoVlmSearchText(segment);
   const domainEvidence = segment.domain && isTrustedDomainSegment(segment.domain) ? `${segment.domain.searchText}. Events: ${trustedDomainEvents(segment).map((event) => event.caption).join(" ")}` : "";
-  return `${segment.label}. Text: ${textEvidence}. Domain: ${domainEvidence}. VLM: ${videoVlmEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
+  return `${segment.label}. Summary: ${segment.summary ?? ""}. Text: ${textEvidence}. Domain: ${domainEvidence}. VLM: ${videoVlmEvidence}. Tags: ${segment.tags.join(", ")} Sources: ${segment.sources.join(", ")}`;
 }
 
 async function embedTexts(texts: string[], kind: EmbeddingKind) {

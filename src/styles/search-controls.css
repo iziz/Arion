@@ -1562,21 +1562,27 @@
 }
 
 .asset-detail-tabs {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  display: flex;
+  gap: 2px;
   margin: 4px 0 16px;
-  padding: 6px;
-  border-radius: 999px;
-  background: #eef4f1;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid #d7e1dc;
+  background: transparent;
+  padding: 0;
+}
+
+.asset-detail-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .asset-detail-tab {
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 999px;
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
   background: transparent;
   color: #647a72;
   box-shadow: none;
@@ -1588,13 +1594,17 @@
 .asset-detail-tab:hover {
   transform: none;
   box-shadow: none;
+  background: #f5faf8;
   color: #2b8b70;
 }
 
 .asset-detail-tab.active {
-  background: #2b8b70;
-  color: #ffffff;
-  box-shadow: 0 8px 18px rgba(43, 139, 112, 0.2);
+  position: relative;
+  margin-bottom: -1px;
+  border-color: #d7e1dc;
+  background: #fbfdfc;
+  color: #147764;
+  box-shadow: inset 0 3px 0 #2b8b70;
 }
 
 .asset-detail-view {

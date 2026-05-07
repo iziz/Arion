@@ -74,6 +74,7 @@ export function vectorRecordText(segment: TimelineSegment) {
   const domainLabels = segment.domain && isTrustedDomainSegment(segment.domain) ? segment.domain.labels : [];
   return [
     segment.label,
+    segment.summary,
     segment.transcript,
     domainSearchText,
     ...domainCaptions,

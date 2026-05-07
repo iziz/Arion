@@ -1,4 +1,4 @@
-import { BrainCircuit, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
 import type { AssetRecord, AssetSummaryRecord, IndexRecord, JobRecord } from "../../../shared/types";
 import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
@@ -12,6 +12,7 @@ import { getDomainSummary, getSearchSceneData } from "../evidence/sceneEvidence"
 import { getWorkflowLogTokens, getWorkflowRuntimeStageIds, getWorkflowSearchImpact, getWorkflowStageAliases } from "../../../shared/workflowNodes";
 
 export type AssetDetailTab = "overview" | "workflow" | "timeline";
+export type AssetGroupMarkerSize = "small" | "large";
 
 type MomentOpenOptions = {
   start?: number;
@@ -97,27 +98,22 @@ function CapabilitySelect({ name, label, value }: { name: string; label: string;
 export function AssetGroupSummary({
   index,
   assets,
-  busy,
   onEdit,
   onDelete,
   deleteDisabled,
   deleteTitle,
-  onRefineVlm,
   modelCapabilities
 }: {
   index: IndexRecord | null;
   assets: AssetSummaryRecord[];
   modelCapabilities: ModelCapabilitiesSnapshot | null;
-  busy: boolean;
   onEdit: () => void;
   onDelete: () => void;
   deleteDisabled: boolean;
   deleteTitle: string;
-  onRefineVlm: (indexId: string) => void;
 }) {
   const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
   const domain = index?.domainIndexing;
-  const canRefineVlm = Boolean(index && domain?.enabled && domain.groups.length > 0 && indexedCount > 0);
   const vlmSummary = summarizeAssetGroupVlm(assets);
   const domainText =
     domain?.enabled && domain.groups.length > 0
@@ -130,21 +126,28 @@ export function AssetGroupSummary({
       <div>
         <p className="section-label">Asset Group</p>
         <span className="asset-group-title-row">
-          <h2>{index?.name ?? "No asset group selected"}</h2>
-          <em className="asset-group-indexed-count">{indexedCount}/{assets.length} indexed</em>
-          <button type="button" className="asset-group-edit" onClick={onEdit} disabled={!index} aria-label="에셋그룹 수정" title="에셋그룹 수정">
-            <Edit3 size={17} />
-          </button>
-          <button
-            type="button"
-            className="asset-group-edit asset-group-delete"
-            onClick={onDelete}
-            disabled={!index || deleteDisabled}
-            aria-label="에셋그룹 삭제"
-            title={deleteTitle}
-          >
-            <Trash2 size={17} />
-          </button>
+          <span className="asset-group-title-main">
+            <h2 className="asset-group-title">
+              <AssetGroupStatusMarker index={index} assets={assets} size="large" />
+              <span>{index?.name ?? "No asset group selected"}</span>
+            </h2>
+            <em className="asset-group-indexed-count">{indexedCount}/{assets.length} indexed</em>
+          </span>
+          <span className="asset-group-title-actions">
+            <button type="button" className="asset-group-edit" onClick={onEdit} disabled={!index} aria-label="에셋그룹 수정" title="에셋그룹 수정">
+              <Edit3 size={17} />
+            </button>
+            <button
+              type="button"
+              className="asset-group-edit asset-group-delete"
+              onClick={onDelete}
+              disabled={!index || deleteDisabled}
+              aria-label="에셋그룹 삭제"
+              title={deleteTitle}
+            >
+              <Trash2 size={17} />
+            </button>
+          </span>
         </span>
         {index?.description && <p>{index.description}</p>}
         <div className="asset-group-meta">
@@ -164,21 +167,33 @@ export function AssetGroupSummary({
           ))}
         </div>
       </div>
-      <div className="asset-group-actions">
-        <button
-          type="button"
-          className="asset-group-refine"
-          disabled={!canRefineVlm || busy}
-          onClick={() => index && onRefineVlm(index.id)}
-          title="Run Qwen VLM refinement for related knowledge metadata in this asset group"
-        >
-          <BrainCircuit size={17} />
-          <span>Knowledge VLM refine</span>
-        </button>
-        <span className="asset-group-status-pill">{index?.status ?? "empty"}</span>
-      </div>
     </section>
   );
+}
+
+export function AssetGroupStatusMarker({ index, assets = [], size = "small" }: { index: IndexRecord | null; assets?: AssetSummaryRecord[]; size?: AssetGroupMarkerSize }) {
+  const marker = assetGroupStatusMarker(index, assets);
+  return (
+    <span
+      className={`asset-group-status-marker ${size}`}
+      style={{ color: marker.color }}
+      aria-label={marker.label}
+      title={marker.label}
+    >
+      ●
+    </span>
+  );
+}
+
+const ACTIVE_ASSET_STATUSES = new Set<AssetSummaryRecord["status"]>(["queued", "probing", "transcribing", "scanning", "sampling", "embedding"]);
+
+function assetGroupStatusMarker(index: IndexRecord | null, assets: AssetSummaryRecord[]) {
+  if (!index) return { color: "#a2b1aa", label: "No asset group selected" };
+  if (assets.some((asset) => asset.status === "failed")) return { color: "#c8574a", label: "Asset group has failed videos" };
+  if (assets.some((asset) => ACTIVE_ASSET_STATUSES.has(asset.status))) return { color: "#2a7c94", label: "Asset group is indexing" };
+  if (assets.length === 0 || index.status === "empty") return { color: "#a2b1aa", label: "Asset group is empty" };
+  if (assets.every((asset) => asset.status === "indexed")) return { color: "#2b8b70", label: "Asset group ready" };
+  return { color: "#b7792f", label: "Asset group partially indexed" };
 }
 
 function summarizeCapabilityPolicy(policy: NonNullable<IndexRecord["capabilityPolicy"]>) {
@@ -231,8 +246,6 @@ function buildAssetGroupMetaChips(
   const domainEnabled = Boolean(domain?.enabled && domain.groups.length > 0);
   const domainStages = domain?.stages.map((stage) => stage.replace(/_/g, " ")).join(", ") || "none";
   const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
-  const textEmbedding = configured?.textEmbedding;
-  const visualEmbedding = configured?.visualEmbedding;
   const vlm = configured?.videoVlm;
   const vlmConfigured = vlm?.enabled ?? modelCapabilities?.runtimeTopology?.vlm?.enabled;
   return [
@@ -252,20 +265,7 @@ function buildAssetGroupMetaChips(
       kind: "policy"
     },
     {
-      label: "Text embedding",
-      value: textEmbedding?.model ?? index?.models.embedding ?? "not selected",
-      tooltip: `Text retrieval uses this embedding model for timeline, OCR, ASR, tags, and knowledge text${textEmbedding?.dimensions ? ` at ${textEmbedding.dimensions} dimensions` : ""}.`,
-      kind: "model"
-    },
-    {
-      label: "Visual embedding",
-      value: visualEmbedding?.model ?? "OpenCLIP not checked",
-      tooltip: `Visual retrieval uses OpenCLIP vectors for keyframes and visual query matching${visualEmbedding?.dimensions ? ` at ${visualEmbedding.dimensions} dimensions` : ""}.`,
-      kind: "model",
-      disabled: modelCapabilities?.models?.openClip === false
-    },
-    {
-      label: "Knowledge VLM",
+      label: "VLM refinement",
       value: vlmSummary,
       tooltip: `Related knowledge VLM refinement uses ${vlm?.model ?? modelCapabilities?.runtimeTopology?.vlm?.model ?? "qwen2.5-vl-local-worker"} when enabled. Policy ${policy?.domainVlmRefinement ?? "optional"}, service ${vlmConfigured ? "enabled" : "not configured"}, indexed assets ${indexedCount}/${assets.length}.`,
       kind: "model",
@@ -338,8 +338,8 @@ export function AssetFlow({
     },
     {
       label: "5. Vector index",
-      detail: "Write text embeddings, visual embeddings, and vector records.",
-      steps: flow.filter((step) => step.id === "textEmbedding" || step.id === "visualEmbedding" || step.id === "vector")
+      detail: "Build search summaries, text embeddings, visual embeddings, and vector records.",
+      steps: flow.filter((step) => step.id === "summary" || step.id === "textEmbedding" || step.id === "visualEmbedding" || step.id === "vector")
     },
     {
       label: "6. Serve",
@@ -711,7 +711,8 @@ function searchImpactForStep(step: FlowStep) {
 
 function WorkflowResultContent({ asset, index, step, onOpenMoment }: { asset: AssetRecord; index: IndexRecord | null; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
   const stepId = step.id;
-  if (stepId === "input" || stepId === "probe") return <TechnicalResult asset={asset} step={step} />;
+  if (stepId === "input") return <InputSourceResult asset={asset} step={step} />;
+  if (stepId === "probe") return <ProbeMetadataResult asset={asset} step={step} />;
   if (stepId === "audio" || stepId === "vad") return <AudioResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "asr") return <AsrResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "speakers") return <SpeakerResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
@@ -721,7 +722,7 @@ function WorkflowResultContent({ asset, index, step, onOpenMoment }: { asset: As
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} index={index} step={step} />;
   if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
-  if (stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
+  if (stepId === "summary" || stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
 }
 
@@ -791,7 +792,44 @@ function rawStepDetails(step: FlowStep, extra: string[] = []) {
   return [step.trace, ...extra].filter(Boolean) as string[];
 }
 
-function TechnicalResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+function InputSourceResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+  const hasObjectKey = Boolean(asset.technicalMetadata.objectKey);
+  const hasChecksum = Boolean(asset.technicalMetadata.checksum);
+  const hasStoredName = Boolean(asset.storedName);
+  const hasPayload = asset.size > 0;
+  return (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Source file", value: hasStoredName ? "Stored" : "Missing", tone: metricTone(hasStoredName) },
+        { label: "File size", value: formatBytes(asset.size), tone: metricTone(hasPayload) },
+        { label: "MIME type", value: asset.mimeType || "Unknown", tone: metricTone(Boolean(asset.mimeType), true) },
+        { label: "Checksum", value: hasChecksum ? "Stored" : "Missing", tone: metricTone(hasChecksum, true) },
+        { label: "Storage", value: `${asset.technicalMetadata.storageProvider} · ${asset.technicalMetadata.bucket}`, tone: metricTone(Boolean(asset.technicalMetadata.bucket)) },
+        { label: "Object key", value: hasObjectKey ? "Stored" : "Missing", tone: metricTone(hasObjectKey) }
+      ]}
+      usedBy={["probe metadata", "audio extraction", "visual sampling", "result source anchoring"]}
+      quality={[
+        { label: "Source anchor", value: hasObjectKey ? "object key ready" : "object key missing", tone: metricTone(hasObjectKey) },
+        { label: "Payload", value: hasPayload ? "non-empty file" : "empty or unknown size", tone: metricTone(hasPayload) },
+        { label: "Checksum", value: hasChecksum ? "integrity fingerprint stored" : "integrity fingerprint missing", tone: metricTone(hasChecksum, true) },
+        { label: "Storage", value: asset.technicalMetadata.bucket ? "bucket assigned" : "bucket missing", tone: metricTone(Boolean(asset.technicalMetadata.bucket)) }
+      ]}
+      inspect={
+        <div className="workflow-result-grid">
+          <ResultMetric label="Original" value={asset.originalName} />
+          <ResultMetric label="Stored" value={asset.storedName} />
+          <ResultMetric label="MIME" value={asset.mimeType || "Unknown"} />
+          <ResultMetric label="Provider" value={asset.technicalMetadata.storageProvider} />
+          <ResultMetric label="Bucket" value={asset.technicalMetadata.bucket} />
+          <ResultMetric label="Object key" value={asset.technicalMetadata.objectKey} />
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [asset.technicalMetadata.checksum ? `checksum:${asset.technicalMetadata.checksum}` : ""])}
+    />
+  );
+}
+
+function ProbeMetadataResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
   const hasDuration = Boolean(asset.duration && asset.duration > 0);
   const hasFrame = Boolean(asset.width && asset.height);
   const hasVideoCodec = Boolean(asset.technicalMetadata.videoCodec);
@@ -802,11 +840,11 @@ function TechnicalResult({ asset, step }: { asset: AssetRecord; step: FlowStep }
         { label: "Duration", value: hasDuration ? formatDuration(asset.duration ?? 0) : "Missing", tone: metricTone(hasDuration) },
         { label: "Resolution", value: hasFrame ? `${asset.width}x${asset.height}` : "Missing", tone: metricTone(hasFrame) },
         { label: "FPS", value: asset.technicalMetadata.frameRate ? `${Math.round(asset.technicalMetadata.frameRate)}fps` : "Unknown", tone: metricTone(Boolean(asset.technicalMetadata.frameRate), true) },
-        { label: "File size", value: formatBytes(asset.size), tone: metricTone(asset.size > 0) },
-        { label: "Checksum", value: asset.technicalMetadata.checksum ? "Stored" : "Missing", tone: metricTone(Boolean(asset.technicalMetadata.checksum), true) },
-        { label: "Codecs", value: `${asset.technicalMetadata.videoCodec ?? "video unknown"} / ${asset.technicalMetadata.audioCodec ?? "audio unknown"}`, tone: metricTone(hasVideoCodec && hasAudioCodec, true) }
+        { label: "Video codec", value: asset.technicalMetadata.videoCodec ?? "Unknown", tone: metricTone(hasVideoCodec, true) },
+        { label: "Audio codec", value: asset.technicalMetadata.audioCodec ?? "Unavailable", tone: metricTone(hasAudioCodec, true) },
+        { label: "Container", value: asset.mimeType || "Unknown", tone: metricTone(Boolean(asset.mimeType), true) }
       ]}
-      usedBy={["audio extraction", "visual sampling", "metadata filters", "vector record"]}
+      usedBy={["audio extraction timing", "visual sampling cadence", "scene windows", "metadata filters"]}
       quality={[
         { label: "Video", value: hasVideoCodec ? "codec known" : "codec unknown", tone: metricTone(hasVideoCodec, true) },
         { label: "Audio", value: hasAudioCodec ? "codec known" : "audio unavailable", tone: metricTone(hasAudioCodec, true) },
@@ -815,13 +853,21 @@ function TechnicalResult({ asset, step }: { asset: AssetRecord; step: FlowStep }
       ]}
       inspect={
         <div className="workflow-result-grid">
-          <ResultMetric label="Original" value={asset.originalName} />
-          <ResultMetric label="Stored" value={asset.storedName} />
-          <ResultMetric label="Storage" value={`${asset.technicalMetadata.storageProvider} · ${asset.technicalMetadata.bucket}`} />
-          <ResultMetric label="Object key" value={asset.technicalMetadata.objectKey} />
+          <ResultMetric label="Duration seconds" value={asset.duration ? asset.duration.toFixed(3) : "Unknown"} />
+          <ResultMetric label="Width" value={asset.width ? String(asset.width) : "Unknown"} />
+          <ResultMetric label="Height" value={asset.height ? String(asset.height) : "Unknown"} />
+          <ResultMetric label="Frame rate" value={asset.technicalMetadata.frameRate ? `${asset.technicalMetadata.frameRate.toFixed(3)}fps` : "Unknown"} />
+          <ResultMetric label="Video codec" value={asset.technicalMetadata.videoCodec ?? "Unknown"} />
+          <ResultMetric label="Audio codec" value={asset.technicalMetadata.audioCodec ?? "Unavailable"} />
         </div>
       }
-      rawDetails={rawStepDetails(step, [asset.technicalMetadata.checksum ? `checksum:${asset.technicalMetadata.checksum}` : ""])}
+      rawDetails={rawStepDetails(step, [
+        asset.duration ? `ffprobe:duration:${asset.duration}` : "",
+        hasFrame ? `ffprobe:resolution:${asset.width}x${asset.height}` : "",
+        asset.technicalMetadata.frameRate ? `ffprobe:frameRate:${asset.technicalMetadata.frameRate}` : "",
+        asset.technicalMetadata.videoCodec ? `ffprobe:videoCodec:${asset.technicalMetadata.videoCodec}` : "",
+        asset.technicalMetadata.audioCodec ? `ffprobe:audioCodec:${asset.technicalMetadata.audioCodec}` : ""
+      ])}
     />
   );
 }

@@ -14,6 +14,7 @@ import { isKnowledgeActionSpottingConfigured, runKnowledgeActionSpotting } from 
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../server/modelCapabilities";
 import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
 import { upsertAssetTracking } from "../server/trackingStore";
+import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../server/intelligenceCore/extractiveSummary";
 
 const indexedAssets = (await listAssets()).filter((asset) => asset.status === "indexed" && asset.timeline.length > 0);
 const indexes = await listIndexes();
@@ -108,11 +109,16 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
   const actionTimeline = knowledgeActionResult ? knowledgeActionResult.timeline : detectedTimeline;
   const domainTimeline = index ? enrichDomainTimeline({ ...asset, timeline: actionTimeline }, index, actionTimeline) : actionTimeline;
   console.error(`[rebuild] ${asset.id} domain timeline ready (${domainTimeline.length} segments)`);
-  const timeline = await embedTimelineSegments(domainTimeline);
+  const summarized = index ? applyExtractiveVideoSummaries({ ...asset, timeline: domainTimeline }, index, domainTimeline) : { summary: asset.summary, timeline: domainTimeline, trace: "", summarizedSegments: 0 };
+  console.error(`[rebuild] ${asset.id} summaries ready (${summarized.summarizedSegments}/${summarized.timeline.length})`);
+  const timeline = await embedTimelineSegments(summarized.timeline);
   console.error(`[rebuild] ${asset.id} text embeddings ready`);
   segments += timeline.length;
-  const modelTrace = [...asset.intelligence.modelTrace];
+  const modelTrace = summarized.trace
+    ? asset.intelligence.modelTrace.filter((trace) => !trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX))
+    : [...asset.intelligence.modelTrace];
   modelTrace.push(detectorTrace, trackerTrace);
+  if (summarized.trace) modelTrace.push(summarized.trace);
   if (!modelTrace.includes(`embedding:${getEmbeddingModelName()}`)) modelTrace.push(`embedding:${getEmbeddingModelName()}`);
   if (knowledgeActionResult) {
     modelTrace.push(knowledgeActionResult.trace);
@@ -134,7 +140,7 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
     ...asset,
     timeline,
     keyframes,
-    summary: asset.summary.replace(/using [^.]+\. Local ASR/, `using ${getEmbeddingModelName()}. Local ASR`),
+    summary: summarized.summary,
     intelligence: {
       ...asset.intelligence,
       modelTrace

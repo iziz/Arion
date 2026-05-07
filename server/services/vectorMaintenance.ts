@@ -7,6 +7,7 @@ import { rebuildVectorStore } from "../localVectorStore";
 import { rebuildVisualVectorStore } from "../localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../store";
 import { recordEvent } from "./events";
+import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../intelligenceCore/extractiveSummary";
 
 export async function rebuildVectorStores() {
   const assets = await listAssets();
@@ -55,10 +56,12 @@ export async function rebuildVectorStores() {
           : segment.sceneData
       };
     });
-    const timeline = await embedTimelineSegments(thumbnailTimeline);
-    const modelTrace = asset.intelligence.modelTrace.includes(`embedding:${getEmbeddingModelName()}`)
-      ? asset.intelligence.modelTrace
-      : [...asset.intelligence.modelTrace, `embedding:${getEmbeddingModelName()}`];
+    const summarized = applyExtractiveVideoSummaries({ ...asset, timeline: thumbnailTimeline }, index, thumbnailTimeline);
+    const timeline = await embedTimelineSegments(summarized.timeline);
+    const summaryTrace = [...asset.intelligence.modelTrace.filter((trace) => !trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)), summarized.trace];
+    const modelTrace = summaryTrace.includes(`embedding:${getEmbeddingModelName()}`)
+      ? summaryTrace
+      : [...summaryTrace, `embedding:${getEmbeddingModelName()}`];
     let records: Awaited<ReturnType<typeof embedKeyframes>> = [];
     let nextTrace = modelTrace;
     try {
@@ -74,7 +77,7 @@ export async function rebuildVectorStores() {
       ...asset,
       timeline,
       keyframes,
-      summary: asset.summary.replace(/using [^.]+\. Local ASR/, `using ${getEmbeddingModelName()}. Local ASR`),
+      summary: summarized.summary,
       intelligence: {
         ...asset.intelligence,
         modelTrace: nextTrace

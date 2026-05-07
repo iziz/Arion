@@ -39,6 +39,7 @@ import {
   AssetFlow,
   AssetGroupForm,
   AssetGroupSummary,
+  AssetGroupStatusMarker,
   AssetStatusIndicator,
   ClipDetailDrawer,
   EmptyState,
@@ -67,7 +68,6 @@ export type ConsoleLayoutProps = {
   selectedAssetLoading: boolean;
   selectedAssetJob: JobRecord | null;
   selectedSegment: AssetRecord["timeline"][number] | null;
-  selectedJob: JobRecord | null;
   runningJobCount: number;
   refresh: () => Promise<void>;
   metrics: MetricsSummary;
@@ -80,7 +80,6 @@ export type ConsoleLayoutProps = {
   deleteIndex: (indexId: string) => Promise<void>;
   deleteAsset: (assetId: string) => Promise<void>;
   busy: boolean;
-  refineAssetGroupVlm: (indexId: string) => Promise<void>;
   assetDetailTab: AssetDetailTab;
   setAssetDetailTab: (tab: AssetDetailTab) => void;
   selectedKnowledgeDomain: KnowledgeSourceId;
@@ -109,7 +108,6 @@ export type ConsoleLayoutProps = {
   filteredSearchResults: SearchResult[];
   queryPlan: DomainQueryPlan | null;
   jobs: JobRecord[];
-  setSelectedJobId: Dispatch<SetStateAction<string | null>>;
   retryJob: (id: string) => Promise<void>;
   events: EventRecord[];
   dbStatus: DatabaseStatus | null;
@@ -136,12 +134,6 @@ type SearchVideoPreview = {
 type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
 type ObservabilityLog = ObservabilitySnapshot["recentLogs"][number];
 
-const sectionTechStacks = {
-  search: ["LLM query planner", "multilingual-e5 text vectors", "OpenCLIP visual vectors", "pgvector HNSW", "hybrid lexical ranking", "Redis/BullMQ ask queue"] as const,
-  knowledge: ["Sports registry", "football-data/StatBunker/StatsBomb/nflverse", "multilingual-e5 knowledge vectors", "pgvector HNSW", "evidence grounding"] as const,
-  system: ["TypeScript", "Vite", "Node.js/Express", "PostgreSQL/pgvector", "Redis/BullMQ", "OpenTelemetry", "NDJSON logs"] as const
-} as const;
-
 type TechStackTagItem = {
   category: string;
   label: string;
@@ -150,10 +142,37 @@ type TechStackTagItem = {
   disabled?: boolean;
 };
 
+type TechStackTooltip = {
+  text: string;
+  left: number;
+  top: number;
+  maxWidth: number;
+};
+
 type AssetOverviewFact = {
   label: string;
   value: string;
 };
+
+type AssetOverviewSummary = {
+  content: string[];
+  evidence: string[];
+  metadataTerms: string[];
+};
+
+const countFormatter = new Intl.NumberFormat("en-US");
+
+function formatCount(value: number) {
+  return countFormatter.format(value);
+}
+
+function formatUnitCount(value: number, unit: string) {
+  return `${formatCount(value)} ${value === 1 ? unit : `${unit}s`}`;
+}
+
+function formatCountRatio(value: number, total: number) {
+  return `${formatCount(value)}/${formatCount(total)}`;
+}
 
 function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
   return [
@@ -184,7 +203,89 @@ function buildAssetOverviewFacts(asset: AssetRecord): AssetOverviewFact[] {
   ];
 }
 
+export function buildAssetOverviewSummary(summary: string): AssetOverviewSummary {
+  const fallback = "Indexing metadata is not ready yet.";
+  const cleaned = summary.trim();
+  if (!cleaned) return { content: [fallback], evidence: [], metadataTerms: [] };
+
+  const sections = parseLabeledAssetSummary(cleaned);
+  const content = splitSummaryContent(formatAssetSummaryIntro(sections.content || cleaned));
+
+  return {
+    content: content.length > 0 ? content : [fallback],
+    evidence: splitSummaryList(sections.evidence),
+    metadataTerms: splitSummaryList(sections.metadata)
+  };
+}
+
+function parseLabeledAssetSummary(summary: string) {
+  type SummarySectionKey = "content" | "evidence" | "metadata";
+  const labels: Array<{ key: SummarySectionKey; label: string }> = [
+    { key: "content", label: "Content summary:" },
+    { key: "evidence", label: "Evidence coverage:" },
+    { key: "evidence", label: "Evidence sources:" },
+    { key: "metadata", label: "Metadata terms:" }
+  ];
+  const matches = labels
+    .map((item) => ({ ...item, index: summary.indexOf(item.label) }))
+    .filter((item) => item.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  if (matches.length === 0) return { content: summary, evidence: "", metadata: "" };
+
+  const sections: Record<SummarySectionKey, string> = { content: "", evidence: "", metadata: "" };
+  if (matches[0].index > 0) {
+    sections.content = summary.slice(0, matches[0].index).trim();
+  }
+  for (let index = 0; index < matches.length; index += 1) {
+    const current = matches[index];
+    const next = matches[index + 1];
+    const value = summary.slice(current.index + current.label.length, next?.index ?? summary.length).trim();
+    sections[current.key] = [sections[current.key], value].filter(Boolean).join("; ");
+  }
+  return sections;
+}
+
+function formatAssetSummaryIntro(intro: string) {
+  const cleaned = intro.replace(/^Content summary:\s*/i, "").replace(/\s*\.\s*$/, "").trim();
+  const match = cleaned.match(/^This asset was indexed into (\d+) timeline segments using (.+)$/i);
+  if (match) return `Indexed into ${match[1]} timeline segments with ${match[2]}.`;
+  return cleaned;
+}
+
+function splitSummaryContent(text: string) {
+  const normalized = text
+    .replace(/([가-힣])\s+([A-Z])/g, "$1; $2")
+    .replace(/([.!?])\s+(?=[A-Z0-9가-힣])/g, "$1; ")
+    .trim();
+  return normalized
+    .split(/\s*;\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitSummaryList(text: string) {
+  return text
+    .replace(/\s*\.\s*$/, "")
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function TechStackTags({ items }: { items: readonly (string | TechStackTagItem)[] }) {
+  const [tooltip, setTooltip] = useState<TechStackTooltip | null>(null);
+  function showTooltip(element: HTMLElement, tag: TechStackTagItem) {
+    const rect = element.getBoundingClientRect();
+    const margin = 16;
+    const maxWidth = Math.min(420, window.innerWidth - margin * 2);
+    const left = Math.min(Math.max(rect.left, margin), Math.max(margin, window.innerWidth - maxWidth - margin));
+    setTooltip({
+      text: `${tag.category}: ${tag.tooltip}`,
+      left,
+      top: rect.bottom + 8,
+      maxWidth
+    });
+  }
+
   return (
     <h2 className="section-stack-title tech-stack-tags" aria-label={items.map((item) => (typeof item === "string" ? item : `${item.category} ${item.label}`)).join(", ")}>
       {items.map((item) => {
@@ -198,12 +299,25 @@ function TechStackTags({ items }: { items: readonly (string | TechStackTagItem)[
             data-tooltip={`${tag.category}: ${tag.tooltip}`}
             tabIndex={0}
             aria-label={`${tag.category}: ${tag.label}. ${tag.tooltip}`}
+            onPointerEnter={(event) => showTooltip(event.currentTarget, tag)}
+            onPointerLeave={() => setTooltip(null)}
+            onFocus={(event) => showTooltip(event.currentTarget, tag)}
+            onBlur={() => setTooltip(null)}
           >
             <b>{tag.category}</b>
             <span>{tag.label}</span>
           </span>
         );
       })}
+      {tooltip && (
+        <span
+          className="tech-stack-tooltip"
+          style={{ left: tooltip.left, top: tooltip.top, maxWidth: tooltip.maxWidth }}
+          aria-hidden="true"
+        >
+          {tooltip.text}
+        </span>
+      )}
     </h2>
   );
 }
@@ -234,31 +348,15 @@ function buildAssetTechStackTags(
   const detector = configured?.visionDetector;
   const tracker = configured?.visionTracker;
   const videoVlm = configured?.videoVlm;
-  const queryPlanner = configured?.queryPlanner;
   const textDimensions = textEmbedding?.dimensions ?? dbStatus?.expectedEmbeddingDimensions;
   const visualDimensions = visualEmbedding?.dimensions ?? dbStatus?.expectedVisualEmbeddingDimensions;
   const vlmConfigured = videoVlm?.enabled ?? capabilities?.runtimeTopology?.vlm?.enabled;
   return [
     {
-      category: "UI",
-      label: "React / Vite",
-      tooltip: "Assets tab rendering, state updates, detail panels, and hover chips are implemented in the React client.",
-      kind: "app"
-    },
-    {
       category: "API",
       label: "Express / Multer",
-      tooltip: "The Node.js API handles asset group CRUD, uploads, summaries, jobs, and runtime capability snapshots.",
+      tooltip: "Used here for asset group CRUD, media upload handling, asset summaries, and indexing job requests.",
       kind: "app"
-    },
-    {
-      category: "Runtime check",
-      label: capabilities ? (capabilities.available === false ? "not checked" : "checked") : "pending",
-      tooltip: capabilities?.available === false
-        ? `Configured model names are shown, but availability check failed: ${capabilities.error ?? "unknown error"}.`
-        : `Model availability snapshot ${capabilities?.checkedAt ?? "has not loaded yet"}.`,
-      kind: "runtime",
-      disabled: capabilities?.available === false
     },
     {
       category: "Media IO",
@@ -328,20 +426,147 @@ function buildAssetTechStackTags(
       label: index?.models.search ?? "local-semantic-retrieval",
       tooltip: `Selected asset group retrieval mode. Analysis label ${index?.models.analysis ?? "local-pattern-analysis"}.`,
       kind: "policy"
+    }
+  ];
+}
+
+function buildSearchTechStackTags(capabilities: ModelCapabilitiesSnapshot | null, dbStatus: DatabaseStatus | null): TechStackTagItem[] {
+  const configured = capabilities?.configuredModels;
+  const modelFlags = capabilities?.models ?? {};
+  const queryPlanner = configured?.queryPlanner;
+  const textEmbedding = configured?.textEmbedding;
+  const visualEmbedding = configured?.visualEmbedding;
+  const textDimensions = textEmbedding?.dimensions ?? dbStatus?.expectedEmbeddingDimensions;
+  const visualDimensions = visualEmbedding?.dimensions ?? dbStatus?.expectedVisualEmbeddingDimensions;
+  return [
+    {
+      category: "Query planner",
+      label: queryPlanner?.model ?? "gpt-5.4-mini",
+      tooltip: `OpenAI planner for converting natural-language searches into retrieval filters and response modes. Planner ${queryPlanner?.enabled === false ? "disabled" : "enabled or available when configured"}.`,
+      kind: "model",
+      disabled: queryPlanner?.enabled === false
+    },
+    {
+      category: "Text vectors",
+      label: textEmbedding?.model ?? "intfloat/multilingual-e5-base",
+      tooltip: `Embeds user text queries and indexed timeline evidence${textDimensions ? ` at ${textDimensions} dimensions` : ""}. Availability ${availabilityText(modelFlags.sentenceTransformers)}.`,
+      kind: "model",
+      disabled: modelFlags.sentenceTransformers === false
+    },
+    {
+      category: "Visual vectors",
+      label: visualEmbedding?.model ?? "ViT-L-14/datacomp_xl_s13b_b90k",
+      tooltip: `OpenCLIP text/image vectors for visual search and keyframe matching${visualDimensions ? ` at ${visualDimensions} dimensions` : ""}. Availability ${availabilityText(modelFlags.openClip)}.`,
+      kind: "model",
+      disabled: modelFlags.openClip === false
     },
     {
       category: "Vector DB",
       label: "PostgreSQL / pgvector",
-      tooltip: `Stores timeline, knowledge, and visual vectors. Text column ${dbStatus?.embeddingColumn ?? "app_vectors.embedding"}, visual column ${dbStatus?.visualEmbeddingColumn ?? "app_visual_vectors.embedding"}, mode ${dbStatus?.vectorSearchMode ?? "pgvector"}.`,
+      tooltip: `Search reads timeline and visual vectors from pgvector. Text column ${dbStatus?.embeddingColumn ?? "app_vectors.embedding"}, visual column ${dbStatus?.visualEmbeddingColumn ?? "app_visual_vectors.embedding"}.`,
       kind: "storage",
       disabled: dbStatus?.ready === false
     },
     {
-      category: "Query planner",
-      label: queryPlanner?.model ?? "gpt-5.4-mini",
-      tooltip: `Optional OpenAI planner for converting natural-language searches into retrieval filters. Planner ${queryPlanner?.enabled === false ? "disabled" : "enabled or available when configured"}.`,
+      category: "Ranking",
+      label: "hybrid lexical ranking",
+      tooltip: "Combines vector retrieval with lexical matching, trust filters, and evidence source constraints.",
+      kind: "policy"
+    },
+    {
+      category: "Ask queue",
+      label: "Redis / BullMQ",
+      tooltip: "Runs ask/search operations asynchronously and streams operation state back to the console.",
+      kind: "runtime"
+    }
+  ];
+}
+
+function buildKnowledgeTechStackTags(
+  capabilities: ModelCapabilitiesSnapshot | null,
+  dbStatus: DatabaseStatus | null,
+  vectorStore: KnowledgeVectorStoreStatus | null
+): TechStackTagItem[] {
+  const textEmbedding = capabilities?.configuredModels?.textEmbedding;
+  const modelFlags = capabilities?.models ?? {};
+  const textDimensions = textEmbedding?.dimensions ?? dbStatus?.expectedEmbeddingDimensions;
+  return [
+    {
+      category: "Registry",
+      label: "Sports knowledge",
+      tooltip: "Selected sports registry data such as teams, players, match activities, facts, and plays.",
+      kind: "app"
+    },
+    {
+      category: "Adapters",
+      label: "football-data / StatBunker / StatsBomb / nflverse",
+      tooltip: "Knowledge import adapters used to build the local related-knowledge corpus.",
+      kind: "app"
+    },
+    {
+      category: "Knowledge vectors",
+      label: textEmbedding?.model ?? "intfloat/multilingual-e5-base",
+      tooltip: `Embeds related knowledge records for grounding and retrieval${textDimensions ? ` at ${textDimensions} dimensions` : ""}. Availability ${availabilityText(modelFlags.sentenceTransformers)}.`,
       kind: "model",
-      disabled: queryPlanner?.enabled === false
+      disabled: modelFlags.sentenceTransformers === false
+    },
+    {
+      category: "Vector store",
+      label: vectorStore?.storage === "postgres" ? "PostgreSQL / pgvector" : "local vector store",
+      tooltip: `Stores ${vectorStore?.vectors ?? 0} related-knowledge vectors across ${(vectorStore?.domains ?? []).join(", ") || "loaded domains"}.`,
+      kind: "storage",
+      disabled: dbStatus?.ready === false
+    },
+    {
+      category: "Grounding",
+      label: "evidence contracts",
+      tooltip: "Keeps selected knowledge, video evidence, and generated answers tied to explicit source records.",
+      kind: "policy"
+    }
+  ];
+}
+
+function buildSystemTechStackTags(capabilities: ModelCapabilitiesSnapshot | null, dbStatus: DatabaseStatus | null): TechStackTagItem[] {
+  return [
+    {
+      category: "Frontend",
+      label: "React / Vite",
+      tooltip: "Console UI, tabs, panels, routing state, and local interaction state.",
+      kind: "app"
+    },
+    {
+      category: "Backend",
+      label: "Node.js / Express",
+      tooltip: "HTTP API, system routes, asset routes, job routes, search orchestration, and static media serving.",
+      kind: "app"
+    },
+    {
+      category: "Runtime check",
+      label: capabilities ? (capabilities.available === false ? "not checked" : "checked") : "pending",
+      tooltip: capabilities?.available === false
+        ? `Model availability check failed: ${capabilities.error ?? "unknown error"}.`
+        : `Model availability snapshot ${capabilities?.checkedAt ?? "has not loaded yet"}.`,
+      kind: "runtime",
+      disabled: capabilities?.available === false
+    },
+    {
+      category: "Database",
+      label: "PostgreSQL / pgvector",
+      tooltip: `Application state and vectors use PostgreSQL/pgvector. Status ${dbStatus?.ready === false ? "not ready" : "ready or pending"}.`,
+      kind: "storage",
+      disabled: dbStatus?.ready === false
+    },
+    {
+      category: "Queue",
+      label: "Redis / BullMQ",
+      tooltip: "Background indexing, asset refinement, ask/search jobs, and worker coordination.",
+      kind: "runtime"
+    },
+    {
+      category: "Observability",
+      label: "OpenTelemetry / NDJSON logs",
+      tooltip: "Trace spans, latency metrics, model runtime metrics, and structured application logs.",
+      kind: "runtime"
     }
   ];
 }
@@ -374,7 +599,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     selectedAssetLoading,
     selectedAssetJob,
     selectedSegment,
-    selectedJob,
     runningJobCount,
     refresh,
     metrics,
@@ -387,7 +611,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     deleteIndex,
     deleteAsset,
     busy,
-    refineAssetGroupVlm,
     assetDetailTab,
     setAssetDetailTab,
     selectedKnowledgeDomain,
@@ -414,7 +637,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     searchConversation,
     buildAssetMomentUrl,
     jobs,
-    setSelectedJobId,
     retryJob,
     events,
     dbStatus,
@@ -437,7 +659,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
   const observabilityView = observability ? buildObservabilityView(observability) : null;
   const failedJobCount = jobs.filter((job) => job.status === "failed").length;
   const succeededJobCount = jobs.filter((job) => job.status === "succeeded").length;
-  const visibleJobs = jobs.slice(0, 12);
   const visibleEvents = events.slice(0, 8);
   const activeJobCount = Math.max(runningJobCount, metrics.runningJobs);
   const activeAssetIds = new Set(
@@ -452,6 +673,9 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       )
   );
   const assetTechStacks = buildAssetTechStackTags(selectedIndex, modelCapabilities, dbStatus);
+  const knowledgeTechStacks = buildKnowledgeTechStackTags(modelCapabilities, dbStatus, knowledgeVectorStore);
+  const searchTechStacks = buildSearchTechStackTags(modelCapabilities, dbStatus);
+  const systemTechStacks = buildSystemTechStackTags(modelCapabilities, dbStatus);
 
   useEffect(() => {
     if (searching) setSearchVideoPreview(null);
@@ -480,7 +704,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <section className="context-bar" aria-label="Current context">
           <div className="context-combined">
             <span>Dataset</span>
-            <strong>{metrics.indexedAssets}/{metrics.assets} indexed · {indexes.length} groups</strong>
+            <strong>{formatCountRatio(metrics.indexedAssets, metrics.assets)} indexed · {formatUnitCount(indexes.length, "group")}</strong>
           </div>
           <div>
             <span>Data group</span>
@@ -488,7 +712,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           </div>
           <div>
             <span>Queue</span>
-            <strong>{activeJobCount > 0 ? `${activeJobCount} active` : "clear"}</strong>
+            <strong>{activeJobCount > 0 ? `${formatCount(activeJobCount)} active` : "clear"}</strong>
           </div>
         </section>
         <button className="ghost-button icon-only" type="button" aria-label="Refresh" onClick={() => void refresh()}>
@@ -499,7 +723,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
       <nav className="view-tabs" aria-label="Console sections">
         <a className="brand-logo" href="/" aria-label="Arion.AI home">
           <span className="brand-mark" aria-hidden="true">
-            <img src="/arion-mark.svg" alt="" />
+            <img src="/arion-logo.png" alt="" />
           </span>
           <span className="brand-copy">
             <strong>Arion.AI</strong>
@@ -510,7 +734,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "data"}
           icon={<FileVideo size={17} />}
           label="Assets"
-          meta={`${indexes.length} groups · ${assets.length} assets`}
+          meta={`${formatUnitCount(indexes.length, "group")} · ${formatUnitCount(assets.length, "asset")}`}
           onClick={() => setActiveTab("data")}
         />
         {activeTab === "data" && (
@@ -527,8 +751,11 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 const indexedCount = indexAssets.filter((asset) => asset.status === "indexed").length;
                 return (
                   <button key={index.id} type="button" className={`asset-nav-item ${selectedIndex?.id === index.id ? "active" : ""}`} onClick={() => selectIndex(index.id)}>
-                    <span>{index.name}</span>
-                    <strong>{indexedCount}/{indexAssets.length}</strong>
+                    <span className="asset-nav-title-with-marker">
+                      <AssetGroupStatusMarker index={index} assets={indexAssets} />
+                      <span>{index.name}</span>
+                    </span>
+                    <strong>{formatCountRatio(indexedCount, indexAssets.length)}</strong>
                   </button>
                 );
               })}
@@ -542,27 +769,12 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </div>
             <div className="asset-nav-list video-list">
               {visibleAssets.length === 0 && <p>No videos</p>}
-              {visibleAssets.map((asset) => {
-                const deleteDisabled = busy || activeAssetIds.has(asset.id);
-                return (
-                  <div key={asset.id} className={`asset-nav-row ${selectedAsset?.id === asset.id ? "active" : ""}`}>
-                    <button type="button" className={`asset-nav-item video ${selectedAsset?.id === asset.id ? "active" : ""}`} onClick={() => selectAsset(asset)}>
-                      <span className="asset-nav-title">{asset.title}</span>
-                      <AssetStatusIndicator asset={asset} />
-                    </button>
-                    <button
-                      type="button"
-                      className="nav-delete-button"
-                      aria-label={`Delete ${asset.title}`}
-                      title={deleteDisabled ? "Cannot delete a video while indexing is running." : "Delete video"}
-                      disabled={deleteDisabled}
-                      onClick={() => void deleteAsset(asset.id)}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                );
-              })}
+              {visibleAssets.map((asset) => (
+                <button key={asset.id} type="button" className={`asset-nav-item video ${selectedAsset?.id === asset.id ? "active" : ""}`} onClick={() => selectAsset(asset)}>
+                  <span className="asset-nav-title">{asset.title}</span>
+                  <AssetStatusIndicator asset={asset} />
+                </button>
+              ))}
             </div>
           </section>
         )}
@@ -570,14 +782,14 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "search"}
           icon={<Search size={17} />}
           label="Search"
-          meta={`${searchResults.length} results`}
+          meta={formatUnitCount(searchResults.length, "result")}
           onClick={() => setActiveTab("search")}
         />
         <TabButton
           active={activeTab === "knowledge"}
           icon={<Layers3 size={17} />}
           label="Knowledge"
-          meta={knowledgeSnapshot ? `${knowledgeRecordCount} records` : "loading"}
+          meta={knowledgeSnapshot ? formatUnitCount(knowledgeRecordCount, "record") : "loading"}
           onClick={() => setActiveTab("knowledge")}
         />
         {activeTab === "knowledge" && (
@@ -594,7 +806,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   onClick={() => setSelectedKnowledgeDomain(domain.id)}
                 >
                   <span>{domain.label}</span>
-                  <strong>{domain.players}/{domain.teams}</strong>
+                  <strong>{formatCountRatio(domain.players, domain.teams)}</strong>
                 </button>
               ))}
             </div>
@@ -604,7 +816,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           active={activeTab === "system"}
           icon={<Activity size={17} />}
           label="System"
-          meta={activeJobCount > 0 ? `${activeJobCount} active` : `${metrics.indexedAssets}/${metrics.assets} indexed`}
+          meta={activeJobCount > 0 ? `${formatCount(activeJobCount)} active` : `${formatCountRatio(metrics.indexedAssets, metrics.assets)} indexed`}
           onClick={() => setActiveTab("system")}
         />
       </nav>
@@ -620,12 +832,10 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           index={selectedIndex}
           assets={visibleAssets}
           modelCapabilities={modelCapabilities}
-          busy={busy}
           onEdit={() => setDialogMode("edit-index")}
           onDelete={() => selectedIndex && void deleteIndex(selectedIndex.id)}
           deleteDisabled={busy || selectedIndexDeleteDisabled}
           deleteTitle={selectedIndexDeleteDisabled ? "인덱싱 중인 영상이 있어 에셋그룹을 삭제할 수 없습니다." : "에셋그룹 삭제"}
-          onRefineVlm={(indexId) => void refineAssetGroupVlm(indexId)}
         />
       <section className="asset-workbench asset-detail-workbench">
         <section className="panel detail-panel">
@@ -653,6 +863,10 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
               <AssetDetailTabs active={assetDetailTab} onChange={setAssetDetailTab} />
               {assetDetailTab === "overview" && (
                 <section className="asset-detail-view">
+                  {(() => {
+                    const overviewSummary = buildAssetOverviewSummary(selectedAsset.summary);
+                    return (
+                      <>
                   <div className="asset-overview-layout">
                     <div className="asset-player-column">
                       <video key={selectedAsset.id} ref={playerRef} className="player" src={`/media/${selectedAsset.storedName}`} controls preload="metadata" />
@@ -666,12 +880,48 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                       ))}
                     </aside>
                   </div>
-                  <p className="summary">{selectedAsset.summary || "Indexing metadata is not ready yet."}</p>
+                  <section className="asset-summary-card" aria-label="Asset index summary">
+                    <div className="asset-summary-primary">
+                      <span>Index summary</span>
+                      <div className="asset-summary-copy">
+                        {overviewSummary.content.map((item, index) => (
+                          <p key={`${index}-${item}`}>{item}</p>
+                        ))}
+                      </div>
+                    </div>
+                    {(overviewSummary.evidence.length > 0 || overviewSummary.metadataTerms.length > 0) && (
+                      <div className="asset-summary-grid">
+                        {overviewSummary.evidence.length > 0 && (
+                          <div>
+                            <strong>Evidence</strong>
+                            <span className="asset-summary-chips">
+                              {overviewSummary.evidence.map((item) => (
+                                <em key={item}>{item}</em>
+                              ))}
+                            </span>
+                          </div>
+                        )}
+                        {overviewSummary.metadataTerms.length > 0 && (
+                          <div>
+                            <strong>Metadata terms</strong>
+                            <span className="asset-summary-chips">
+                              {overviewSummary.metadataTerms.map((item) => (
+                                <em key={item}>{item}</em>
+                              ))}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
                   <div className="chips">
                     {selectedAsset.tags.map((tag) => (
                       <span key={tag}>{tag}</span>
                     ))}
                   </div>
+                      </>
+                    );
+                  })()}
                 </section>
               )}
               {assetDetailTab === "workflow" && (
@@ -698,7 +948,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   <div className="timeline-header">
                     <div>
                       <p className="section-label">Timeline</p>
-                      <h3>{selectedAsset.timeline.length} indexed moments</h3>
+                      <h3>{formatUnitCount(selectedAsset.timeline.length, "indexed moment")}</h3>
                     </div>
                     {selectedSegment && <span>{formatDuration(selectedSegment.start)} selected</span>}
                   </div>
@@ -740,7 +990,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Knowledge</p>
-            <TechStackTags items={sectionTechStacks.knowledge} />
+            <TechStackTags items={knowledgeTechStacks} />
           </div>
         </div>
         <KnowledgePanel
@@ -757,7 +1007,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">Search</p>
-            <TechStackTags items={sectionTechStacks.search} />
+            <TechStackTags items={searchTechStacks} />
           </div>
         </div>
       <section className="tools">
@@ -827,7 +1077,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
         <div className="section-heading">
           <div>
             <p className="section-label">System</p>
-            <TechStackTags items={sectionTechStacks.system} />
+            <TechStackTags items={systemTechStacks} />
           </div>
         </div>
         <section className="system-console">
@@ -835,7 +1085,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <article className="system-kpi">
               <CheckCircle2 size={18} />
               <span>Indexed Assets</span>
-              <strong>{metrics.indexedAssets}/{metrics.assets}</strong>
+              <strong>{formatCountRatio(metrics.indexedAssets, metrics.assets)}</strong>
               <em>{metrics.indexes} indexes</em>
             </article>
             <article className="system-kpi">
@@ -858,6 +1108,77 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             </article>
           </section>
 
+          <section className="system-status-strip" aria-label="Infrastructure and telemetry status">
+            <article className="system-status-group">
+              <div className="system-status-heading">
+                <Database size={16} aria-hidden="true" />
+                <span>Storage</span>
+                <strong>Database</strong>
+              </div>
+              {dbStatus ? (
+                <div className="system-status-facts">
+                  <span><b>Store</b>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</span>
+                  <span><b>State</b>{dbStatus.operationalState ?? (dbStatus.enabled ? "ready" : "local")}</span>
+                  <span><b>Vector</b>{dbStatus.pgvector ? `${dbStatus.vectorSearchMode ?? "pgvector"} ${dbStatus.pgvector}` : dbStatus.vectorSearchMode ?? "off"}</span>
+                  <span><b>Text</b>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
+                  <span><b>Visual</b>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} dimensions`}</span>
+                </div>
+              ) : (
+                <span className="system-status-empty">Database status is loading.</span>
+              )}
+            </article>
+
+            <article className="system-status-group">
+              <div className="system-status-heading">
+                <Activity size={16} aria-hidden="true" />
+                <span>Telemetry</span>
+                <strong>Observability</strong>
+              </div>
+              {observabilityView ? (
+                <>
+                  <p className="system-status-purpose">
+                    Intent: expose request latency, worker pipeline health, trace correlation, and structured logs before indexing or search issues become silent failures.
+                  </p>
+                  <div className="system-observability-details">
+                    <span>
+                      <b>Trace</b>
+                      <strong>{observabilityView.traceStore} · {formatUnitCount(observabilityView.spanCount, "span")}</strong>
+                      <em>Recent API and worker spans are kept locally so trace IDs can connect jobs, logs, and request timing.</em>
+                    </span>
+                    <span>
+                      <b>API p95</b>
+                      <strong>{observabilityView.httpP95}</strong>
+                      <em>{observabilityView.httpSummary}. p95 highlights the slow edge of recent HTTP traffic, not the average case.</em>
+                    </span>
+                    <span>
+                      <b>Pipeline</b>
+                      <strong>{formatUnitCount(observabilityView.pipelineErrorCount, "error")}</strong>
+                      <em>{observabilityView.slowestLabel}. This catches slow or failing model/runtime stages while jobs are still moving.</em>
+                    </span>
+                    <span>
+                      <b>Logs</b>
+                      <strong>{observabilityView.logFormat}</strong>
+                      <em>Structured log stream at {observabilityView.logPath}; use requestId and traceId to inspect exact runtime behavior.</em>
+                    </span>
+                  </div>
+                  {observabilityView.pipelineMetrics.length > 0 && (
+                    <div className="system-inline-metrics">
+                      {observabilityView.pipelineMetrics.slice(0, 3).map((metric) => (
+                        <span key={metric.key} className={metric.lastStatus === "error" ? "error" : ""}>
+                          <b>{formatMetricName(metric.key)}</b>
+                          <strong>p95 {formatLatency(metric.p95Ms)} · {formatUnitCount(metric.errorCount, "error")}</strong>
+                          <em>{metric.lastStatus === "error" && metric.lastError ? `Last error: ${metric.lastError}` : describeObservabilityMetricIntent(metric.key)}</em>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <span className="system-status-empty">Observability data is loading.</span>
+              )}
+            </article>
+          </section>
+
           <section className="system-workspace">
             <section className="panel system-panel system-jobs-panel">
               <div className="system-panel-header">
@@ -872,15 +1193,15 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
               </div>
 
               <div className="system-job-list">
-                {visibleJobs.map((job) => (
-                  <article key={job.id} className={`system-job-row ${job.status} ${selectedJob?.id === job.id ? "active" : ""}`}>
-                    <button type="button" className="system-job-main" onClick={() => setSelectedJobId(job.id)}>
+                {jobs.map((job) => (
+                  <article key={job.id} className={`system-job-row ${job.status}`}>
+                    <div className="system-job-main">
                       <span className={`system-status-pill ${job.status}`}>{formatJobStatus(job.status)}</span>
                       <strong>{formatJobTypeLabel(job.type)}</strong>
                       <span>{formatJobStageLabel(job)}</span>
                       <span>{formatJobProgressLabel(job)}</span>
                       <time>{formatRelativeTime(job.updatedAt)}</time>
-                    </button>
+                    </div>
                     {job.assetId && (
                       <button
                         type="button"
@@ -896,36 +1217,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 ))}
                 {jobs.length === 0 && <EmptyState text="No jobs have been recorded." />}
               </div>
-
-              {selectedJob && (
-                <article className="system-job-detail">
-                  <div className="system-detail-title">
-                    <div>
-                      <p className="section-label">Selected Job</p>
-                      <h3>{formatJobDetailTitle(selectedJob)}</h3>
-                    </div>
-                    <span className={`system-status-pill ${selectedJob.status}`}>{formatJobStatus(selectedJob.status)}</span>
-                  </div>
-                  <div className="system-detail-grid">
-                    <span><b>Type</b>{formatJobTypeLabel(selectedJob.type)}</span>
-                    <span><b>Stage</b>{formatJobStageLabel(selectedJob)}</span>
-                    <span><b>Progress</b>{formatJobProgressLabel(selectedJob)}</span>
-                    <span><b>Updated</b>{formatRelativeTime(selectedJob.updatedAt)}</span>
-                  </div>
-                  <span className="job-id">Job ID {selectedJob.id}</span>
-                  {selectedJob.error && <p className="system-job-error">{selectedJob.error}</p>}
-                  <div className="system-log-list">
-                    <strong>Job Logs</strong>
-                    {selectedJob.logs.slice(-6).map((log) => (
-                      <p key={`${log.at}-${log.message}`}>
-                        <time>{new Date(log.at).toLocaleTimeString()}</time>
-                        <span>{log.level}</span>
-                        {log.message}
-                      </p>
-                    ))}
-                  </div>
-                </article>
-              )}
             </section>
 
             <aside className="system-side-column">
@@ -947,61 +1238,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   ))}
                   {events.length === 0 && <EmptyState text="No operational events have been recorded." />}
                 </div>
-              </section>
-
-              <section className="system-info-grid">
-                <section className="panel system-panel system-database-panel">
-                  <div className="system-panel-header compact">
-                    <div>
-                      <p className="section-label">Storage</p>
-                      <h2>Database</h2>
-                    </div>
-                    <Database size={18} />
-                  </div>
-                  {dbStatus ? (
-                    <div className="system-fact-grid">
-                      <span><b>Store</b>{dbStatus.enabled ? "PostgreSQL" : dbStatus.storage ?? "File storage"}</span>
-                      <span><b>State</b>{dbStatus.operationalState ?? (dbStatus.enabled ? "ready" : "local")}</span>
-                      <span><b>Vector</b>{dbStatus.pgvector ? `${dbStatus.vectorSearchMode ?? "pgvector"} ${dbStatus.pgvector}` : dbStatus.vectorSearchMode ?? "off"}</span>
-                      <span><b>Text</b>{dbStatus.embeddingColumn ?? `${dbStatus.expectedEmbeddingDimensions ?? 0} dimensions`}</span>
-                      <span><b>Visual</b>{dbStatus.visualEmbeddingColumn ?? `${dbStatus.expectedVisualEmbeddingDimensions ?? 0} dimensions`}</span>
-                    </div>
-                  ) : (
-                    <EmptyState text="Database status is loading." />
-                  )}
-                </section>
-
-                <section className="panel system-panel system-observability-panel">
-                  <div className="system-panel-header compact">
-                    <div>
-                      <p className="section-label">Telemetry</p>
-                      <h2>Observability</h2>
-                    </div>
-                    <Activity size={18} />
-                  </div>
-                  {observabilityView ? (
-                    <>
-                      <div className="system-fact-grid">
-                        <span><b>Trace</b>{observabilityView.traceStore} · {observabilityView.spanCount} spans</span>
-                        <span><b>API p95</b>{observabilityView.httpP95}</span>
-                        <span><b>Pipeline</b>{observabilityView.pipelineErrorCount} errors</span>
-                        <span><b>Logs</b>{observabilityView.logFormat}</span>
-                      </div>
-                      {observabilityView.pipelineMetrics.length > 0 && (
-                        <div className="system-mini-metrics">
-                          {observabilityView.pipelineMetrics.slice(0, 3).map((metric) => (
-                            <span key={metric.key}>
-                              <b>{formatMetricName(metric.key)}</b>
-                              p95 {formatLatency(metric.p95Ms)} · {metric.errorCount} errors
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <EmptyState text="Observability data is loading." />
-                  )}
-                </section>
               </section>
             </aside>
           </section>
@@ -1105,11 +1341,6 @@ function formatJobStageLabel(job: JobRecord) {
   return job.stage;
 }
 
-function formatJobDetailTitle(job: JobRecord) {
-  if (job.stage === "stale") return "Interrupted by server restart";
-  return formatJobStageLabel(job);
-}
-
 function formatJobProgressLabel(job: JobRecord) {
   if (job.stage === "stale") return getRecoveredJobDisposition(job);
   return `${job.progress}%`;
@@ -1149,7 +1380,7 @@ function buildObservabilityView(snapshot: ObservabilitySnapshot) {
     traceStore: formatTraceStore(snapshot.traceExporter),
     spanCount: snapshot.recentSpans.length,
     httpP95: httpMetric ? formatLatency(httpMetric.p95Ms) : "No samples",
-    httpSummary: httpMetric ? `${httpMetric.count} requests · ${httpMetric.errorCount} errors` : "No request metrics",
+    httpSummary: httpMetric ? `${formatUnitCount(httpMetric.count, "request")} · ${formatUnitCount(httpMetric.errorCount, "error")}` : "No request metrics",
     pipelineErrorCount: pipelineMetricPool.reduce((sum, metric) => sum + metric.errorCount, 0),
     logFormat: formatLogFormat(snapshot.logFormat),
     logPath: compactLogPath(snapshot.logPath),
@@ -1157,6 +1388,16 @@ function buildObservabilityView(snapshot: ObservabilitySnapshot) {
     pipelineMetrics,
     signalLogs: snapshot.recentLogs.filter(isOperationalSignalLog).slice(0, 5)
   };
+}
+
+function describeObservabilityMetricIntent(key: string) {
+  if (key === "model.doctor.service") return "Verifies the model runtime boundary responds before UI features depend on local AI services.";
+  if (key.startsWith("python_runtime.service")) return "Measures Python runtime service calls used by ASR, OCR, vision, and embedding work.";
+  if (key.startsWith("model.")) return "Tracks model availability or model execution health for local intelligence stages.";
+  if (key.startsWith("stage.")) return "Measures indexing pipeline stages so slow evidence extraction and vector writes are visible.";
+  if (key.startsWith("job.")) return "Tracks background job execution to detect stalled or failing worker paths.";
+  if (key.startsWith("search.vector")) return "Measures vector retrieval latency used by search and grounded answer flows.";
+  return "Operational latency metric used to identify slow, failing, or recently changed runtime paths.";
 }
 
 function compareObservabilityMetrics(a: ObservabilityMetric, b: ObservabilityMetric) {

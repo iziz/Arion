@@ -748,7 +748,9 @@ function buildLexicalMatchSources(asset: AssetRecord, segment: TimelineSegment) 
   return [
     { label: "title", text: asset.title },
     { label: "description", text: asset.description },
+    { label: "asset summary", text: asset.summary },
     { label: "moment label", text: segment.label },
+    { label: "moment summary", text: segment.summary ?? "" },
     { label: "speech", text: segment.transcript },
     { label: "tags", text: segment.tags.join(" ") },
     { label: "VLM caption", text: scene?.vlm?.caption ?? "" },

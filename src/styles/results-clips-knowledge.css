@@ -653,10 +653,10 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
   align-items: start;
-  border: 1px solid #d7e1dc;
-  border-radius: 14px;
-  background: #fbfdfc;
-  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .knowledge-domain-summary h2 {
@@ -687,11 +687,11 @@
 .knowledge-domain-metrics span {
   display: grid;
   gap: 5px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #eef7f3;
   color: #12322b;
-  padding: 10px;
-  font-size: 17px;
+  padding: 9px 10px;
+  font-size: 16px;
   font-weight: 950;
 }
 
@@ -707,32 +707,54 @@
 }
 
 .knowledge-tabs {
-  display: inline-flex;
+  display: flex;
   width: fit-content;
   max-width: 100%;
-  overflow: hidden;
-  border: 1px solid #d7e1dc;
-  border-radius: 999px;
-  background: #ffffff;
-  padding: 3px;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid #cfdcd6;
+  background: transparent;
+  padding: 0;
+}
+
+.knowledge-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .knowledge-tabs button {
-  min-height: 34px;
+  min-height: 38px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   background: transparent;
   color: #526660;
-  padding: 0 14px;
+  box-shadow: none;
+  padding: 0 18px;
   font: inherit;
   font-size: 12px;
-  font-weight: 950;
+  font-weight: 900;
   white-space: nowrap;
 }
 
+.knowledge-tabs button:hover {
+  background: transparent;
+  color: #1f7767;
+}
+
 .knowledge-tabs button.active {
-  background: #e6f5ef;
+  position: relative;
   color: #147764;
+}
+
+.knowledge-tabs button.active::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  bottom: -1px;
+  left: 14px;
+  height: 3px;
+  border-radius: 999px 999px 0 0;
+  background: #2b8b70;
 }
 
 .knowledge-template-panel {
