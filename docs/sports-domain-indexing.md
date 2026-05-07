@@ -1,5 +1,7 @@
 # Sports Domain Indexing
 
+Last checked against code: 2026-05-08.
+
 This document summarizes the current sports-domain indexing work: American-football knowledge ingestion, template-driven action spotting, sports identity resolution, UI exposure, and operational commands.
 
 ## Goals
@@ -25,6 +27,7 @@ Asset group domain configuration
         -> sports.base contract
         -> sports.football strategy
         -> sports.american_football strategy
+  -> extractive-summary stage
   -> embedding/vector upsert
      -> domain and identity-enriched search text
 Ask/search query planning
@@ -208,7 +211,7 @@ The package-level `test` script currently runs the full test suite because `test
 
 Existing uploaded videos do not need to be uploaded again.
 
-To populate the new sports identity output or participant role event fields for existing football or American-football assets, re-run indexing from `domain-index`, run domain VLM refinement, or rebuild the affected indexes. The domain VLM refinement path rebuilds the base domain layer before merging VLM output, so it can refresh stale stored role evidence without re-uploading media. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
+To populate the new sports identity output or participant role event fields for existing football or American-football assets, re-run indexing from `domain-index`, run domain VLM refinement, or rebuild the affected indexes. The domain VLM refinement path rebuilds the base domain layer before merging VLM output, then rebuilds summaries and text vectors, so it can refresh stale stored role evidence without re-uploading media. Full video extraction is only required when upstream evidence changes, such as adding a new OCR, VLM, detector, ReID, helmet assignment, or contact model.
 
 ## Current Limitations
 
@@ -225,7 +228,7 @@ Any project presentation should be updated to reflect these architecture changes
 - Replace a single "football" domain diagram with `sports.base -> sports.football / sports.american_football`.
 - Add the `manifest + generator + evaluator` template contract.
 - Show Knowledge action spotting as a domain-specific stage, not one SoccerNet-only path.
-- Add the sports identity resolver after domain event enrichment and before embedding/vector upsert.
+- Add the sports identity resolver after domain event enrichment and before extractive summaries plus embedding/vector upsert.
 - Add participant-aware query planning with `participants[]`, including `action_source`/`action_target` direction and structured passer/receiver verification.
 - Show edited videos as multiple match/game contexts with `videoRanges[]` and `clockMappings[]`.
 - Add American-football data flow: nflverse play metadata, Big Data Bowl-style schema, helmet/contact/MOT hooks, and timestamp action JSON.

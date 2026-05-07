@@ -1,5 +1,7 @@
 # Arion
 
+Last checked against code: 2026-05-08.
+
 Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, and sports-domain context.
 
 It is built as an application stack rather than a notebook or single LLM script: uploads become durable jobs, model work runs behind service boundaries, evidence is persisted into PostgreSQL/pgvector, and the React console exposes the indexing and search workflow end to end.
@@ -53,7 +55,8 @@ The core indexing workflow is:
 ```text
 upload -> probe -> local model runtime -> scene detection -> timeline
   -> keyframes -> video VLM -> detector/tracker -> domain evidence
-  -> domain VLM -> text embeddings -> visual embeddings -> finalize
+  -> domain VLM -> extractive summaries -> text embeddings
+  -> visual embeddings -> vector upserts -> finalize
 ```
 
 Each major stage is checkpointed so interrupted workers can resume without rebuilding outputs that are already persisted.
@@ -208,6 +211,9 @@ Health and operations:
 - `GET /api/storage/status`
 - `GET /api/observability`
 - `GET /api/model-capabilities`
+- `GET /api/models/vlm/health`
+- `GET /api/users`
+- `GET /api/billing`
 - `GET /api/events`
 - `GET /api/events/stream`
 
@@ -219,11 +225,26 @@ Assets and indexes:
 - `PATCH /api/indexes/:id`
 - `DELETE /api/indexes/:id`
 - `GET /api/assets`
+- `GET /api/assets/summary`
 - `POST /api/assets`
 - `POST /api/indexes/:id/assets`
 - `GET /api/assets/:id`
 - `DELETE /api/assets/:id`
+- `GET /api/assets/:id/tracking`
+- `GET /api/tracking`
+- `GET /api/jobs`
+- `GET /api/jobs/:id`
+- `POST /api/jobs/:id/retry`
 - `POST /api/assets/:id/reindex`
+- `POST /api/assets/:id/domain-vlm/refine`
+- `POST /api/indexes/:id/domain-vlm/refine`
+
+Legacy video compatibility aliases:
+
+- `GET /api/videos`
+- `POST /api/videos`
+- `GET /api/videos/:id`
+- `POST /api/videos/:id/analyze`
 
 Search and analysis:
 
@@ -232,13 +253,33 @@ Search and analysis:
 - `GET /api/search?q=...`
 - `GET /api/search/plan?q=...`
 - `GET /api/knowledge/answer?q=...`
+- `GET /api/orchestrate/plan?q=...`
 - `GET /api/vector-search?q=...`
 - `GET /api/visual-search?q=...`
 - `POST /api/vector-store/rebuild`
 - `POST /api/analyze`
 - `POST /api/assets/:id/analyze`
+- `POST /api/indexes/:id/analyze`
 - `GET /api/assets/:id/clips`
 - `GET /api/assets/:id/clips/:segmentId`
+
+Knowledge:
+
+- `GET /api/knowledge`
+- `GET /api/knowledge/summary`
+- `GET /api/knowledge/vector-store`
+- `POST /api/knowledge/vector-store/rebuild`
+- `GET /api/knowledge/vector-search?q=...`
+- `POST /api/knowledge/import/football-data`
+- `POST /api/knowledge/import/football-data-uk`
+- `POST /api/knowledge/import/statsbomb`
+- `POST /api/knowledge/import/statbunker`
+- `POST /api/knowledge/import/nflverse`
+- `POST /api/knowledge/players`
+- `PUT /api/knowledge/players/:id`
+- `DELETE /api/knowledge/players/:id`
+
+The legacy `/api/knowledge/sports/*` aliases remain registered for the knowledge endpoints.
 
 Webhooks:
 
@@ -254,6 +295,7 @@ Arion stores evidence at multiple levels:
 - Asset-level intelligence: ASR, OCR, audio/VAD, visual profile, model traces
 - Segment-level scene data: speech, subtitles, screen text, visual metadata, VLM descriptions, vision evidence
 - Domain evidence: sports event labels, captions, scope, players, teams, match identity, action spots
+- Extractive summaries: deterministic asset and moment summaries built before text embedding
 - Embeddings: text passage vectors and visual keyframe vectors
 - Operational evidence: job stage checkpoints, runtime stage status, logs, spans, and events
 

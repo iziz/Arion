@@ -1,5 +1,7 @@
 # Domain-Adaptive Video Intelligence Platform
 
+Last checked against code: 2026-05-08.
+
 ## Context
 
 The interview brief describes a platform layer above two foundation-model capabilities:
@@ -64,7 +66,7 @@ The first version is still evidence-gated: it uses text, OCR, coarse vision cues
 
 ### 4. Match/Game Context Identity Resolution
 
-Sports identity resolution runs after domain event enrichment and before embedding/vector upsert.
+Sports identity resolution runs after domain event enrichment and before extractive summaries, embedding, and vector upsert.
 
 It writes:
 

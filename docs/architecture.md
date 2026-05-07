@@ -1,5 +1,7 @@
 # Arion Code Architecture
 
+Last checked against code: 2026-05-08.
+
 ## Scope
 
 This document describes the current Arion architecture from the checked-in code. It is based on static code inspection of the frontend, backend, shared types, workflows, storage adapters, and runtime adapters. It is not a runtime benchmark or deployment verification report.
@@ -701,7 +703,7 @@ flowchart TD
   KnowledgeAction -->|no| DomainIndex
   KnowledgeActionRun --> DomainIndex{"domainIndexing enabled?"}
   DomainIndex -->|yes| Domain["Domain timeline enrichment\nrelated knowledge events and scope"]
-  DomainIndex -->|no| TextEmbed
+  DomainIndex -->|no| Summary
   Domain --> DomainVlm{"domainVlmRefinement enabled?"}
   DomainVlm -->|no| SportsIdentity["Sports identity resolver\nmatch/game context, clock mappings,\nroster windows, trackId/playerId candidates"]
   DomainVlm -->|yes| DomainVlmWorker{"VLM_WORKER_URL configured?"}
@@ -709,7 +711,8 @@ flowchart TD
   DomainVlmWorker -->|no and optional| SportsIdentity
   DomainVlmWorker -->|no and required| Failure
   DomainVlmRun --> SportsIdentity
-  SportsIdentity --> TextEmbed["Text embeddings\nsentence-transformers script"]
+  SportsIdentity --> Summary["Extractive summaries\nasset and moment summaries"]
+  Summary --> TextEmbed["Text embeddings\nsentence-transformers script"]
   TextEmbed --> TextVector["Upsert text vectors"]
   TextVector --> VisualEmbed["Try visual embeddings\nOpenCLIP script"]
   VisualEmbed --> VisualVector["Upsert visual vectors\npossibly empty on unavailable visual embedding"]
@@ -770,18 +773,22 @@ Stage details:
    - For `sports.football`, the VLM output can populate structured `football.passingPlayer` and `football.receivingPlayer` roles. These roles describe event evidence, not the current query target.
    - Named passer/receiver identities require segment-local evidence. ASR/OCR/subtitle/VLM evidence can bind a role only when the player alias and action-direction cue are local to the segment. Asset titles, tags, broad metadata, and asset-level scope can identify catalog context or player mentions, but they do not prove that the named player is the passer or receiver.
    - Domain VLM merge preserves observed segment-local role evidence from the base domain index when the VLM response omits a role identity. It does not swap passer and receiver direction to satisfy a search term.
-12. `embed`
+12. `summary`
+   - `applyExtractiveVideoSummaries` builds deterministic asset and moment summaries from the current timeline evidence.
+   - The summary stage runs after domain enrichment and before semantic embedding, so summary text is included in the text embedding input.
+   - A `summary` retry invalidates the asset summary, segment summaries, summary traces, and downstream text vectors.
+13. `embed`
    - `embedTimelineSegments` converts segment evidence into passage text and calls the Embedding runtime service.
    - Embedding dimension is validated against `EMBEDDING_DIMENSIONS` or the default `768`.
-13. `vector-upsert-text`
+14. `vector-upsert-text`
    - Writes text timeline vectors to PostgreSQL/pgvector.
-14. `visual-embedding`
+15. `visual-embedding`
    - `embedKeyframes` calls the Embedding runtime service in OpenCLIP image mode.
    - Visual embedding dimension is validated against `VISUAL_EMBEDDING_DIMENSIONS` or the default `768`.
    - The generated visual vector records are transient workflow output; a completed `visual-embedding` checkpoint is reusable only after `vector-upsert-visual` has also completed.
-15. `vector-upsert-visual`
+16. `vector-upsert-visual`
    - Writes visual vectors to PostgreSQL/pgvector.
-16. `finalize`
+17. `finalize`
    - Saves the asset as `indexed`.
    - Upserts tracking records.
    - Marks the job succeeded.
@@ -803,6 +810,7 @@ Checkpointed stages are:
 - `vision-detection`
 - `vision-tracking`
 - `domain-index`
+- `summary`
 - `embed`
 - `vector-upsert-text`
 - `visual-embedding`
@@ -815,6 +823,7 @@ Each checkpoint stores status, message, progress, timestamps, errors, and attemp
 - `local-model-runtime` requires persisted intelligence or model trace output.
 - `timeline` requires persisted timeline and keyframe snapshots.
 - VLM and vision stages require matching model trace output.
+- `summary` requires a non-empty asset summary and a summary on every timeline segment.
 - `embed` requires persisted segment embeddings.
 - Vector upsert stages use checkpoint completion because vector writes are external to the asset JSON but are idempotent by asset/vector IDs.
 - `visual-embedding` is coupled to `vector-upsert-visual`: because visual vector records are not stored in the checkpoint, resume reruns visual embedding if visual vector upsert has not completed yet.
@@ -839,23 +848,25 @@ Supported normalized retry stages include:
 - `timeline`
 - `scene`
 - `keyframes`
-- `domain`
-- `domainVlm`
-- `knowledgeAction`
+- `videoVlm`
 - `detector`
 - `tracker`
-- `vector`
+- `knowledgeAction`
+- `domain`
+- `domainVlm`
+- `summary`
 - `textEmbedding`
 - `visualEmbedding`
+- `vector`
 - `ready`
-- `videoVlm`
 
 Special retry paths:
 
-- `speakers` runs `runSpeakerDiarizationJob`.
-- `audio` and `vad` run `runAudioExtractionJob`.
-- Other stages run the full indexing workflow with `retryStage`.
-- Domain VLM refinement can run as a standalone `asset.domain-vlm.refine` job.
+- Runtime retry stages such as `audio`, `vad`, `asr`, `speakers`, `ocr`, and `visual` map back to the `local-model-runtime` checkpoint and force only the affected cached runtime sub-stages where possible.
+- `scene`, `timeline`, and `keyframes` map to the `timeline` checkpoint.
+- `knowledgeAction`, `domain`, and `domainVlm` map to the `domain-index` checkpoint.
+- `summary`, `textEmbedding`, `visualEmbedding`, `vector`, and `ready` map to their corresponding downstream checkpoints.
+- Domain VLM refinement can also run as a standalone `asset.domain-vlm.refine` job.
 - The standalone domain VLM refinement path rebuilds the base domain layer before merging VLM output. This prevents stale `segment.domain` JSON from preserving old passer/receiver role binding after the role-evidence policy changes.
 
 Duplicate active asset jobs are rejected by returning the active job with `x-existing-job: true`.
@@ -1019,7 +1030,7 @@ Role-bound indexing is stricter than generic player mention indexing:
 - Segment-local `finds Son`, `to Son`, or `Son receives` can bind `football.receivingPlayer.identity`.
 - Asset titles, tags, broad metadata, or a player appearing in scope can support catalog/search context but cannot bind a passer/receiver role by themselves.
 
-Because domain events and vector text are materialized into `app_assets.data.timeline[].domain` and `app_vectors`, policy changes require re-materializing affected assets. Full media extraction is not required when ASR/OCR/VLM/vision evidence is unchanged; rerun the `domain-index` retry stage, standalone `asset.domain-vlm.refine`, or an affected-index rebuild so domain JSON, text vectors, and tracking records are regenerated from the current policy.
+Because domain events, summaries, and vector text are materialized into `app_assets.data.timeline[]` and `app_vectors`, policy changes require re-materializing affected assets. Full media extraction is not required when ASR/OCR/VLM/vision evidence is unchanged; rerun the `domain-index` retry stage, standalone `asset.domain-vlm.refine`, or an affected-index rebuild so domain JSON, summaries, text vectors, and tracking records are regenerated from the current policy.
 
 Text vector query flow:
 
@@ -1172,7 +1183,7 @@ The frontend exposes this contract in two places:
 
 ### Sports Identity Resolution
 
-`server/domainIndex/matchIdentityResolver.ts` runs after domain event construction and optional domain VLM refinement, before text embeddings and vector upsert. It keeps generic video evidence separate from sports identity decisions.
+`server/domainIndex/matchIdentityResolver.ts` runs after domain event construction and optional domain VLM refinement, before extractive summaries, text embeddings, and vector upsert. It keeps generic video evidence separate from sports identity decisions.
 
 The resolver supports multiple context ranges inside one edited asset:
 
@@ -1234,6 +1245,7 @@ Earlier local JSON stores are no longer a runtime fallback. They are only read b
 - `app_assets`
 - `app_jobs`
 - `app_ask_operations`
+- `app_queue_outbox`
 - `app_webhooks`
 - `app_events`
 - `app_users`
