@@ -15,6 +15,7 @@ import { buildSearchAssistantAnswer } from "../src/searchTrust";
 import { applyExtractiveVideoSummaries } from "../server/intelligenceCore/extractiveSummary";
 import { segmentToEmbeddingText } from "../server/localEmbeddingRuntime";
 import { mergeVlmResponse } from "../server/vlm/domainMapper";
+import { buildDomainSegmentIndex } from "../server/domainIndex/domainTimeline";
 import type { AssetRecord, DomainEvent, DomainQueryPlan, IndexRecord, StructuredKnowledgeAnswer, TimelineSegment } from "../shared/types";
 
 test("planned semantic query is used as the lexical retrieval anchor", () => {
@@ -282,7 +283,7 @@ test("generic business goal language is not forced into a related-knowledge rout
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "moment_retrieval");
-  assert.equal(plan.knowledgeMode, "none");
+  assert.equal(plan.relatedKnowledgeMode, "none");
   assert.deepEqual(plan.domainFilters, {});
 });
 
@@ -292,7 +293,7 @@ test("generic clothing question is planned as a grounded video answer", () => {
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "grounded_answer");
-  assert.equal(plan.knowledgeMode, "none");
+  assert.equal(plan.relatedKnowledgeMode, "none");
   assert.equal(orchestration.mode, "analysis");
   assert.equal(orchestration.analysis.required, true);
 });
@@ -313,7 +314,7 @@ test("OpenAI generic route can override related-knowledge false positives", asyn
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "none",
+      relatedKnowledgeMode: "none",
       semanticQuery: "business objective video",
       retrieval: {
         textQuery: "business objective discussion",
@@ -328,7 +329,7 @@ test("OpenAI generic route can override related-knowledge false positives", asyn
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "moment_retrieval");
-  assert.equal(plan.knowledgeMode, "none");
+  assert.equal(plan.relatedKnowledgeMode, "none");
   assert.deepEqual(plan.domainFilters, {});
   assert.equal(plan.semanticQuery, "business objective video");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["business objective"]);
@@ -339,7 +340,7 @@ test("OpenAI visible text plans carry literal OCR constraints separately from so
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "none",
+      relatedKnowledgeMode: "none",
       semanticQuery: "Find a scene where the Korean text '미소' appears on screen.",
       retrieval: {
         textQuery: "미소 Korean text on screen OCR subtitle sign logo",
@@ -361,7 +362,7 @@ test("OpenAI spoken phrase plans carry literal speech constraints separately fro
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "none",
+      relatedKnowledgeMode: "none",
       semanticQuery: "scene where someone says thank you",
       retrieval: {
         textQuery: "고마워 thank you spoken dialogue",
@@ -383,7 +384,7 @@ test("VLM planner is used when OpenAI planning fails", async () => {
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "none",
+      relatedKnowledgeMode: "none",
       semanticQuery: "Find a scene where the Korean text '테스트미소' appears on screen.",
       retrieval: {
         textQuery: "테스트미소 Korean text on screen OCR subtitle logo",
@@ -407,7 +408,7 @@ test("VLM fallback planner preserves structured participant direction", async ()
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
       player: "Son Heung-min",
       eventType: "pass_receive",
       role: null,
@@ -473,7 +474,7 @@ test("OpenAI unsupported grounded video answer is normalized to asset evidence",
     {
       route: "unsupported",
       responseMode: "grounded_answer",
-      knowledgeMode: "none",
+      relatedKnowledgeMode: "none",
       semanticQuery: "man's clothing style",
       retrieval: {
         textQuery: "man's clothing outfit style",
@@ -488,7 +489,7 @@ test("OpenAI unsupported grounded video answer is normalized to asset evidence",
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "grounded_answer");
-  assert.equal(plan.knowledgeMode, "none");
+  assert.equal(plan.relatedKnowledgeMode, "none");
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["남자", "옷", "스타일", "man", "clothing", "outfit"]);
 });
 
@@ -519,7 +520,7 @@ test("non-structured knowledge evidence plans are normalized to asset retrieval"
     {
       route: "knowledge_evidence",
       responseMode: "analysis",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "grounding",
       analysisSubject: "Son Heung-min",
       semanticQuery: "Analyze Son Heung-min playing style from indexed video evidence.",
       retrieval: {
@@ -535,7 +536,7 @@ test("non-structured knowledge evidence plans are normalized to asset retrieval"
 
   assert.equal(plan.route, "asset_evidence");
   assert.equal(plan.responseMode, "analysis");
-  assert.equal(plan.knowledgeMode, "grounding");
+  assert.equal(plan.relatedKnowledgeMode, "grounding");
   assert.match(plan.warnings.join(" "), /Normalized non-structured knowledge route/);
 });
 
@@ -544,7 +545,7 @@ test("OpenAI stat plans use statMode and filterEvidence instead of query leaderb
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "grounding",
       metric: "goals",
       statMode: "leaderboard",
       competition: "Premier League",
@@ -563,7 +564,7 @@ test("OpenAI stat plans use statMode and filterEvidence instead of query leaderb
 
   assert.equal(plan.route, "knowledge_evidence");
   assert.equal(plan.responseMode, "structured_answer");
-  assert.equal(plan.knowledgeMode, "direct_answer");
+  assert.equal(plan.relatedKnowledgeMode, "direct_answer");
   assert.equal(plan.intent.metric, "goals");
   assert.equal(plan.intent.statMode, "leaderboard");
   assert.deepEqual(plan.domainFilters, { competition: "Premier League", season: "2025-26" });
@@ -574,7 +575,7 @@ test("OpenAI stat moment plans become explicit knowledge-seeded retrieval routes
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "grounding",
       metric: "goals",
       statMode: "leaderboard",
       competition: "Premier League",
@@ -598,7 +599,7 @@ test("OpenAI stat moment plans become explicit knowledge-seeded retrieval routes
 
   assert.equal(plan.route, "knowledge_seeded_asset_evidence");
   assert.equal(plan.responseMode, "moment_retrieval");
-  assert.equal(plan.knowledgeMode, "grounding");
+  assert.equal(plan.relatedKnowledgeMode, "grounding");
   assert.equal(plan.intent.metric, "goals");
   assert.equal(plan.intent.statMode, "leaderboard");
 });
@@ -608,7 +609,7 @@ test("planner-provided pass participant roles are preserved as structured filter
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
       player: "Son Heung-min",
       eventType: "pass_receive",
       role: null,
@@ -645,12 +646,51 @@ test("planner-provided pass participant roles are preserved as structured filter
   assert.doesNotMatch(plan.warnings.join(" "), /Normalized directional pass role/);
 });
 
+test("participant filters remain active for indexed asset evidence without knowledge grounding", async () => {
+  const plan = await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      relatedKnowledgeMode: "none",
+      player: "Son Heung-min",
+      participants: [
+        {
+          entity: "Son Heung-min",
+          relation: "action_source",
+          role: "passer",
+          eventType: "pass_receive",
+          evidence: ["The named player initiates the pass action."]
+        }
+      ],
+      semanticQuery: "Son Heung-min passing the ball to another player",
+      retrieval: {
+        textQuery: "Son Heung-min pass to another player football",
+        visualQuery: "football player passing the ball to teammate",
+        evidenceTerms: ["손흥민", "son heung-min", "pass", "패스"]
+      },
+      filterEvidence: {
+        player: ["손흥민"],
+        eventType: ["model inferred pass event"]
+      },
+      confidence: 0.82,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("손흥민이 다른 선수에게 공을 패스하는 장면")
+  );
+
+  assert.equal(plan.relatedKnowledgeMode, "none");
+  assert.equal(plan.domainFilters.player, "Son Heung-min");
+  assert.equal(plan.domainFilters.eventType, "pass_receive");
+  assert.equal(plan.domainFilters.role, "passer");
+  assert.equal(plan.intent.role, "passer");
+});
+
 test("top-level planner roles are ignored unless backed by structured participants", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
       player: "Son Heung-min",
       eventType: "pass_receive",
       role: "passer",
@@ -683,7 +723,7 @@ test("participant constraints without evidence are not promoted into filters", a
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
       player: "Son Heung-min",
       participants: [
         {
@@ -720,7 +760,7 @@ test("knowledge-seeded retrieval resolves the stat subject before building momen
     ...queryPlanForBirthday(),
     route: "knowledge_seeded_asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+    relatedKnowledgeMode: "grounding",
     domainFilters: {
       competition: "Premier League",
       season: "2025-26"
@@ -776,7 +816,7 @@ test("planner-inferred filters without filterEvidence are rejected", async () =>
     {
       route: "asset_evidence",
       responseMode: "moment_retrieval",
-      knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
       competition: "Premier League",
       player: "Son Heung-min",
       semanticQuery: "sports video moment",
@@ -874,7 +914,7 @@ test("unstructured event text is weak event evidence only when structured event 
     ...queryPlanForBirthday(),
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+    relatedKnowledgeMode: "none",
     domainFilters: {
       eventType: "shot"
     },
@@ -915,12 +955,12 @@ test("unstructured event text is weak event evidence only when structured event 
   assert.deepEqual(conflictChecks.map((check) => check.status), ["fail"]);
 });
 
-test("passer role searches reject moments where the named player is only the receiver", () => {
+test("passer role searches reject moments where the named player is not the structured passer", () => {
   const queryPlan: DomainQueryPlan = {
     ...queryPlanForBirthday(),
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+      relatedKnowledgeMode: "none",
     rewrittenQuery: "player=Son Heung-min · role=passer · event=pass_receive",
     domainFilters: {
       player: "Son Heung-min",
@@ -951,19 +991,76 @@ test("passer role searches reject moments where the named player is only the rec
     }),
     [footballPassEvent({ passingPlayer: "Son Heung-min", receivingPlayer: "Dejan Kulusevski" })]
   );
-  const asset = assetWithSegments([sonReceiver, sonPasser]);
+  const unnamedPassEvent = footballPassEvent({ passingPlayer: "Unknown Player", receivingPlayer: "Unknown Receiver" });
+  const unnamedPasser = withDomainEvents(
+    segment({
+      id: "unnamed-passer",
+      transcript: "Son Heung-min is mentioned by commentary as an unnamed player passes to a teammate.",
+      embedding: [0, 1]
+    }),
+    [
+      {
+        ...unnamedPassEvent,
+        caption: "An unnamed player passes to a teammate.",
+        football: {
+          ...unnamedPassEvent.football!,
+          passingPlayer: {
+            ...unnamedPassEvent.football!.passingPlayer,
+            identity: null
+          },
+          receivingPlayer: {
+            ...unnamedPassEvent.football!.receivingPlayer,
+            identity: null
+          }
+        }
+      }
+    ]
+  );
+  const asset = assetWithSegments([sonReceiver, unnamedPasser, sonPasser]);
   const results = searchAssets([asset], [indexRecord()], "손흥민이 다른선수한테 공을 패스해주는 영상 찾아줘", {
     queryPlan,
     domainFilters: queryPlan.domainFilters,
     queryVector: [1, 0]
   });
   const rejectedChecks = buildVerificationChecks(asset, sonReceiver, queryPlan.domainFilters);
+  const unboundChecks = buildVerificationChecks(asset, unnamedPasser, queryPlan.domainFilters);
 
   assert.equal(evaluateSegmentDomainFilters(asset, sonReceiver, queryPlan.domainFilters).accepted, false);
+  assert.equal(evaluateSegmentDomainFilters(asset, unnamedPasser, queryPlan.domainFilters).accepted, false);
   assert.equal(results.length, 1);
   assert.deepEqual(results[0]?.segments.map((item) => item.id), ["son-passer"]);
   assert.equal(results[0]?.clips[0]?.player, "Son Heung-min");
   assert.equal(rejectedChecks.find((check) => check.constraint === "player")?.status, "fail");
+  assert.equal(unboundChecks.find((check) => check.constraint === "player")?.status, "fail");
+});
+
+test("heuristic football indexing binds segment-local pass source text to passer identity", () => {
+  const source = segment({
+    id: "son-cutback-source",
+    transcript: "Son Heung-min cutback into the box.",
+    embedding: [0, 1]
+  });
+  const domain = buildDomainSegmentIndex(assetWithSegments([source]), knowledgeIndexRecord(), source);
+  const event = domain?.events[0];
+
+  assert.equal(event?.eventType, "pass_receive");
+  assert.equal(event?.football?.passType, "cutback");
+  assert.equal(event?.football?.passingPlayer.identity?.name, "Son Heung-min");
+  assert.equal(event?.football?.receivingPlayer.identity, null);
+});
+
+test("heuristic football indexing keeps receive text bound to receiver identity", () => {
+  const source = segment({
+    id: "son-receive-source",
+    transcript: "Football moment: Son Heung-min receives in the box.",
+    embedding: [0, 1]
+  });
+  const domain = buildDomainSegmentIndex(assetWithSegments([source]), knowledgeIndexRecord(), source);
+  const event = domain?.events[0];
+
+  assert.equal(event?.eventType, "pass_receive");
+  assert.equal(event?.football?.receivingPlayer.identity?.name, "Son Heung-min");
+  assert.equal(event?.football?.passingPlayer.identity, null);
 });
 
 test("VLM football refinement records named passers as action-source role evidence", () => {
@@ -1225,7 +1322,7 @@ test("empty related-knowledge Korean answer keeps constraint guidance", () => {
     ...queryPlanForBirthday(),
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+      relatedKnowledgeMode: "grounding",
     domainFilters: {
       player: "Son Heung-min"
     },
@@ -1283,7 +1380,7 @@ test("sports direct answers use planner player and statMode instead of original 
     originalQuery: "이 기록 알려줘",
     route: "knowledge_evidence",
     responseMode: "structured_answer",
-    knowledgeMode: "direct_answer",
+    relatedKnowledgeMode: "direct_answer",
     domainFilters: {
       competition: "Premier League",
       player: "Son Heung-min"
@@ -1310,7 +1407,7 @@ test("sports leaderboard answers require planner statMode", () => {
     originalQuery: "득점 1위 알려줘",
     route: "knowledge_evidence",
     responseMode: "structured_answer",
-    knowledgeMode: "direct_answer",
+    relatedKnowledgeMode: "direct_answer",
     domainFilters: {
       competition: "Premier League"
     },
@@ -1345,7 +1442,7 @@ test("orchestration uses identity and scope only when related knowledge is activ
     ...queryPlanForBirthday(),
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+    relatedKnowledgeMode: "grounding",
     intent: {
       ...queryPlanForBirthday().intent,
       domain: "sports.football",
@@ -1366,7 +1463,7 @@ function queryPlanForBirthday(): DomainQueryPlan {
   return {
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     originalQuery: "생일 축하 장면 찾아줘",
     rewrittenQuery: "Find the birthday celebration scene or birthday wish moment in the video.",
     semanticQuery: "Find the birthday celebration scene or birthday wish moment in the video.",
@@ -1399,7 +1496,7 @@ function queryPlanForRing(): DomainQueryPlan {
   return {
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     originalQuery: "반지 나오는 장면 찾아줘",
     rewrittenQuery: "Find the scene where a ring appears or is shown.",
     semanticQuery: "Find the scene where a ring appears or is shown.",
@@ -1432,7 +1529,7 @@ function queryPlanForKoreanVisibleText(): DomainQueryPlan {
   return {
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     originalQuery: "미소라는 한글이 노출된 장면 찾아줘",
     rewrittenQuery: "Find a scene where the Korean text '미소' appears on screen.",
     semanticQuery: "Find a scene where the Korean text '미소' appears on screen.",
@@ -1466,7 +1563,7 @@ function queryPlanForSpokenThanks(): DomainQueryPlan {
   return {
     route: "asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     originalQuery: "고마워 라고 말하는 장면 찾아줘",
     rewrittenQuery: "Find a scene where someone says thank you.",
     semanticQuery: "scene where someone says thank you",
@@ -1500,7 +1597,7 @@ function queryPlanForPlayStyleAnalysis(): DomainQueryPlan {
   return {
     route: "asset_evidence",
     responseMode: "analysis",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     originalQuery: "영상 기준 손흥민의 플레이 스타일을 분석해줘",
     rewrittenQuery: "Analyze Son Heung-min's playing style from the selected video evidence.",
     semanticQuery: "Analyze Son Heung-min's playing style from the selected video evidence.",

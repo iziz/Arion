@@ -117,9 +117,9 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     domainFilters,
     route: routePlan.route,
     responseMode: routePlan.responseMode,
-    knowledgeMode: routePlan.knowledgeMode,
+    relatedKnowledgeMode: routePlan.relatedKnowledgeMode,
     intent: {
-      domain: routePlan.knowledgeMode !== "none" && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
+      domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
       questionType: routePlan.responseMode,
       metric: routePlan.responseMode === "structured_answer" ? statMetric : null,
       eventType: domainFilters.eventType ?? null,
@@ -138,20 +138,20 @@ function inferQueryRoute(
   statQuestion: boolean,
   domainFilters: DomainSearchFilters,
   playerInventory: boolean
-): Pick<DomainQueryPlan, "route" | "responseMode" | "knowledgeMode"> {
-  if (statQuestion) return { route: "knowledge_evidence", responseMode: "structured_answer", knowledgeMode: "direct_answer" };
-  if (playerInventory) return { route: "asset_catalog", responseMode: "asset_lookup", knowledgeMode: "none" };
+): Pick<DomainQueryPlan, "route" | "responseMode" | "relatedKnowledgeMode"> {
+  if (statQuestion) return { route: "knowledge_evidence", responseMode: "structured_answer", relatedKnowledgeMode: "direct_answer" };
+  if (playerInventory) return { route: "asset_catalog", responseMode: "asset_lookup", relatedKnowledgeMode: "none" };
   const hasDomainFilters = hasDomainFilterEvidence(domainFilters);
   if (hasDomainFilters) {
     return {
       route: "asset_evidence",
       responseMode: isAnalysisQuery(query) ? "analysis" : isSummaryQuery(query) ? "summary" : isGroundedAnswerQuery(query) ? "grounded_answer" : "moment_retrieval",
-      knowledgeMode: "grounding"
+      relatedKnowledgeMode: "none"
     };
   }
-  if (isSummaryQuery(query)) return { route: "asset_evidence", responseMode: "summary", knowledgeMode: "none" };
-  if (isGroundedAnswerQuery(query)) return { route: "asset_evidence", responseMode: "grounded_answer", knowledgeMode: "none" };
-  return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "none" };
+  if (isSummaryQuery(query)) return { route: "asset_evidence", responseMode: "summary", relatedKnowledgeMode: "none" };
+  if (isGroundedAnswerQuery(query)) return { route: "asset_evidence", responseMode: "grounded_answer", relatedKnowledgeMode: "none" };
+  return { route: "asset_evidence", responseMode: "moment_retrieval", relatedKnowledgeMode: "none" };
 }
 
 function hasDomainFilterEvidence(filters: DomainSearchFilters) {

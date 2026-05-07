@@ -775,7 +775,7 @@ export type ResponseMode =
   | "structured_answer"
   | "asset_lookup";
 
-export type KnowledgeMode = "none" | "grounding" | "direct_answer";
+export type RelatedKnowledgeMode = "none" | "grounding" | "direct_answer";
 
 export type DomainQueryFilterEvidence = Partial<Record<keyof DomainSearchFilters | "analysisSubject" | "statMode", string[]>>;
 
@@ -793,7 +793,7 @@ export type DomainQueryPlan = {
   domainFilters: DomainSearchFilters;
   route: QueryRoute;
   responseMode: ResponseMode;
-  knowledgeMode: KnowledgeMode;
+  relatedKnowledgeMode: RelatedKnowledgeMode;
   intent: {
     domain: string | null;
     questionType?: "moment_retrieval" | "grounded_answer" | "summary" | "analysis" | "structured_answer" | "asset_lookup";

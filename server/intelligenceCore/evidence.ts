@@ -213,6 +213,8 @@ export function evaluateSegmentDomainFilters(asset: AssetRecord, segment: Timeli
       trust("player");
     } else if (role && hasRoleSpecificPlayerConflict(segment, filters.player, role)) {
       fail("player");
+    } else if (role) {
+      fail("player");
     } else if (!role && hasTrustedPlayerIdentity(segment, filters.player)) {
       trust("player");
     } else if (textAllowsFilter(fullSegmentText, filters.player)) {
@@ -531,6 +533,16 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
         status: "fail",
         confidence: 0,
         evidence: roleConflict.evidence
+      });
+    } else if (role) {
+      checks.push({
+        segmentId: segment.id,
+        constraint: "player",
+        expected: `${filters.player} as ${role}`,
+        observed: "missing role-bound identity",
+        status: "fail",
+        confidence: 0,
+        evidence: ["No structured role-bound player identity for this query."]
       });
     } else {
       const identities = events
@@ -876,7 +888,7 @@ function buildLexicalMatchSources(asset: AssetRecord, segment: TimelineSegment) 
 }
 
 function shouldIncludeSportsVisionReasons(filters?: DomainSearchFilters, queryPlan?: DomainQueryPlan) {
-  if (queryPlan?.knowledgeMode !== "none") {
+  if (queryPlan?.relatedKnowledgeMode !== "none") {
     return true;
   }
   return Boolean(filters && (filters.competition || filters.season || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role));

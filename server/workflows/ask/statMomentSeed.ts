@@ -20,10 +20,10 @@ export function applyScopeDomainDefaults(
 }
 
 export function isKnowledgeSeededMomentPlan(queryPlan: DomainQueryPlan) {
-  return (
+ return (
     queryPlan.route === "knowledge_seeded_asset_evidence" &&
     queryPlan.responseMode === "moment_retrieval" &&
-    queryPlan.knowledgeMode === "grounding" &&
+    queryPlan.relatedKnowledgeMode === "grounding" &&
     Boolean(queryPlan.intent.metric) &&
     queryPlan.intent.statMode === "leaderboard"
   );
@@ -43,7 +43,7 @@ export function buildStatSeedKnowledgePlan(queryPlan: DomainQueryPlan): DomainQu
     domainFilters,
     route: "knowledge_evidence",
     responseMode: "structured_answer",
-    knowledgeMode: "direct_answer",
+    relatedKnowledgeMode: "direct_answer",
     intent: {
       ...queryPlan.intent,
       questionType: "structured_answer",
@@ -108,7 +108,7 @@ export function buildStatSeededMomentPlan(queryPlan: DomainQueryPlan, knowledgeA
     domainFilters,
     route: "knowledge_seeded_asset_evidence",
     responseMode: "moment_retrieval",
-    knowledgeMode: "grounding",
+    relatedKnowledgeMode: "grounding",
     intent: {
       ...queryPlan.intent,
       domain: domainFromFilters(domainFilters),

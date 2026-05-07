@@ -39,6 +39,11 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
   const passerPresent = passType !== "unknown";
   const ballState = eventRule?.rule.label.endsWith("shot") || classifier?.label === "shot" ? "shot" : passType !== "unknown" ? "pass_travel" : "unknown";
   const playerIdentity = inferPlayerIdentity(asset, segment);
+  const roleIdentity = playerIdentity && isSegmentLocalIdentity(playerIdentity) ? playerIdentity : null;
+  const receiveCue = eventRule ? eventTypeFromLabel(eventRule.rule.label) === "pass_receive" : false;
+  const passSourceCue = Boolean(passRule && !receiveCue);
+  const passingIdentity = passerPresent && passSourceCue ? roleIdentity : null;
+  const receivingIdentity = receiverPresent && !passSourceCue ? roleIdentity : null;
   const evidenceAsr = snippets(segment.sceneData?.text.speech || segment.transcript);
   const evidenceOcr = [
     ...(segment.sceneData?.text.subtitles ?? []),
@@ -80,6 +85,7 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
     passType !== "unknown" ? `pass.${passType}` : "",
     fieldZone !== "unknown" ? `zone.${fieldZone}` : "",
     receiverPresent ? "role.receiver" : "",
+    passerPresent ? "role.passer" : "",
     playerIdentity ? `player.${normalizeLabel(playerIdentity.name)}` : "",
     classifier && classifier.label !== "unknown" ? `classifier.${classifier.label}` : "",
     ballState !== "unknown" ? `ball.${ballState}` : "",
@@ -123,14 +129,14 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
         confidence: receiverPresent ? confidenceFromSignals(confidence, eventRule ? 0.15 : -0.1) : 0,
         trackId: visual?.tracking?.nearestPlayerTrackId ?? null,
         trackingStatus: receiverPresent && visual?.objects.players.status === "detected" ? "detected" : receiverPresent && visual?.objects.players.status === "estimated" ? "estimated" : "not_configured",
-        identity: receiverPresent ? playerIdentity : null
+        identity: receivingIdentity
       },
       passingPlayer: {
         present: passerPresent,
         confidence: passerPresent ? confidenceFromSignals(confidence, 0) : 0,
         trackId: visual?.tracking?.nearestPlayerTrackId ?? null,
         trackingStatus: passerPresent && visual?.objects.players.status === "detected" ? "detected" : passerPresent && visual?.objects.players.status === "estimated" ? "estimated" : "not_configured",
-        identity: passerPresent && !receiverPresent ? playerIdentity : null
+        identity: passingIdentity
       },
       ball: {
         state: ballState,
@@ -160,6 +166,10 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
       ]
     }
   };
+}
+
+function isSegmentLocalIdentity(identity: NonNullable<ReturnType<typeof inferPlayerIdentity>>) {
+  return identity.source === "asr" || identity.source === "ocr" || identity.source === "vlm";
 }
 
 function inferFieldZone(normalized: string, explicitLabel: string | undefined, passType: NonNullable<DomainEvent["football"]>["passType"]) {

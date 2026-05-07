@@ -6,7 +6,7 @@ import { planQueryWithVlmWorker } from "./vlmWorkerClient";
 type ModelQueryPlan = {
   route?: string;
   responseMode?: string;
-  knowledgeMode?: string;
+  relatedKnowledgeMode?: string;
   questionType?: "moment_retrieval" | "stat_qa";
   metric?: DomainQueryPlan["intent"]["metric"];
   statMode?: DomainQueryPlan["intent"]["statMode"];
@@ -51,7 +51,7 @@ const allowedResponseModes = new Set<DomainQueryPlan["responseMode"]>([
   "structured_answer",
   "asset_lookup"
 ]);
-const allowedKnowledgeModes = new Set<DomainQueryPlan["knowledgeMode"]>(["none", "grounding", "direct_answer"]);
+const allowedRelatedKnowledgeModes = new Set<DomainQueryPlan["relatedKnowledgeMode"]>(["none", "grounding", "direct_answer"]);
 const allowedMetrics = new Set([
   "goals",
   "assists",
@@ -148,7 +148,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 "Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering a question from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for structured related-knowledge facts, asset_lookup for catalog queries.",
                 "Questions asking what appears in the selected video, what a person/object looks like, what someone is wearing, or asking describe/explain/what/which/how about visible video content are asset_evidence + grounded_answer + none. Low confidence or incomplete evidence is not unsupported; retrieval should run and the answer can report evidence gaps.",
                 "Use unsupported only for requests that cannot be answered from indexed asset evidence or selected related knowledge at all, such as external current events, web lookup, weather, or unrelated general knowledge. Invalid combinations include unsupported + grounded_answer, unsupported + summary, and unsupported + analysis.",
-                "Choose knowledgeMode by how related knowledge is used: none, grounding, or direct_answer. Extract structured constraints only when supported by the selected related-knowledge context or explicit wording, and do not invent statistics or facts.",
+                "Choose relatedKnowledgeMode only by how selected related knowledge is used: none, grounding, or direct_answer. Domain filters are structured asset-evidence constraints and may be used with relatedKnowledgeMode=none when supported by explicit wording, participant semantics, caller filters, or selected related-knowledge context. Do not invent statistics or facts.",
                 "For sports statistics, set statMode to leaderboard when the user asks for the top/ranking/leader, player_total when the user asks for a specific player's total, otherwise null. Do not rely on route alone to imply this.",
                 "For analysis questions, set analysisSubject to the normalized subject being analyzed when the user names one. For example, a player, team, object, or person visible in the requested video evidence.",
                 "When the user asks for a named entity participating in an action, use participants to preserve semantic direction. relation=action_source means the entity initiates the action, relation=action_target means the entity receives or is targeted by the action, subject means the entity is only the topic. Set a concrete role only when the role follows from that semantic direction and the action; otherwise use any or null. Do not derive participant roles from language-specific keyword rules.",
@@ -170,7 +170,7 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
               outputShape: {
                 route: "asset_evidence | knowledge_seeded_asset_evidence | knowledge_evidence | asset_catalog | unsupported",
                 responseMode: "moment_retrieval | grounded_answer | summary | analysis | structured_answer | asset_lookup",
-                knowledgeMode: "none | grounding | direct_answer",
+                relatedKnowledgeMode: "none | grounding | direct_answer",
                 metric: "goals | assists | appearances | minutes | cards | points | touchdowns | passing_yards | passing_touchdowns | rushing_yards | receiving_yards | sacks | interceptions | null",
                 statMode: "leaderboard | player_total | null",
                 analysisSubject: "normalized subject for analysis | null",
@@ -290,14 +290,14 @@ function mergeModelPlan(
     legacyPlan?.responseMode ??
     responseModeFromLegacyQuestionType(llm.questionType, metric) ??
     defaultResponseModeForRoute(route);
-  let knowledgeMode =
-    (allowedValue(llm.knowledgeMode, allowedKnowledgeModes) as DomainQueryPlan["knowledgeMode"] | undefined) ??
-    legacyPlan?.knowledgeMode ??
-    defaultKnowledgeModeForRoute(route);
+  let relatedKnowledgeMode =
+    (allowedValue(llm.relatedKnowledgeMode, allowedRelatedKnowledgeModes) as DomainQueryPlan["relatedKnowledgeMode"] | undefined) ??
+    legacyPlan?.relatedKnowledgeMode ??
+    defaultRelatedKnowledgeModeForRoute(route);
   if (shouldPreserveAssetEvidencePlan(route, responseMode, llm)) {
     route = "asset_evidence";
     responseMode = responseMode === "summary" || responseMode === "analysis" || responseMode === "grounded_answer" ? responseMode : "moment_retrieval";
-    knowledgeMode = "none";
+    relatedKnowledgeMode = "none";
   }
   const statSeededRetrieval =
     route !== "unsupported" &&
@@ -307,32 +307,31 @@ function mergeModelPlan(
   if (statSeededRetrieval) {
     route = "knowledge_seeded_asset_evidence";
     responseMode = "moment_retrieval";
-    knowledgeMode = "grounding";
+    relatedKnowledgeMode = "grounding";
   }
   if (!statSeededRetrieval && route === "knowledge_evidence" && responseMode !== "structured_answer") {
     route = responseMode === "asset_lookup" ? "asset_catalog" : "asset_evidence";
-    knowledgeMode = knowledgeMode === "direct_answer" ? "grounding" : knowledgeMode;
+    relatedKnowledgeMode = relatedKnowledgeMode === "direct_answer" ? "grounding" : relatedKnowledgeMode;
     normalizationWarnings.push("Normalized non-structured knowledge route to an indexed asset route.");
   }
   if (!statSeededRetrieval && route !== "unsupported" && metric && statMode === "leaderboard") {
     route = "knowledge_evidence";
     responseMode = "structured_answer";
-    knowledgeMode = "direct_answer";
+    relatedKnowledgeMode = "direct_answer";
   }
-  if (route !== "unsupported" && hasActiveDomainFilters(explicit) && knowledgeMode === "none") {
+  if (route !== "unsupported" && hasActiveDomainFilters(explicit) && relatedKnowledgeMode === "none") {
     route = "asset_evidence";
     responseMode = responseMode === "asset_lookup" || responseMode === "structured_answer" ? "moment_retrieval" : responseMode;
-    knowledgeMode = "grounding";
   }
   if (route !== "unsupported" && responseMode === "structured_answer" && !metric && hasActiveDomainFilters({ ...base.domainFilters, ...llmFilters, ...explicit })) {
     route = "asset_evidence";
     responseMode = "moment_retrieval";
-    knowledgeMode = "grounding";
+    relatedKnowledgeMode = "none";
   }
   if (route !== "unsupported" && route !== "knowledge_evidence" && responseMode === "structured_answer" && !metric) {
     route = "asset_evidence";
     responseMode = "grounded_answer";
-    knowledgeMode = "none";
+    relatedKnowledgeMode = "none";
   }
   const rawDomainFilters = compactFilters(
     responseMode === "structured_answer"
@@ -345,11 +344,9 @@ function mergeModelPlan(
           fieldZone: undefined,
           role: undefined
         }
-      : knowledgeMode !== "none"
-        ? { ...base.domainFilters, ...llmFilters, ...explicit }
-        : { ...explicit }
+      : { ...base.domainFilters, ...llmFilters, ...explicit }
   );
-  const domainFilters = sanitizeInferredFilters(rawDomainFilters, responseMode, knowledgeMode, explicit, filterEvidence);
+  const domainFilters = sanitizeInferredFilters(rawDomainFilters, responseMode, explicit, filterEvidence);
   const semanticQuery = !llmRoute && !legacyPlan && hasActiveDomainFilters(base.domainFilters) && !hasActiveDomainFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
   const llmRequiredEvidence = sanitizeRequiredEvidence(llm.retrieval?.requiredEvidence ?? []);
   const retrieval = buildRetrievalPlan(base.originalQuery, semanticQuery, {
@@ -372,10 +369,10 @@ function mergeModelPlan(
     domainFilters,
     route,
     responseMode,
-    knowledgeMode,
+    relatedKnowledgeMode,
     intent: {
       ...base.intent,
-      domain: knowledgeMode !== "none" && Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
+      domain: Object.keys(domainFilters).length > 0 ? domainFromFilters(domainFilters) : null,
       questionType: responseMode,
       metric: responseMode === "structured_answer" || route === "knowledge_seeded_asset_evidence" ? metric : null,
       statMode: responseMode === "structured_answer" || route === "knowledge_seeded_asset_evidence" ? statMode : null,
@@ -400,11 +397,9 @@ function mergeModelPlan(
 function sanitizeInferredFilters(
   filters: DomainSearchFilters,
   responseMode: DomainQueryPlan["responseMode"],
-  knowledgeMode: DomainQueryPlan["knowledgeMode"],
   explicitFilters: DomainSearchFilters,
   filterEvidence: DomainQueryFilterEvidence
 ) {
-  if (knowledgeMode === "none") return filters;
   const next = { ...filters };
   if (!explicitFilters.season && !hasFilterEvidence(filterEvidence, "season")) delete next.season;
   if (!explicitFilters.fieldZone && !hasFilterEvidence(filterEvidence, "fieldZone")) delete next.fieldZone;
@@ -429,20 +424,20 @@ function responseModeFromLegacyQuestionType(questionType: ModelQueryPlan["questi
   return undefined;
 }
 
-function legacyRoutePlan(route: unknown): Pick<DomainQueryPlan, "route" | "responseMode" | "knowledgeMode"> | undefined {
+function legacyRoutePlan(route: unknown): Pick<DomainQueryPlan, "route" | "responseMode" | "relatedKnowledgeMode"> | undefined {
   switch (route) {
     case "video_summary":
-      return { route: "asset_evidence", responseMode: "summary", knowledgeMode: "none" };
+      return { route: "asset_evidence", responseMode: "summary", relatedKnowledgeMode: "none" };
     case "generic_video_qa":
-      return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "none" };
+      return { route: "asset_evidence", responseMode: "moment_retrieval", relatedKnowledgeMode: "none" };
     case "sports_moment_retrieval":
-      return { route: "asset_evidence", responseMode: "moment_retrieval", knowledgeMode: "grounding" };
+      return { route: "asset_evidence", responseMode: "moment_retrieval", relatedKnowledgeMode: "none" };
     case "sports_analysis":
-      return { route: "asset_evidence", responseMode: "analysis", knowledgeMode: "grounding" };
+      return { route: "asset_evidence", responseMode: "analysis", relatedKnowledgeMode: "none" };
     case "sports_stat_qa":
-      return { route: "knowledge_evidence", responseMode: "structured_answer", knowledgeMode: "direct_answer" };
+      return { route: "knowledge_evidence", responseMode: "structured_answer", relatedKnowledgeMode: "direct_answer" };
     case "asset_lookup":
-      return { route: "asset_catalog", responseMode: "asset_lookup", knowledgeMode: "none" };
+      return { route: "asset_catalog", responseMode: "asset_lookup", relatedKnowledgeMode: "none" };
     default:
       return undefined;
   }
@@ -697,7 +692,7 @@ function buildNeutralQueryPlan(query: string, explicitFilters: DomainSearchFilte
     domainFilters,
     route: "unsupported",
     responseMode: "structured_answer",
-    knowledgeMode: "none",
+    relatedKnowledgeMode: "none",
     intent: {
       domain: null,
       questionType: "structured_answer",
@@ -742,7 +737,7 @@ function defaultResponseModeForRoute(route: DomainQueryPlan["route"]): DomainQue
   }
 }
 
-function defaultKnowledgeModeForRoute(route: DomainQueryPlan["route"]): DomainQueryPlan["knowledgeMode"] {
+function defaultRelatedKnowledgeModeForRoute(route: DomainQueryPlan["route"]): DomainQueryPlan["relatedKnowledgeMode"] {
   switch (route) {
     case "knowledge_evidence":
       return "direct_answer";
@@ -759,7 +754,7 @@ function allowedPlannerValues() {
   return {
     route: Array.from(allowedRoutes),
     responseMode: Array.from(allowedResponseModes),
-    knowledgeMode: Array.from(allowedKnowledgeModes),
+    relatedKnowledgeMode: Array.from(allowedRelatedKnowledgeModes),
     legacyQuestionType: ["moment_retrieval", "stat_qa"],
     metric: Array.from(allowedMetrics),
     statMode: Array.from(allowedStatModes),

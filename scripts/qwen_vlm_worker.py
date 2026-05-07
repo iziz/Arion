@@ -313,6 +313,8 @@ def _build_messages(request: StructureRequest) -> list[dict[str, Any]]:
             "Set player name to null unless supported by visible shirt/name text, ASR/OCR text, metadata, or existing indexed domain text. "
             "For football passes, passingPlayer is the action source who releases or initiates the pass, and receivingPlayer is the action target who receives, controls, or is clearly targeted by the pass. "
             "Never swap passingPlayer and receivingPlayer to match a requested search term; these fields must describe the event evidence. "
+            "Keep role fields consistent with your own caption and evidence: if the caption or evidence names a player as the pass source, set football.passingPlayer.name to that same player; if it names a pass target or receiver, set football.receivingPlayer.name to that same player. "
+            "Do not leave a role name null while the caption names that role, and do not assign a role from a player name that is only present in the asset title or fixture metadata. "
             "When a pass target is visible or text-evidenced but unnamed, set receivingPlayer.present=true and name=null. "
             "Include short evidence strings for any named player role."
         ),
@@ -375,7 +377,7 @@ def _build_query_plan_messages(request: QueryPlanRequest) -> list[dict[str, Any]
     shape = (
         "{\"route\":\"asset_evidence|knowledge_seeded_asset_evidence|knowledge_evidence|asset_catalog|unsupported\","
         "\"responseMode\":\"moment_retrieval|grounded_answer|summary|analysis|structured_answer|asset_lookup\","
-        "\"knowledgeMode\":\"none|grounding|direct_answer\",\"metric\":null,"
+        "\"relatedKnowledgeMode\":\"none|grounding|direct_answer\",\"metric\":null,"
         "\"statMode\":\"leaderboard|player_total|null\",\"analysisSubject\":null,"
         "\"competition\":null,\"season\":null,\"player\":null,\"eventType\":null,"
         "\"passType\":null,\"fieldZone\":null,\"role\":null,\"semanticQuery\":\"...\","
@@ -399,6 +401,7 @@ def _build_query_plan_messages(request: QueryPlanRequest) -> list[dict[str, Any]
         "routingRules": [
             "Choose route by evidence source: asset_evidence for indexed video evidence, knowledge_seeded_asset_evidence when selected related knowledge must first resolve a ranking/stat subject before indexed video moment retrieval, knowledge_evidence for selected related knowledge direct answers, asset_catalog for asset/group lookup, unsupported only when neither source can answer.",
             "Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for related-knowledge facts, asset_lookup for catalog queries.",
+            "Choose relatedKnowledgeMode only by how selected related knowledge is used: none, grounding, or direct_answer. Domain filters are structured asset-evidence constraints and may be used with relatedKnowledgeMode=none when supported by explicit wording, participant semantics, caller filters, or selected related-knowledge context.",
             "For sports statistics, set statMode to leaderboard for top/ranking/leader questions, player_total for a specific player's total, otherwise null.",
             "For analysis questions, set analysisSubject to the normalized subject being analyzed when the user names one.",
             "Return filterEvidence for every inferred structured filter, statMode, or analysisSubject. Each value must be a short exact phrase or planner rationale. Caller explicitFilters do not need filterEvidence.",
@@ -474,7 +477,7 @@ def _normalize_query_plan_response(parsed: dict[str, Any], raw: str) -> dict[str
         "model": DEFAULT_MODEL,
         "route": _optional_text(parsed.get("route")),
         "responseMode": _optional_text(parsed.get("responseMode")),
-        "knowledgeMode": _optional_text(parsed.get("knowledgeMode")),
+        "relatedKnowledgeMode": _optional_text(parsed.get("relatedKnowledgeMode")),
         "questionType": _optional_text(parsed.get("questionType")),
         "metric": _optional_text(parsed.get("metric")),
         "statMode": _optional_text(parsed.get("statMode")),

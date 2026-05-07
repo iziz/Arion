@@ -52,7 +52,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       const plan = await planDomainQueryWithLlm(request.query, planningFilters);
       return {
         value: plan,
-        output: `${plan.route.replace(/_/g, " ")} · ${plan.responseMode.replace(/_/g, " ")} · ${plan.knowledgeMode.replace(/_/g, " ")} · ${Math.round(plan.confidence * 100)}%`
+        output: `${plan.route.replace(/_/g, " ")} · ${plan.responseMode.replace(/_/g, " ")} · ${plan.relatedKnowledgeMode.replace(/_/g, " ")} · ${Math.round(plan.confidence * 100)}%`
       };
     });
 
@@ -61,7 +61,7 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
     const knowledgeAnswer = shouldRunKnowledgeAnswer
       ? await runAskStep(entry, {
           id: "knowledge_answer",
-          label: "Knowledge answer",
+          label: "Related knowledge answer",
           owner: "knowledge",
           input: seedKnowledgePlan.rewrittenQuery
         }, async () => {
@@ -75,16 +75,16 @@ export async function runAskOperation(entry: AskOperationEntry, request: AskRequ
       : disabledStructuredKnowledgeAnswer(
           seedKnowledgePlan,
           request.useKnowledgeLayer
-            ? "Knowledge direct answer is skipped for this retrieval workflow."
-            : "Knowledge layer is disabled for this search.",
+            ? "Related knowledge direct answer is skipped for this retrieval workflow."
+            : "Related knowledge layer is disabled for this search.",
           request.useKnowledgeLayer
-            ? "Knowledge direct answer was skipped because the route is not a knowledge-answer route."
-            : "Knowledge layer was disabled by the selected search scope."
+            ? "Related knowledge direct answer was skipped because the route is not a related-knowledge answer route."
+            : "Related knowledge layer was disabled by the selected search scope."
         );
     if (!shouldRunKnowledgeAnswer && (isDirectKnowledgeAnswerPlan(queryPlan) || isKnowledgeSeededMomentPlan(queryPlan))) {
       skipAskStep(entry, {
         id: "knowledge_answer",
-        label: "Knowledge answer",
+        label: "Related knowledge answer",
         owner: "knowledge",
         input: seedKnowledgePlan.rewrittenQuery,
         output: request.useKnowledgeLayer ? "Skipped because this route does not need a direct knowledge answer." : "Disabled by selected search scope."

@@ -57,7 +57,7 @@ export function buildAskAnalysisAnswerContent(results: SearchResult[], queryPlan
   if (isGenericVideoSummaryRequest(queryPlan)) {
     return buildGenericVideoSummaryAnswer(results, queryPlan, topMoments, sourceProfile, korean);
   }
-  if (queryPlan.knowledgeMode === "none" && queryPlan.responseMode !== "analysis") {
+  if (queryPlan.relatedKnowledgeMode === "none" && queryPlan.responseMode !== "analysis") {
     return buildGenericGroundedAnswer(results, queryPlan, topMoments, sourceProfile, korean);
   }
   const features = collectMomentFeatures(results);

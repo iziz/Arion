@@ -17,7 +17,7 @@ Arion implements this as an application-layer orchestration system rather than a
 | --- | --- |
 | Marengo-style retrieval | Text/visual embeddings plus PostgreSQL/pgvector stores in `server/postgres/*VectorRepository.ts`, reached through `server/localVectorStore.ts` and `server/localVisualVectorStore.ts` |
 | Pegasus-style generation | Local grounded analysis generator in `server/analysisGenerator.ts` and pattern aggregation in `server/intelligence.ts` |
-| Domain knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
+| Related knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
 | Query orchestrator | `/api/ask` operation pipeline in `server/workflows/ask/*`, model-backed planning in `server/llmQueryPlanner.ts`, and decision plans in `server/orchestrator.ts` |
 | Domain event indexing | `server/domainIndex/*` football and American-football event builders, plus `server/domainIndex/matchIdentityResolver.ts` for sports context and identity resolution |
 | Optional visual and planning model | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` for video/domain reasoning and `/plan/query` fallback |

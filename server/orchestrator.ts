@@ -78,13 +78,13 @@ function inferMode(queryPlan: DomainQueryPlan): OrchestrationPlan["mode"] {
 }
 
 function retrievalEngineForRoute(queryPlan: DomainQueryPlan): OrchestrationPlan["retrieval"]["engine"] {
-  if (queryPlan.knowledgeMode === "direct_answer") return "structured_domain";
-  if (queryPlan.knowledgeMode === "grounding") return "hybrid";
+  if (queryPlan.relatedKnowledgeMode === "direct_answer") return "structured_domain";
+  if (queryPlan.relatedKnowledgeMode === "grounding") return "hybrid";
   return "semantic_retrieval";
 }
 
 function shouldUseRelatedKnowledgeWorkflow(queryPlan: DomainQueryPlan, indexes: IndexRecord[], assets: AssetRecord[]) {
-  if (queryPlan.knowledgeMode === "none") return false;
+  if (queryPlan.relatedKnowledgeMode === "none") return false;
   return scopedDomainIndexes(queryPlan, indexes, assets).length > 0;
 }
 
@@ -220,10 +220,10 @@ function buildGenerationStep(mode: OrchestrationPlan["mode"]): OrchestrationPlan
 }
 
 function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["steps"][number] {
-  if (queryPlan.knowledgeMode === "none") {
+  if (queryPlan.relatedKnowledgeMode === "none") {
     return {
       id: "ground",
-      label: "Knowledge grounding",
+      label: "Related knowledge grounding",
       owner: "knowledge",
       action: "Skip related knowledge grounding and keep retrieval scoped to indexed video evidence.",
       input: queryPlan.rewrittenQuery,
@@ -234,7 +234,7 @@ function buildGroundingStep(queryPlan: DomainQueryPlan): OrchestrationPlan["step
   }
   return {
     id: "ground",
-    label: "Knowledge grounding",
+    label: "Related knowledge grounding",
     owner: "knowledge",
     action: "Fetch structured roster, player profile, competition, and video-scope evidence before moment retrieval.",
     input: queryPlan.rewrittenQuery,
@@ -375,7 +375,7 @@ function buildScopeDecision(queryPlan: DomainQueryPlan, coverage: { competition:
 }
 
 function buildRouteDecision(mode: OrchestrationPlan["mode"], indexes: IndexRecord[], assets: AssetRecord[], queryPlan: DomainQueryPlan): OrchestrationPlan["decisions"][number] {
-  if (queryPlan.knowledgeMode === "none") {
+  if (queryPlan.relatedKnowledgeMode === "none") {
     return {
       id: "route",
       label: "Route",

@@ -45,10 +45,21 @@ export async function executeSearchPipeline({
   const assetScopeIndexId = assetId ? scopedAssets[0]?.indexId : undefined;
   const vectorScopeIndexId = resolveVectorScopeIndexId(indexes, indexId ?? assetScopeIndexId, domainGroup);
   const relatedKnowledgeSourceId = resolveRelatedKnowledgeSourceId(indexes, indexId ?? assetScopeIndexId, domainGroup);
+  const relatedKnowledgeMode = queryPlan.relatedKnowledgeMode;
   const useRelatedKnowledgeLayer = Boolean(useKnowledgeLayer && shouldUseRelatedKnowledgeLayer(queryPlan, indexes, indexId ?? assetScopeIndexId, domainGroup));
+  const knowledgeSkipSummary = !useKnowledgeLayer
+    ? "Related knowledge layer disabled by selected search scope."
+    : relatedKnowledgeMode === "none"
+      ? "Related knowledge grounding skipped because the query plan uses indexed asset evidence only."
+      : "Related knowledge grounding skipped because the selected scope has no active matching related knowledge.";
+  const knowledgeSkipOutput = !useKnowledgeLayer
+    ? "Disabled by selected search scope."
+    : relatedKnowledgeMode === "none"
+      ? "Skipped because relatedKnowledgeMode=none."
+      : "Skipped because no matching related knowledge is active.";
   const groundedQuery = await runOptionalAskStep(askEntry, {
     id: "ground",
-    label: "Knowledge grounding",
+    label: "Related knowledge grounding",
     owner: "knowledge",
     input: queryPlan.rewrittenQuery
   }, async () => {
@@ -58,11 +69,9 @@ export async function executeSearchPipeline({
           filters: queryPlan.domainFilters,
           semanticQuery: queryPlan.semanticQuery,
           evidence: [],
-          evidenceSummary: useKnowledgeLayer
-            ? "Knowledge grounding skipped because the selected scope has no active matching related knowledge."
-            : "Knowledge layer disabled by selected search scope."
+          evidenceSummary: knowledgeSkipSummary
         },
-        output: useKnowledgeLayer ? "Skipped because no matching related knowledge is active." : "Disabled by selected search scope.",
+        output: knowledgeSkipOutput,
         status: "skipped" as const
       };
     }
@@ -92,7 +101,7 @@ export async function executeSearchPipeline({
       owner: "retrieval",
       input: "asset lookup plan"
     }, async () => {
-      const results = searchAssets(scopedAssets, indexes, query, options).map((result) => ({ ...result, explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`] }));
+      const results = searchAssets(scopedAssets, indexes, query, options).map((result) => ({ ...result, explain: [...result.explain, `related knowledge grounding=${groundedQuery.evidenceSummary}`] }));
       return {
         value: results,
         output: `${results.length} assets`
@@ -144,14 +153,14 @@ export async function executeSearchPipeline({
   });
   const knowledgeVectorHits = await runOptionalAskStep(askEntry, {
     id: "knowledge_vector_search",
-    label: "Knowledge vector retrieval",
+    label: "Related knowledge vector retrieval",
     owner: "knowledge",
     input: `knowledge=${relatedKnowledgeSourceId ?? "all active"} · limit=${limit ?? 24}`
   }, async () => {
     if (!useRelatedKnowledgeLayer) {
       return {
         value: [],
-        output: useKnowledgeLayer ? "Skipped because no matching related knowledge is active." : "Disabled by selected search scope.",
+        output: knowledgeSkipOutput,
         status: "skipped" as const
       };
     }
@@ -163,7 +172,7 @@ export async function executeSearchPipeline({
     );
     return {
       value: hits,
-      output: `${hits.length} knowledge hits`
+      output: `${hits.length} related knowledge hits`
     };
   });
   const knowledgeVectorEvidence = dedupeKnowledgeEvidence(knowledgeVectorHits.map(knowledgeVectorHitToEvidence));
@@ -187,7 +196,7 @@ export async function executeSearchPipeline({
   }, async () => {
     const results = searchAssets(scopedAssets, indexes, query, { ...options, knowledgeEvidence: combinedKnowledgeEvidence, queryVector: vectors.queryVector, vectorHitsBySegment, visualHitsBySegment }).map((result) => ({
       ...result,
-      explain: [...result.explain, `knowledge grounding=${groundedQuery.evidenceSummary}`, `${knowledgeVectorEvidence.length} knowledge vector hits`, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
+      explain: [...result.explain, `related knowledge grounding=${groundedQuery.evidenceSummary}`, `${knowledgeVectorEvidence.length} related knowledge vector hits`, `${vectorSegmentsByAsset.get(result.asset.id) ?? 0} local vector DB hits`]
     }));
     return {
       value: results,
@@ -206,10 +215,11 @@ function shouldUseRelatedKnowledgeLayer(
   indexId: string | undefined,
   domainGroup: AskRequest["domainGroup"]
 ) {
+  if (queryPlan.relatedKnowledgeMode === "none") return false;
   const activeSources = activeRelatedKnowledgeSources(indexes, indexId);
   if (domainGroup) return activeSources.has(domainGroup);
   if (queryPlan.intent.domain && activeSources.has(queryPlan.intent.domain)) return true;
-  return queryPlan.knowledgeMode !== "none" && activeSources.size > 0;
+  return activeSources.size > 0;
 }
 
 function resolveRelatedKnowledgeSourceId(indexes: IndexRecord[], indexId: string | undefined, domainGroup: AskRequest["domainGroup"]): KnowledgeSourceId | undefined {

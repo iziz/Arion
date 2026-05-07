@@ -56,8 +56,8 @@ export function inferPlayerIdentity(asset: AssetRecord, segment: TimelineSegment
     return {
       name: player.value.canonical,
       confidence: Math.max(source.confidence, player.confidence),
-      source: "knowledge",
-      evidence: player.evidence
+      source: source.source,
+      evidence: [`${source.source} matched player alias.`, ...player.evidence]
     };
   }
 

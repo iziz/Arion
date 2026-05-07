@@ -17,7 +17,7 @@ export function answerSportsKnowledgeQuestion(queryPlan: DomainQueryPlan): Struc
   const season = queryPlan.domainFilters.season ?? null;
   const statMode = queryPlan.intent.statMode ?? (playerMatch ? "player_total" : null);
 
-  if (queryPlan.route !== "knowledge_evidence" || queryPlan.responseMode !== "structured_answer" || queryPlan.knowledgeMode !== "direct_answer" || !metric) {
+  if (queryPlan.route !== "knowledge_evidence" || queryPlan.responseMode !== "structured_answer" || queryPlan.relatedKnowledgeMode !== "direct_answer" || !metric) {
     return emptyAnswer("unsupported", "This query is not a supported sports statistics question.", { player: playerMatch?.canonical ?? null, competition, season, metric });
   }
   if (statMode === "leaderboard") {

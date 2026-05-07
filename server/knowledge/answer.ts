@@ -6,7 +6,7 @@ export function answerStructuredKnowledgeQuestion(queryPlan: DomainQueryPlan): S
 }
 
 export function isDirectKnowledgeAnswerPlan(queryPlan: DomainQueryPlan) {
-  return queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.knowledgeMode === "direct_answer";
+  return queryPlan.route === "knowledge_evidence" && queryPlan.responseMode === "structured_answer" && queryPlan.relatedKnowledgeMode === "direct_answer";
 }
 
 export function disabledStructuredKnowledgeAnswer(queryPlan: DomainQueryPlan, answer: string, warning: string): StructuredKnowledgeAnswer {

@@ -915,7 +915,7 @@ Query planning has two layers:
    - Falls back to the configured VLM worker `/plan/query` endpoint when OpenAI planning fails.
    - Returns an unavailable plan when neither model planner is configured or reachable.
    - Uses the OpenAI planner only when `OPENAI_API_KEY` is present and `OPENAI_QUERY_PLANNER` is not off; the VLM planner can still run when OpenAI is disabled or unavailable.
-   - Merges model output into a neutral plan with allow-lists for routes, response modes, knowledge modes, metrics, stat modes, roles, event types, pass types, and field zones.
+   - Merges model output into a neutral plan with allow-lists for routes, response modes, related-knowledge modes, metrics, stat modes, roles, event types, pass types, and field zones.
    - Does not fall back to the local rule parser when both model planners are unavailable.
 
 The query plan contract deliberately separates source routing from answer shape and related-knowledge usage:
@@ -924,7 +924,18 @@ The query plan contract deliberately separates source routing from answer shape 
 | --- | --- | --- |
 | `route` | `asset_evidence`, `knowledge_seeded_asset_evidence`, `knowledge_evidence`, `asset_catalog`, `unsupported` | Selects the evidence source and whether a related-knowledge seed is required before asset retrieval. It does not encode a domain name such as sports. |
 | `responseMode` | `moment_retrieval`, `grounded_answer`, `summary`, `analysis`, `structured_answer`, `asset_lookup` | Selects the answer shape. This is what decides whether retrieval-only output or grounded generation is needed. |
-| `knowledgeMode` | `none`, `grounding`, `direct_answer` | Selects whether selected related knowledge is ignored, used only to ground asset retrieval, or used as the primary answer source. |
+| `relatedKnowledgeMode` | `none`, `grounding`, `direct_answer` | Selects whether selected related knowledge is ignored, used only to ground asset retrieval, or used as the primary answer source. It does not control structured asset/domain filters. |
+
+Terminology used by the query and retrieval layers:
+
+| Term | Meaning |
+| --- | --- |
+| Asset evidence | Evidence indexed from the asset itself, including ASR, OCR, VLM captions, visual embeddings, text embeddings, titles, descriptions, tags, and timeline metadata. |
+| Structured asset evidence / domain evidence | Domain-shaped facts attached to indexed timeline segments, such as `eventType`, `passType`, `football.passingPlayer.identity`, `football.receivingPlayer.identity`, `fieldZone`, match context, and role labels. |
+| Domain filters | Structured retrieval constraints in `domainFilters`. They are verified against structured asset/domain evidence and may remain active when `relatedKnowledgeMode=none`. |
+| Participants | Query-time semantic action constraints. `action_source` means the named entity initiates the action, `action_target` means the named entity receives or is targeted by it, and `subject` means the named entity is only the topic. |
+| Related knowledge | Selected asset-group knowledge outside the raw indexed video evidence, such as imported sports stats, rosters, provider rows, related documents, and knowledge vectors. |
+| Domain lexicon / registry | Canonical name and alias normalization used by planners and indexers. Using a registry to normalize `Son` to `Son Heung-min` is not the same as using related knowledge as an answer or retrieval source. |
 
 Additional planner fields are part of the retrieval contract:
 
@@ -943,7 +954,8 @@ Current examples from the code:
 | Find a visible object or moment in indexed video | `asset_evidence + moment_retrieval + none` |
 | Ask what something in the video looks like | `asset_evidence + grounded_answer + none` |
 | Summarize selected video evidence | `asset_evidence + summary + none` |
-| Find a moment involving an entity resolved through selected related knowledge | `asset_evidence + moment_retrieval + grounding` |
+| Find a player/action moment from indexed video evidence | `asset_evidence + moment_retrieval + none` |
+| Find a moment that needs selected related knowledge to expand or ground the query | `asset_evidence + moment_retrieval + grounding` |
 | Find moments for the player who leads a selected related-knowledge leaderboard | `knowledge_seeded_asset_evidence + moment_retrieval + grounding` |
 | Answer a structured fact from selected related knowledge | `knowledge_evidence + structured_answer + direct_answer` |
 | List or inspect asset catalog metadata | `asset_catalog + asset_lookup + none` |
@@ -973,7 +985,7 @@ Analysis generation is required for `responseMode` values `grounded_answer`, `su
 `executeSearchPipeline` performs retrieval:
 
 1. Scope assets by asset ID, index ID, domain group, tag, modality, and explicit asset references in the query.
-2. Decide whether the selected asset group exposes related knowledge and whether `knowledgeMode` allows using it.
+2. Decide whether the selected asset group exposes related knowledge and whether `relatedKnowledgeMode` allows using it.
 3. Ground the query with selected related knowledge when applicable.
 4. Expand the query with domain aliases.
 5. Embed the text query.
@@ -1025,7 +1037,7 @@ Asset-level analysis uses `analyzeAndEmit`, which requires the asset to be index
 
 ## Related Knowledge And Domain Adapters
 
-The ask/query architecture treats related knowledge as an asset-group capability, not as a top-level query route. Query planning uses `knowledgeMode` and the selected asset group's `domainIndexing.groups` to decide whether this layer can ground retrieval or answer directly.
+The ask/query architecture treats related knowledge as an asset-group capability, not as a top-level domain label. Query planning uses `relatedKnowledgeMode` and the selected asset group's `domainIndexing.groups` to decide whether this layer can ground retrieval or answer directly.
 
 ### Knowledge Registry
 
@@ -1090,7 +1102,7 @@ Supported metric families include football and American-football metrics:
 
 ### Knowledge Grounding
 
-`server/knowledgeGrounding.ts` builds evidence for `asset_evidence` retrieval when `knowledgeMode` is `grounding`:
+`server/knowledgeGrounding.ts` builds evidence for `asset_evidence` retrieval when `relatedKnowledgeMode` is `grounding`:
 
 - competition scope
 - player profiles

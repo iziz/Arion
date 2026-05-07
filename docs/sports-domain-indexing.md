@@ -4,7 +4,7 @@ This document summarizes the current sports-domain indexing work: American-footb
 
 ## Goals
 
-The sports layer is designed to keep generic video retrieval separate from domain knowledge while still allowing domain knowledge to ground search, identity, and analysis.
+The sports layer is designed to keep generic video retrieval separate from related knowledge while still allowing selected related knowledge to ground search, identity, and analysis.
 
 The current implementation supports two configured sports domains:
 

@@ -211,7 +211,7 @@ export function KnowledgeAnswerCard({ answer }: { answer: StructuredKnowledgeAns
   return (
     <section className={`knowledge-answer-card ${answer.status}`}>
       <div>
-        <span>Knowledge answer</span>
+        <span>Related knowledge answer</span>
         <strong>{answer.answer}</strong>
         {answer.fallback && <p>{answer.fallback}</p>}
       </div>
@@ -406,7 +406,7 @@ export function SearchConversation({
               <p>{turn.query}</p>
             </div>
             <div className={`assistant-bubble ${turn.route} ${turn.results.length > 0 ? "has-results" : ""}`}>
-              <span>{turn.route === "structured_answer" ? "Knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
+              <span>{turn.route === "structured_answer" ? "Related knowledge answer" : turn.route === "error" ? "Error" : "Video answer"}</span>
               {turn.answerContent && !running && <AssistantAnswerText content={turn.answerContent} />}
               {running && (
                 <div className="assistant-search-status" aria-live="polite">
@@ -649,7 +649,7 @@ function buildWorkflowSummaryChips(
     operation ? { label: "status", value: formatWorkflowStatus(operation.status) } : null,
     queryPlan ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
     queryPlan ? { label: "answer", value: queryPlan.responseMode.replace(/_/g, " ") } : null,
-    queryPlan ? { label: "knowledge", value: queryPlan.knowledgeMode.replace(/_/g, " ") } : null,
+    queryPlan ? { label: "related knowledge", value: queryPlan.relatedKnowledgeMode.replace(/_/g, " ") } : null,
     queryPlan ? { label: "plan", value: `${Math.round(queryPlan.confidence * 100)}%` } : null,
     orchestrationPlan ? { label: "engine", value: orchestrationPlan.retrieval.engine.replace(/_/g, " ") } : null,
     totalResults > 0 ? { label: "results", value: `${visibleResults}/${totalResults}` } : null
@@ -708,7 +708,7 @@ function buildQueryPlanWorkflowItem(queryPlan: DomainQueryPlan | null, step: Ask
   const intentChips = [
     queryPlan?.route ? { label: "route", value: queryPlan.route.replace(/_/g, " ") } : null,
     queryPlan?.responseMode ? { label: "answer", value: queryPlan.responseMode.replace(/_/g, " ") } : null,
-    queryPlan?.knowledgeMode ? { label: "knowledge", value: queryPlan.knowledgeMode.replace(/_/g, " ") } : null,
+    queryPlan?.relatedKnowledgeMode ? { label: "related knowledge", value: queryPlan.relatedKnowledgeMode.replace(/_/g, " ") } : null,
     queryPlan?.intent.eventType ? { label: "event", value: queryPlan.intent.eventType } : null,
     queryPlan?.intent.passType ? { label: "pass", value: queryPlan.intent.passType } : null,
     queryPlan?.intent.fieldZone ? { label: "zone", value: queryPlan.intent.fieldZone } : null
@@ -779,7 +779,7 @@ function planOutputLabel(queryPlan: DomainQueryPlan) {
   return [
     queryPlan.route.replace(/_/g, " "),
     queryPlan.responseMode.replace(/_/g, " "),
-    queryPlan.knowledgeMode.replace(/_/g, " "),
+    queryPlan.relatedKnowledgeMode.replace(/_/g, " "),
     `${Math.round(queryPlan.confidence * 100)}%`
   ].join(" · ");
 }

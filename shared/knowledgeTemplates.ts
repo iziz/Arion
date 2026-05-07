@@ -113,7 +113,7 @@ export const sportsBaseTemplateContract: SportsBaseTemplateContract = {
   ],
   skipPolicy: [
     "Skip when no registered sports strategy matches the asset group domain.",
-    "Skip domain context when no domain knowledge candidate can be scored above threshold.",
+    "Skip domain context when no related-knowledge or domain-context candidate can be scored above threshold.",
     "Skip confirmed identity when track evidence or time-scoped participant evidence is absent."
   ],
   evaluatorPolicy: [

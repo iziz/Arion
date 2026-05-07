@@ -43,8 +43,8 @@ export function registerAskRoutes(app: Express) {
         ? answerStructuredKnowledgeQuestion(seedKnowledgePlan)
         : disabledStructuredKnowledgeAnswer(
             seedKnowledgePlan,
-            "Knowledge layer is disabled for this search.",
-            "Knowledge layer was disabled by the selected search scope."
+            "Related knowledge layer is disabled for this search.",
+            "Related knowledge layer was disabled by the selected search scope."
           );
       const retrievalPlan = shouldContinueWithMomentRetrieval(queryPlan, knowledgeAnswer)
         ? buildStatSeededMomentPlan(queryPlan, knowledgeAnswer)
