@@ -1078,7 +1078,7 @@ textarea {
 
 .context-bar {
   display: grid;
-  grid-template-columns: minmax(260px, 1.8fr) minmax(110px, 0.6fr) minmax(110px, 0.6fr);
+  grid-template-columns: minmax(260px, 1fr) max-content;
   gap: 16px;
   align-items: center;
   margin: 0;

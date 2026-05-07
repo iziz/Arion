@@ -707,10 +707,6 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
             <strong>{formatCountRatio(metrics.indexedAssets, metrics.assets)} indexed · {formatUnitCount(indexes.length, "group")}</strong>
           </div>
           <div>
-            <span>Data group</span>
-            <strong>{selectedIndex?.name ?? "No group"}</strong>
-          </div>
-          <div>
             <span>Queue</span>
             <strong>{activeJobCount > 0 ? `${formatCount(activeJobCount)} active` : "clear"}</strong>
           </div>
@@ -1165,7 +1161,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                     <div className="system-inline-metrics">
                       {observabilityView.pipelineMetrics.slice(0, 3).map((metric) => (
                         <span key={metric.key} className={metric.lastStatus === "error" ? "error" : ""}>
-                          <b>{formatMetricName(metric.key)}</b>
+                          <b title={formatMetricName(metric.key)}>{formatCompactMetricName(metric.key)}</b>
                           <strong>p95 {formatLatency(metric.p95Ms)} · {formatUnitCount(metric.errorCount, "error")}</strong>
                           <em>{metric.lastStatus === "error" && metric.lastError ? `Last error: ${metric.lastError}` : describeObservabilityMetricIntent(metric.key)}</em>
                         </span>
@@ -1441,6 +1437,21 @@ function formatMetricName(key: string) {
     .filter(Boolean)
     .map((part) => (acronyms.has(part.toLowerCase()) ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
     .join(" ");
+}
+
+function formatCompactMetricName(key: string) {
+  if (key === "model.doctor.service") return "Model doctor";
+  if (key.startsWith("python_runtime.service")) return "Python runtime";
+  if (key.startsWith("model.embedding.text")) return "Text embedding";
+  if (key.startsWith("model.embedding.visual")) return "Visual embedding";
+  if (key.startsWith("model.asr")) return "ASR";
+  if (key.startsWith("model.ocr")) return "OCR";
+  if (key.startsWith("model.vision")) return "Vision";
+  if (key.startsWith("search.vector_text")) return "Text vector";
+  if (key.startsWith("search.vector_visual")) return "Visual vector";
+  if (key.startsWith("search.knowledge_vector")) return "Knowledge vector";
+  const name = formatMetricName(key);
+  return name.length > 14 ? name.split(/\s+/).slice(0, 2).join(" ") : name;
 }
 
 function SearchVideoPreviewPanel({
