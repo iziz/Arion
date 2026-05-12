@@ -28,6 +28,13 @@ def main() -> None:
     parser.add_argument("--jersey-ocr-max-samples-per-track", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_SAMPLES_PER_TRACK", "3")))
     parser.add_argument("--jersey-ocr-max-total-samples", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_TOTAL_SAMPLES", "48")))
     parser.add_argument("--jersey-ocr-min-box-height", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_BOX_HEIGHT", "0.12")))
+    parser.add_argument("--face-identity", nargs="?", const="1", default=os.environ.get("FACE_IDENTITY_ENABLED", "0"))
+    parser.add_argument("--face-identity-model", default=os.environ.get("FACE_IDENTITY_MODEL_PATH", ""))
+    parser.add_argument("--face-identity-gallery", default=os.environ.get("FACE_IDENTITY_GALLERY_PATH", ""))
+    parser.add_argument("--face-identity-min-confidence", type=float, default=float(os.environ.get("FACE_IDENTITY_MIN_CONFIDENCE", "0.62")))
+    parser.add_argument("--face-identity-max-samples-per-track", type=int, default=int(os.environ.get("FACE_IDENTITY_MAX_SAMPLES_PER_TRACK", "2")))
+    parser.add_argument("--face-identity-max-total-samples", type=int, default=int(os.environ.get("FACE_IDENTITY_MAX_TOTAL_SAMPLES", "32")))
+    parser.add_argument("--field-calibration", default=os.environ.get("FIELD_CALIBRATION_CONFIG", ""))
     args = parser.parse_args()
     payload = json.load(sys.stdin)
     segments = payload.get("segments", [])
@@ -56,6 +63,8 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
     fps = read_fps(cv2, args.media_path)
     model = YOLO(args.model)
     jersey_ocr = JerseyNumberOcr(args)
+    face_identity = FaceIdentityMatcher(args)
+    field_calibration = FieldCalibration.from_path(args.field_calibration)
     segment_frames: dict[str, list[dict]] = defaultdict(list)
     frame_number = 0
     for result in model.track(
@@ -72,12 +81,12 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
         segment = segment_for_time(segment_items, at)
         if not segment:
             continue
-        boxes = boxes_from_result(result, jersey_ocr, at)
+        boxes = boxes_from_result(result, jersey_ocr, face_identity, at)
         if boxes:
             segment_frames[segment["id"]].append({"at": round(at, 3), "boxes": boxes})
 
     team_assignments = cluster_team_profiles(summarize_tracks(collect_tracks(segment_frames)))
-    summaries = [summarize_segment(segment, segment_frames.get(segment["id"], []), args, team_assignments) for segment in segment_items]
+    summaries = [summarize_segment(segment, segment_frames.get(segment["id"], []), args, team_assignments, field_calibration) for segment in segment_items]
     summaries = [summary for summary in summaries if summary["trackedFrameCount"] > 0]
     return {
         "available": True,
@@ -128,7 +137,7 @@ def segment_for_time(segments: list[dict], at: float) -> dict | None:
     return None
 
 
-def boxes_from_result(result, jersey_ocr=None, at: float | None = None) -> list[dict]:
+def boxes_from_result(result, jersey_ocr=None, face_identity=None, at: float | None = None) -> list[dict]:
     names = result.names or {}
     width = int(result.orig_shape[1])
     height = int(result.orig_shape[0])
@@ -164,11 +173,15 @@ def boxes_from_result(result, jersey_ocr=None, at: float | None = None) -> list[
             jersey_candidates = jersey_ocr.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at)
             if jersey_candidates:
                 item["jerseyNumberCandidates"] = jersey_candidates
+        if face_identity:
+            face_candidates = face_identity.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at)
+            if face_candidates:
+                item["faceIdentityCandidates"] = face_candidates
         boxes.append(item)
     return boxes
 
 
-def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespace, team_assignments: dict[str, dict]) -> dict:
+def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespace, team_assignments: dict[str, dict], field_calibration=None) -> dict:
     tracks = empty_track_map()
     nearest_counter: Counter[str] = Counter()
     distances = []
@@ -189,14 +202,14 @@ def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespac
             nearest_counter[nearest["trackId"]] += 1
             distances.append(nearest["distance"])
 
-    track_summaries = summarize_tracks(tracks, team_assignments)
+    track_summaries = summarize_tracks(tracks, team_assignments, field_calibration)
     ball_tracks = [track for track in track_summaries if track["label"] == "sports_ball"]
     player_tracks = [track for track in track_summaries if track["label"] == "person"]
     primary_ball = top_track(ball_tracks)
     primary_player = nearest_counter.most_common(1)[0][0] if nearest_counter else (top_track(player_tracks) or {}).get("id")
     ball_movement = movement_for_track(tracks.get(primary_ball["id"]) if primary_ball else None)
     track_coverage = len(frames) / max(1, expected_frame_count(segment, args.vid_stride))
-    return {
+    summary = {
         "segmentId": segment["id"],
         "frameCount": expected_frame_count(segment, args.vid_stride),
         "trackedFrameCount": len(frames),
@@ -213,10 +226,14 @@ def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespac
         "model": args.model,
         "tracker": args.tracker,
     }
+    calibration_summary = field_calibration.segment_summary(player_tracks, primary_player) if field_calibration else None
+    if calibration_summary:
+        summary["fieldCalibration"] = calibration_summary
+    return summary
 
 
 def empty_track_map():
-    return defaultdict(lambda: {"label": "", "frames": 0, "confidence": [], "centers": [], "appearances": [], "jerseyNumbers": [], "firstSeen": None, "lastSeen": None})
+    return defaultdict(lambda: {"label": "", "frames": 0, "confidence": [], "centers": [], "appearances": [], "jerseyNumbers": [], "faceIdentities": [], "firstSeen": None, "lastSeen": None})
 
 
 def collect_tracks(segment_frames: dict[str, list[dict]]) -> dict:
@@ -243,11 +260,13 @@ def collect_box_track(tracks: dict, box: dict, at: float) -> None:
         item["appearances"].append(box["appearance"])
     if box.get("jerseyNumberCandidates"):
         item["jerseyNumbers"].extend(box["jerseyNumberCandidates"])
+    if box.get("faceIdentityCandidates"):
+        item["faceIdentities"].extend(box["faceIdentityCandidates"])
     item["firstSeen"] = at if item["firstSeen"] is None else min(item["firstSeen"], at)
     item["lastSeen"] = at if item["lastSeen"] is None else max(item["lastSeen"], at)
 
 
-def summarize_tracks(tracks: dict, team_assignments: dict[str, dict] | None = None) -> list[dict]:
+def summarize_tracks(tracks: dict, team_assignments: dict[str, dict] | None = None, field_calibration=None) -> list[dict]:
     summaries = []
     team_assignments = team_assignments or {}
     for track_id, track in tracks.items():
@@ -263,12 +282,15 @@ def summarize_tracks(tracks: dict, team_assignments: dict[str, dict] | None = No
         appearance = aggregate_appearance(track["appearances"])
         if appearance:
             summary["appearance"] = appearance
-        movement = movement_profile_for_track(track)
+        movement = movement_profile_for_track(track, field_calibration)
         if movement:
             summary["movement"] = movement
         jersey_candidates = aggregate_jersey_number_candidates(track["jerseyNumbers"])
         if jersey_candidates:
             summary["jerseyNumberCandidates"] = jersey_candidates
+        face_candidates = aggregate_face_identity_candidates(track["faceIdentities"])
+        if face_candidates:
+            summary["faceIdentityCandidates"] = face_candidates
         assignment = team_assignments.get(track_id)
         if assignment:
             summary.update(assignment)
@@ -299,15 +321,17 @@ class JerseyNumberOcr:
         height, _width = image.shape[:2]
         if height <= 0 or (y2 - y1) / height < self.min_box_height:
             return []
-        crop = jersey_number_crop(image, x1, y1, x2, y2)
-        if crop is None:
+        crops = jersey_number_crops(image, x1, y1, x2, y2)
+        if not crops:
             return []
         ocr = self.ocr()
         if ocr is None:
             return []
         self.sample_counts[track_id] += 1
         self.total_samples += 1
-        tokens = run_jersey_crop_ocr(ocr, crop)
+        tokens = []
+        for crop in crops:
+            tokens.extend(run_jersey_crop_ocr(ocr, crop))
         return jersey_candidates_from_tokens(tokens, self.min_confidence, at)
 
     def ocr(self):
@@ -329,27 +353,291 @@ class JerseyNumberOcr:
             return None
 
 
+class FaceEmbeddingModel:
+    def __init__(self, model_path: str):
+        self.model_path = str(model_path or "").strip()
+        self._session = None
+        self._input_name = None
+        self._input_shape = None
+        self._available = None
+
+    def available(self) -> bool:
+        return bool(self.model_path) and os.path.exists(self.model_path) and self.session() is not None
+
+    def session(self):
+        if self._available is False:
+            return None
+        if self._session is not None:
+            return self._session
+        if not self.model_path or not os.path.exists(self.model_path):
+            self._available = False
+            return None
+        try:
+            import onnxruntime as ort
+
+            self._session = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
+            model_input = self._session.get_inputs()[0]
+            self._input_name = model_input.name
+            self._input_shape = list(model_input.shape or [])
+            self._available = True
+            return self._session
+        except Exception:
+            self._available = False
+            return None
+
+    def embed(self, image) -> list[float] | None:
+        session = self.session()
+        if session is None or image is None or image.size == 0:
+            return None
+        try:
+            import cv2
+            import numpy as np
+
+            shape = self._input_shape or [1, 3, 112, 112]
+            channel_first = len(shape) == 4 and (shape[1] == 3 or shape[1] in {"3", None})
+            height = int(shape[2] if channel_first and isinstance(shape[2], int) else shape[1] if len(shape) == 4 and isinstance(shape[1], int) else 112)
+            width = int(shape[3] if channel_first and isinstance(shape[3], int) else shape[2] if len(shape) == 4 and isinstance(shape[2], int) else 112)
+            rgb = cv2.cvtColor(cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
+            tensor = rgb.astype("float32")
+            tensor = (tensor - 127.5) / 128.0
+            if channel_first:
+                tensor = np.transpose(tensor, (2, 0, 1))
+            tensor = np.expand_dims(tensor, axis=0)
+            output = session.run(None, {self._input_name: tensor})[0]
+            return normalize_vector(output.reshape(-1).astype("float32").tolist())
+        except Exception:
+            return None
+
+
+class FaceIdentityMatcher:
+    def __init__(self, args: argparse.Namespace):
+        self.enabled = parse_bool(args.face_identity)
+        self.min_confidence = max(0.0, min(1.0, float(args.face_identity_min_confidence)))
+        self.max_samples_per_track = max(0, int(args.face_identity_max_samples_per_track))
+        self.max_total_samples = max(0, int(args.face_identity_max_total_samples))
+        self.sample_counts: defaultdict[str, int] = defaultdict(int)
+        self.total_samples = 0
+        self.model = FaceEmbeddingModel(args.face_identity_model)
+        self.gallery = load_face_gallery(args.face_identity_gallery)
+
+    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
+        if not self.enabled or label != "person" or not track_id or image is None:
+            return []
+        if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
+            return []
+        if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
+            return []
+        if not self.gallery or not self.model.available():
+            return []
+        face_crop = crop_face_candidate(image, x1, y1, x2, y2)
+        if face_crop is None:
+            return []
+        self.sample_counts[track_id] += 1
+        self.total_samples += 1
+        embedding = self.model.embed(face_crop)
+        if not embedding:
+            return []
+        return face_candidates_from_embedding(embedding, self.gallery, self.min_confidence, at)
+
+
+class FieldCalibration:
+    def __init__(self, payload: dict, source_path: str):
+        self.payload = payload
+        self.source_path = source_path
+        self.homography = payload.get("homography")
+        self.attacking_direction = valid_attacking_direction(payload.get("attackingDirection"))
+        self.attacking_direction_confidence = clamp01(float(payload.get("attackingDirectionConfidence") or 0))
+        self.team_attacking_directions = normalize_team_attacking_directions(payload.get("teamAttackingDirections"))
+
+    @classmethod
+    def from_path(cls, path_value: str | None):
+        path_value = str(path_value or "").strip()
+        if not path_value:
+            return None
+        try:
+            with open(path_value, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict) or not valid_homography(payload.get("homography")):
+                return None
+            return cls(payload, path_value)
+        except Exception:
+            return None
+
+    def project(self, point: tuple[float, float]) -> tuple[float, float] | None:
+        if not valid_homography(self.homography):
+            return None
+        x_value, y_value = point
+        matrix = self.homography
+        denom = float(matrix[2][0]) * x_value + float(matrix[2][1]) * y_value + float(matrix[2][2])
+        if abs(denom) < 1e-9:
+            return None
+        px = (float(matrix[0][0]) * x_value + float(matrix[0][1]) * y_value + float(matrix[0][2])) / denom
+        py = (float(matrix[1][0]) * x_value + float(matrix[1][1]) * y_value + float(matrix[1][2])) / denom
+        return (clamp01(px), clamp01(py))
+
+    def segment_summary(self, player_tracks: list[dict], primary_player: str | None) -> dict | None:
+        if not valid_homography(self.homography):
+            return None
+        primary = next((track for track in player_tracks if track.get("id") == primary_player), None) or top_track(player_tracks)
+        movement = (primary or {}).get("movement") or {}
+        zone = movement.get("fieldZoneHint") or "unknown"
+        zone_confidence = float(movement.get("fieldZoneConfidence") or 0)
+        return {
+            "status": "calibrated",
+            "method": "homography",
+            "zone": zone,
+            "zoneConfidence": round(clamp01(zone_confidence), 3),
+            "attackingDirection": self.attacking_direction,
+            "attackingDirectionConfidence": self.attacking_direction_confidence,
+            "teamAttackingDirections": self.team_attacking_directions,
+            "evidence": [
+                f"Pitch homography loaded from {os.path.basename(self.source_path)}.",
+                "Track centers projected into normalized pitch coordinates.",
+                "Team attacking directions loaded from calibration config." if self.team_attacking_directions else "Team attacking direction config not provided.",
+            ],
+            "limitations": [
+                "Homography quality depends on the external calibration points.",
+                "Team attacking direction is config-driven unless a possession-aware calibration stage provides it.",
+            ],
+        }
+
+
+def load_face_gallery(path_value: str | None) -> list[dict]:
+    path_value = str(path_value or "").strip()
+    if not path_value:
+        return []
+    try:
+        with open(path_value, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return []
+    players = payload.get("players") if isinstance(payload, dict) else payload
+    if not isinstance(players, list):
+        return []
+    gallery = []
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        raw_embeddings = player.get("embeddings") or ([player.get("embedding")] if player.get("embedding") is not None else [])
+        embeddings = [normalize_vector(vector) for vector in raw_embeddings if isinstance(vector, list)]
+        embeddings = [vector for vector in embeddings if vector]
+        if not embeddings:
+            continue
+        gallery.append({
+            "playerId": player.get("playerId"),
+            "canonicalName": player.get("canonicalName") or player.get("name"),
+            "team": player.get("team"),
+            "embeddings": embeddings,
+        })
+    return gallery
+
+
+def crop_face_candidate(image, x1: float, y1: float, x2: float, y2: float):
+    import cv2
+
+    height, width = image.shape[:2]
+    left = clamp_int(x1, 0, width - 1)
+    right = clamp_int(x2, left + 1, width)
+    top = clamp_int(y1, 0, height - 1)
+    bottom = clamp_int(y1 + (y2 - y1) * 0.48, top + 1, height)
+    region = image[top:bottom, left:right]
+    if region.size == 0 or region.shape[0] < 16 or region.shape[1] < 16:
+        return None
+    cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+    classifier = cv2.CascadeClassifier(cascade_path)
+    if classifier.empty():
+        return None
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    faces = classifier.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(12, 12))
+    if len(faces) == 0:
+        return None
+    fx, fy, fw, fh = sorted(faces, key=lambda item: item[2] * item[3], reverse=True)[0]
+    pad = int(max(fw, fh) * 0.22)
+    crop_left = max(0, fx - pad)
+    crop_top = max(0, fy - pad)
+    crop_right = min(region.shape[1], fx + fw + pad)
+    crop_bottom = min(region.shape[0], fy + fh + pad)
+    crop = region[crop_top:crop_bottom, crop_left:crop_right]
+    return crop if crop.size > 0 else None
+
+
+def face_candidates_from_embedding(embedding: list[float], gallery: list[dict], min_confidence: float, at: float | None) -> list[dict]:
+    candidates = []
+    for player in gallery:
+        scores = [cosine_similarity(embedding, gallery_embedding) for gallery_embedding in player["embeddings"]]
+        if not scores:
+            continue
+        score = max(scores)
+        if score < min_confidence:
+            continue
+        candidates.append({
+            "playerId": player.get("playerId"),
+            "canonicalName": player.get("canonicalName"),
+            "confidence": round(clamp01(score), 3),
+            "source": "face_embedding",
+            "frameAt": round(at, 3) if at is not None else None,
+            "evidence": f"Matched {len(player['embeddings'])} gallery embedding(s)",
+        })
+    return sorted(candidates, key=lambda item: item["confidence"], reverse=True)[:3]
+
+
+def aggregate_face_identity_candidates(candidates: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for candidate in candidates:
+        key = str(candidate.get("playerId") or candidate.get("canonicalName") or "").strip()
+        if key:
+            grouped[key].append(candidate)
+    summaries = []
+    for items in grouped.values():
+        best = sorted(items, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)[0]
+        confidence = min(0.98, max(float(item.get("confidence") or 0.0) for item in items) + min(0.04, (len(items) - 1) * 0.015))
+        summaries.append({
+            "playerId": best.get("playerId"),
+            "canonicalName": best.get("canonicalName"),
+            "confidence": round(confidence, 3),
+            "source": "face_embedding",
+            "frameAt": best.get("frameAt"),
+            "evidence": f"{len(items)} face sample(s); {best.get('evidence') or 'gallery match'}",
+        })
+    return sorted(summaries, key=lambda item: item["confidence"], reverse=True)[:3]
+
+
 def jersey_number_crop(image, x1: float, y1: float, x2: float, y2: float):
+    crops = jersey_number_crops(image, x1, y1, x2, y2)
+    return crops[0] if crops else None
+
+
+def jersey_number_crops(image, x1: float, y1: float, x2: float, y2: float) -> list:
     import cv2
 
     height, width = image.shape[:2]
     box_width = max(1.0, x2 - x1)
     box_height = max(1.0, y2 - y1)
-    left = clamp_int(x1 + box_width * 0.24, 0, width - 1)
-    right = clamp_int(x1 + box_width * 0.76, left + 1, width)
-    top = clamp_int(y1 + box_height * 0.22, 0, height - 1)
-    bottom = clamp_int(y1 + box_height * 0.7, top + 1, height)
-    if right - left < 12 or bottom - top < 12:
-        return None
-    crop = image[top:bottom, left:right]
-    if crop.size == 0:
-        return None
-    target_width = 144
-    scale = max(2.0, min(4.0, target_width / max(1, crop.shape[1])))
-    resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(gray)
-    return cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR)
+    windows = [
+        (0.24, 0.76, 0.22, 0.7),
+        (0.16, 0.84, 0.18, 0.74),
+        (0.28, 0.72, 0.26, 0.64),
+    ]
+    crops = []
+    for left_ratio, right_ratio, top_ratio, bottom_ratio in windows:
+        left = clamp_int(x1 + box_width * left_ratio, 0, width - 1)
+        right = clamp_int(x1 + box_width * right_ratio, left + 1, width)
+        top = clamp_int(y1 + box_height * top_ratio, 0, height - 1)
+        bottom = clamp_int(y1 + box_height * bottom_ratio, top + 1, height)
+        if right - left < 12 or bottom - top < 12:
+            continue
+        crop = image[top:bottom, left:right]
+        if crop.size == 0:
+            continue
+        target_width = 160
+        scale = max(2.0, min(4.5, target_width / max(1, crop.shape[1])))
+        resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(gray)
+        crops.append(cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR))
+        thresholded = cv2.adaptiveThreshold(clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 7)
+        crops.append(cv2.cvtColor(thresholded, cv2.COLOR_GRAY2BGR))
+    return crops[:4]
 
 
 def run_jersey_crop_ocr(ocr, crop) -> list[dict]:
@@ -518,6 +806,65 @@ def parse_bool(value) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def normalize_vector(vector: list[float]) -> list[float]:
+    values = [float(item) for item in vector]
+    norm = math.sqrt(sum(item * item for item in values))
+    if norm <= 1e-9:
+        return []
+    return [round(item / norm, 8) for item in values]
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return clamp01(sum(float(a) * float(b) for a, b in zip(left, right)))
+
+
+def valid_homography(matrix) -> bool:
+    return (
+        isinstance(matrix, list)
+        and len(matrix) == 3
+        and all(isinstance(row, list) and len(row) == 3 and all(is_number(value) for value in row) for row in matrix)
+    )
+
+
+def is_number(value) -> bool:
+    try:
+        float(value)
+        return True
+    except Exception:
+        return False
+
+
+def valid_attacking_direction(value) -> str:
+    value = str(value or "unknown")
+    return value if value in {"left_to_right", "right_to_left"} else "unknown"
+
+
+def normalize_team_attacking_directions(items) -> list[dict]:
+    if not isinstance(items, list):
+        return []
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        team = str(item.get("team") or "").strip()
+        if not team:
+            continue
+        direction = valid_attacking_direction(item.get("attackingDirection"))
+        normalized.append({
+            "team": team,
+            "attackingDirection": direction,
+            "confidence": round(clamp01(float(item.get("confidence") or 0)), 3),
+            "evidence": [str(value) for value in item.get("evidence", []) if str(value).strip()][:4],
+        })
+    return normalized[:8]
+
+
 def appearance_from_box(image, x1: float, y1: float, x2: float, y2: float, label: str) -> dict | None:
     if label != "person" or image is None:
         return None
@@ -654,19 +1001,28 @@ def movement_for_track(track: dict | None) -> dict:
     }
 
 
-def movement_profile_for_track(track: dict | None) -> dict | None:
+def movement_profile_for_track(track: dict | None, field_calibration=None) -> dict | None:
     if not track or len(track["centers"]) == 0:
         return None
     ordered = sorted(track["centers"], key=lambda item: item[0])
-    xs = [center_value[0] for _at, center_value in ordered]
-    ys = [center_value[1] for _at, center_value in ordered]
+    projected = []
+    coordinate_mode = "screen_relative"
+    for _at, center_value in ordered:
+        pitch_point = field_calibration.project(center_value) if field_calibration else None
+        if pitch_point is not None:
+            coordinate_mode = "pitch_homography"
+            projected.append(pitch_point)
+        else:
+            projected.append(center_value)
+    xs = [center_value[0] for center_value in projected]
+    ys = [center_value[1] for center_value in projected]
     zone_occupancy = occupancy([(field_zone_hint(x), 1.0) for x in xs])
     lane_occupancy = occupancy([(width_lane_hint(y), 1.0) for y in ys])
     primary_zone, zone_confidence = primary_occupancy(zone_occupancy, "unknown")
     primary_lane, lane_confidence = primary_occupancy(lane_occupancy, "unknown")
     if len(ordered) < 2:
         return {
-            "coordinateMode": "screen_relative",
+            "coordinateMode": coordinate_mode,
             "averageX": round(sum(xs) / len(xs), 4),
             "averageY": round(sum(ys) / len(ys), 4),
             "displacement": 0,
@@ -680,12 +1036,14 @@ def movement_profile_for_track(track: dict | None) -> dict | None:
             "laneOccupancy": lane_occupancy,
             "samples": len(ordered),
         }
-    start_at, start_center = ordered[0]
-    end_at, end_center = ordered[-1]
+    start_at = ordered[0][0]
+    end_at = ordered[-1][0]
+    start_center = projected[0]
+    end_center = projected[-1]
     displacement = distance(start_center, end_center)
     seconds = max(0.001, end_at - start_at)
     return {
-        "coordinateMode": "screen_relative",
+        "coordinateMode": coordinate_mode,
         "averageX": round(sum(xs) / len(xs), 4),
         "averageY": round(sum(ys) / len(ys), 4),
         "displacement": round(displacement, 4),

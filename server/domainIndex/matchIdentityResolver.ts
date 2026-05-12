@@ -34,6 +34,7 @@ type JerseyNumberCandidate = {
 type VisionPlayerTrack = NonNullable<NonNullable<NonNullable<NonNullable<TimelineSegment["sceneData"]>["vision"]>["tracking"]>["playerTracks"]>[number];
 type VisionTrackMovementSummary = NonNullable<VisionPlayerTrack["movement"]>;
 type FootballPositionGroup = "goalkeeper" | "defender" | "midfielder" | "forward" | "wide" | "unknown";
+type TeamAttackingDirectionSignal = { team: string; attackingDirection: "left_to_right" | "right_to_left" | "unknown"; confidence: number; evidence: string[] };
 type VisualRosterSignal = {
   score: number;
   faceConfidence: number;
@@ -653,7 +654,7 @@ function buildFootballVisualRosterIdentityCandidates(
 }
 
 function visualRosterSignals(_segment: TimelineSegment, track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
-  const movementSignal = movementPositionSignal(track, window);
+  const movementSignal = movementPositionSignal(_segment, track, window);
   const faceSignal = faceRosterSignal(track, window);
   return {
     score: Number(Math.min(0.42, movementSignal.score + faceSignal.score).toFixed(3)),
@@ -662,14 +663,16 @@ function visualRosterSignals(_segment: TimelineSegment, track: VisionPlayerTrack
   };
 }
 
-function movementPositionSignal(track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
+function movementPositionSignal(segment: TimelineSegment, track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
   const movement = track.movement;
   const group = footballPositionGroup(window.position);
   if (!movement || movement.samples < 2 || group === "unknown") return { score: 0, faceConfidence: 0, evidence: [] };
 
-  const zone = movement.fieldZoneHint;
+  const teamDirection = teamAttackingDirection(segment, window.team);
+  const zone = teamRelativeZone(movement.fieldZoneHint, teamDirection?.attackingDirection ?? "unknown");
   const lane = movement.widthLaneHint;
-  const zoneShare = zone === "unknown" ? 0 : Math.max(movement.fieldZoneConfidence ?? 0, fieldZoneShare(movement, zone));
+  const rawZoneShare = movement.fieldZoneHint === "unknown" ? 0 : fieldZoneShare(movement, movement.fieldZoneHint);
+  const zoneShare = zone === "unknown" ? 0 : Math.max(movement.fieldZoneConfidence ?? 0, rawZoneShare);
   const laneShare = lane === "unknown" ? 0 : Math.max(movement.widthLaneConfidence ?? 0, laneOccupancyShare(movement, lane));
   const speed = movement.speedPerSecond ?? 0;
   const displacement = movement.displacement ?? 0;
@@ -723,7 +726,9 @@ function movementPositionSignal(track: VisionPlayerTrack, window: ActiveRosterWi
     },
     {
       source: "movement",
-      value: `${movementEvidenceLabel(track.id, movement)} ${movement.coordinateMode === "pitch_homography" ? "Pitch homography coordinates are available." : "Screen coordinates are uncalibrated for attacking direction."}`,
+      value: `${movementEvidenceLabel(track.id, movement, zone, teamDirection)} ${
+        movement.coordinateMode === "pitch_homography" ? "Pitch homography coordinates are available." : "Screen coordinates are uncalibrated for attacking direction."
+      }`,
       confidence: Number(Math.max(0.36, Math.min(0.58, (zoneShare + laneShare) / 2)).toFixed(2))
     }
   ];
@@ -778,16 +783,35 @@ function laneOccupancyShare(movement: VisionTrackMovementSummary, lane: VisionTr
   return movement.laneOccupancy.find((item) => item.lane === lane)?.share ?? 0;
 }
 
-function movementEvidenceLabel(trackId: string, movement: VisionTrackMovementSummary) {
+function movementEvidenceLabel(
+  trackId: string,
+  movement: VisionTrackMovementSummary,
+  teamZone: VisionTrackMovementSummary["fieldZoneHint"],
+  teamDirection: TeamAttackingDirectionSignal | null
+) {
   const zoneShare = movement.fieldZoneHint === "unknown" ? 0 : fieldZoneShare(movement, movement.fieldZoneHint);
   const laneShare = movement.widthLaneHint === "unknown" ? 0 : laneOccupancyShare(movement, movement.widthLaneHint);
+  const teamSuffix = teamDirection ? ` Team-relative zone for ${teamDirection.team}: ${teamZone} (${teamDirection.attackingDirection}).` : "";
   return `Track ${trackId} occupied ${movement.fieldZoneHint} ${formatPercent(zoneShare || movement.fieldZoneConfidence)} and ${movement.widthLaneHint} lane ${formatPercent(
     laneShare || movement.widthLaneConfidence
-  )}.`;
+  )}.${teamSuffix}`;
 }
 
 function formatPercent(value: number) {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function teamAttackingDirection(segment: TimelineSegment, team: string | null) {
+  if (!team) return null;
+  const directions = segment.sceneData?.vision?.fieldCalibration?.teamAttackingDirections ?? [];
+  return directions.find((item) => normalizeText(item.team) === normalizeText(team)) ?? null;
+}
+
+function teamRelativeZone(zone: VisionTrackMovementSummary["fieldZoneHint"], attackingDirection: "left_to_right" | "right_to_left" | "unknown") {
+  if (attackingDirection !== "right_to_left") return zone;
+  if (zone === "defensive_third") return "final_third";
+  if (zone === "final_third") return "defensive_third";
+  return zone;
 }
 
 function buildTeamClusterAssignments(segment: TimelineSegment, candidates: PlayerIdentityCandidate[]): TeamClusterAssignment[] {

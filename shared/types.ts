@@ -469,6 +469,12 @@ export type VisionEvidence = {
     zoneConfidence: number;
     attackingDirection: "left_to_right" | "right_to_left" | "unknown";
     attackingDirectionConfidence: number;
+    teamAttackingDirections?: Array<{
+      team: string;
+      attackingDirection: "left_to_right" | "right_to_left" | "unknown";
+      confidence: number;
+      evidence: string[];
+    }>;
     evidence: string[];
     limitations: string[];
   };

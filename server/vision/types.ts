@@ -49,6 +49,7 @@ export type TrackerSegment = {
   proximity: NonNullable<VisionEvidence["proximity"]>;
   playerTracks: TrackSummary[];
   ballTracks: TrackSummary[];
+  fieldCalibration?: NonNullable<VisionEvidence["fieldCalibration"]>;
   idSwitches: number;
   boxes: VisionBoundingBox[];
   provider: string;

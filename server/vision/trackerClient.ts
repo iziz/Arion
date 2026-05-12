@@ -39,7 +39,14 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           jerseyOcrMinConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.6",
           jerseyOcrMaxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "3",
           jerseyOcrMaxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48",
-          jerseyOcrMinBoxHeight: process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
+          jerseyOcrMinBoxHeight: process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12",
+          faceIdentity: process.env.FACE_IDENTITY_ENABLED || "0",
+          faceIdentityModel: process.env.FACE_IDENTITY_MODEL_PATH || "",
+          faceIdentityGallery: process.env.FACE_IDENTITY_GALLERY_PATH || "",
+          faceIdentityMinConfidence: process.env.FACE_IDENTITY_MIN_CONFIDENCE || "0.62",
+          faceIdentityMaxSamplesPerTrack: process.env.FACE_IDENTITY_MAX_SAMPLES_PER_TRACK || "2",
+          faceIdentityMaxTotalSamples: process.env.FACE_IDENTITY_MAX_TOTAL_SAMPLES || "32",
+          fieldCalibration: process.env.FIELD_CALIBRATION_CONFIG || ""
         },
         {
           metricKey: "model.vision.tracker.service"
@@ -71,7 +78,21 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           "--jersey-ocr-max-total-samples",
           process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48",
           "--jersey-ocr-min-box-height",
-          process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
+          process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12",
+          "--face-identity",
+          process.env.FACE_IDENTITY_ENABLED || "0",
+          "--face-identity-model",
+          process.env.FACE_IDENTITY_MODEL_PATH || "",
+          "--face-identity-gallery",
+          process.env.FACE_IDENTITY_GALLERY_PATH || "",
+          "--face-identity-min-confidence",
+          process.env.FACE_IDENTITY_MIN_CONFIDENCE || "0.62",
+          "--face-identity-max-samples-per-track",
+          process.env.FACE_IDENTITY_MAX_SAMPLES_PER_TRACK || "2",
+          "--face-identity-max-total-samples",
+          process.env.FACE_IDENTITY_MAX_TOTAL_SAMPLES || "32",
+          "--field-calibration",
+          process.env.FIELD_CALIBRATION_CONFIG || ""
         ],
         { stdio: ["pipe", "pipe", "pipe"] }
       );

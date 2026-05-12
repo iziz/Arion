@@ -100,6 +100,53 @@ test("football identity resolver accepts roster-backed face embedding candidates
   assert.equal(candidate?.evidence.some((item) => item.source === "face" && item.value.includes("face embedding")), true);
 });
 
+test("football identity resolver uses team attacking direction for calibrated pitch zones", () => {
+  const timeline = [
+    segment("seg-team-direction", 70, 76, "Tottenham attack Arsenal at 72 minutes.", "TOT 1-0 ARS 72'", "track-defender-7", {
+      movement: {
+        coordinateMode: "pitch_homography",
+        averageX: 0.82,
+        averageY: 0.52,
+        displacement: 0.08,
+        speedPerSecond: 0.04,
+        direction: "right",
+        fieldZoneHint: "final_third",
+        fieldZoneConfidence: 0.78,
+        widthLaneHint: "central",
+        widthLaneConfidence: 0.66,
+        zoneOccupancy: [
+          { zone: "final_third", share: 0.78 },
+          { zone: "middle_third", share: 0.22 }
+        ],
+        laneOccupancy: [
+          { lane: "central", share: 0.66 },
+          { lane: "near_side", share: 0.34 }
+        ],
+        samples: 12
+      },
+      fieldCalibration: {
+        status: "calibrated",
+        method: "homography",
+        zone: "final_third",
+        zoneConfidence: 0.78,
+        attackingDirection: "unknown",
+        attackingDirectionConfidence: 0,
+        teamAttackingDirections: [
+          { team: "Tottenham Hotspur", attackingDirection: "left_to_right", confidence: 0.7, evidence: ["test"] },
+          { team: "Arsenal", attackingDirection: "right_to_left", confidence: 0.7, evidence: ["test"] }
+        ],
+        evidence: ["test homography"],
+        limitations: []
+      }
+    })
+  ];
+  const result = resolveTimelineMatchIdentity(assetRecord(timeline), footballIndex(), timeline, { snapshot: snapshot() });
+  const candidate = result.timeline[0].identity?.playerIdentityCandidates.find((item) => item.trackId === "track-defender-7" && item.canonicalName === "Bukayo Saka");
+
+  assert.equal(candidate?.canonicalName, "Bukayo Saka");
+  assert.equal(candidate?.evidence.some((item) => item.source === "movement" && item.value.includes("Team-relative zone for Arsenal: defensive_third")), true);
+});
+
 test("sports identity resolver applies American football strategy with nflverse play metadata", () => {
   const timeline = [
     americanFootballSegment(
@@ -134,6 +181,7 @@ function segment(
     jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"];
     movement?: VisionTrackMovement;
     faceIdentityCandidates?: VisionFaceIdentityCandidate[];
+    fieldCalibration?: VisionEvidence["fieldCalibration"];
   } = {}
 ): TimelineSegment {
   return {
@@ -254,6 +302,7 @@ function vision(
     jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"];
     movement?: VisionTrackMovement;
     faceIdentityCandidates?: VisionFaceIdentityCandidate[];
+    fieldCalibration?: VisionEvidence["fieldCalibration"];
   } = {}
 ): VisionEvidence {
   return {
@@ -304,6 +353,7 @@ function vision(
       }
     },
     fieldZone: { zone: "final_third", confidence: 0.6, method: "detector" },
+    ...(options.fieldCalibration ? { fieldCalibration: options.fieldCalibration } : {}),
     eventCandidates: [{ type: "pass_receive", confidence: 0.7, reason: "test" }],
     limitations: []
   };

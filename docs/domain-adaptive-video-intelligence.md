@@ -153,8 +153,8 @@ The ask workflow first builds a temporary structured knowledge plan, resolves th
 
 ## Remaining Gaps
 
-- Stable player identity still needs stronger helmet assignment, ReID, face embedding galleries, and contact/track models. Current tracking can add heuristic kit-color clusters, crop-based jersey number candidates, screen-relative pitch-zone occupancy, lane occupancy, and roster-backed face candidate hooks for visible player separation, but identity output remains candidate-first unless domain context, clock, participant/roster evidence, and track evidence agree.
-- Field zone, lane occupancy, and pocket state remain heuristic until sport-specific calibration/tracking is added. Football track zones are screen-relative unless a homography stage provides pitch coordinates and attacking direction.
+- Stable player identity still needs stronger helmet assignment, ReID, maintained face reference images, and contact/track models. Current tracking can add heuristic kit-color clusters, crop-based jersey number candidates, screen-relative or homography-projected pitch-zone occupancy, lane occupancy, and roster-backed face embedding matches for visible player separation, but identity output remains candidate-first unless domain context, clock, participant/roster evidence, and track evidence agree.
+- Field zone, lane occupancy, and pocket state remain heuristic until sport-specific calibration/tracking is added. Football track zones are screen-relative unless `FIELD_CALIBRATION_CONFIG` provides homography coordinates and optional team attacking directions.
 - Multi-camera game synchronization is not implemented.
 - Large-scale ingestion already has Redis/BullMQ dispatch and persisted job/ask records, but multi-region scheduling, autoscaling, and cross-cluster queue ownership are not implemented.
 - Provider knowledge should be versioned by weekly roster snapshots and transfer windows.

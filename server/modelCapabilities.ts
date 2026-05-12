@@ -127,6 +127,17 @@ export async function getRuntimeCapabilities() {
           minConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.6",
           maxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "3",
           maxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48"
+        },
+        faceIdentity: {
+          enabled: !["0", "false", "no", "off", ""].includes((process.env.FACE_IDENTITY_ENABLED || "0").toLowerCase()),
+          provider: "onnxruntime",
+          modelPathConfigured: Boolean(process.env.FACE_IDENTITY_MODEL_PATH),
+          galleryPathConfigured: Boolean(process.env.FACE_IDENTITY_GALLERY_PATH),
+          minConfidence: process.env.FACE_IDENTITY_MIN_CONFIDENCE || "0.62"
+        },
+        fieldCalibration: {
+          configPathConfigured: Boolean(process.env.FIELD_CALIBRATION_CONFIG),
+          method: process.env.FIELD_CALIBRATION_CONFIG ? "homography" : "none"
         }
       },
       videoVlm: {

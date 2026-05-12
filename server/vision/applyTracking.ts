@@ -100,7 +100,8 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
     const playerBoxes = summary.boxes.filter((box) => box.label === "person").sort((a, b) => b.confidence - a.confidence).slice(0, 22);
     const ballBoxes = summary.boxes.filter((box) => box.label === "sports_ball").sort((a, b) => b.confidence - a.confidence).slice(0, 4);
     const detectedZone = estimateZoneFromDetections(playerBoxes, ballBoxes, vision.fieldZone.zone);
-    const fieldCalibration = inferTrackingFieldCalibration(
+    const trackerCalibration = summary.fieldCalibration?.status === "calibrated" ? summary.fieldCalibration : null;
+    const fieldCalibration = trackerCalibration ?? inferTrackingFieldCalibration(
       {
         ...vision,
         fieldZone: {
@@ -111,6 +112,9 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
       },
       summary.ballMovement
     );
+    const fieldZone = trackerCalibration
+      ? { zone: trackerCalibration.zone, confidence: trackerCalibration.zoneConfidence, method: "homography" as const }
+      : { zone: detectedZone.zone, confidence: Math.max(vision.fieldZone.confidence, detectedZone.confidence), method: detectedZone.method };
     const nextVision: VisionEvidence = {
       ...vision,
       trust: "detected",
@@ -132,11 +136,7 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
         }
       },
       proximity: summary.proximity,
-      fieldZone: {
-        zone: detectedZone.zone,
-        confidence: Math.max(vision.fieldZone.confidence, detectedZone.confidence),
-        method: detectedZone.method
-      },
+      fieldZone,
       fieldCalibration,
       tracking: {
         status: summary.trackedFrameCount > 0 ? "tracked" : vision.tracking?.status ?? "estimated",
