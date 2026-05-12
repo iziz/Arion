@@ -11,6 +11,7 @@ import type {
   MatchContext,
   PlayerIdentityCandidate,
   SegmentIdentityContext,
+  TeamClusterAssignment,
   TimelineSegment,
   TrackIdentityAssignment
 } from "../../shared/types";
@@ -165,6 +166,7 @@ function resolveFootballIdentity(asset: AssetRecord, _index: IndexRecord, timeli
   const contexts = new Map<string, MatchContext>();
   const playerCandidates: PlayerIdentityCandidate[] = [];
   const assignments: TrackIdentityAssignment[] = [];
+  const teamClusterAssignments: TeamClusterAssignment[] = [];
   const nextTimeline = timeline.map((segment) => {
     const scored = scoreFootballMatches(asset, segment, candidates).slice(0, 2);
     const selected = scored.filter((item, index) => item.status !== "unknown" && (index === 0 || item.score >= scored[0].score - 1));
@@ -180,17 +182,20 @@ function resolveFootballIdentity(asset: AssetRecord, _index: IndexRecord, timeli
     });
     const candidatesForSegment = buildFootballPlayerIdentityCandidates(segment, selected[0] ?? null, clockMappings[0] ?? null, segmentWindows);
     const assignmentsForSegment = candidatesForSegment.filter(isTrackAssignment);
+    const teamClusterAssignmentsForSegment = buildTeamClusterAssignments(segment, candidatesForSegment);
     playerCandidates.push(...candidatesForSegment);
     assignments.push(...assignmentsForSegment);
+    teamClusterAssignments.push(...teamClusterAssignmentsForSegment);
 
     const identity: SegmentIdentityContext | undefined =
-      selected.length > 0 || clockMappings.length > 0 || candidatesForSegment.length > 0
+      selected.length > 0 || clockMappings.length > 0 || candidatesForSegment.length > 0 || teamClusterAssignmentsForSegment.length > 0
         ? {
             matchContextIds: selected.map((item) => footballContextIdForCandidate(item.candidate)),
             clockMappings,
             activeRosterWindows: segmentWindows,
             playerIdentityCandidates: candidatesForSegment,
-            trackIdentityAssignments: assignmentsForSegment
+            trackIdentityAssignments: assignmentsForSegment,
+            teamClusterAssignments: teamClusterAssignmentsForSegment
           }
         : undefined;
 
@@ -204,9 +209,11 @@ function resolveFootballIdentity(asset: AssetRecord, _index: IndexRecord, timeli
     activeRosterWindows: Array.from(rosterByContext.values()).flat(),
     playerIdentityCandidates: dedupePlayerCandidates(playerCandidates),
     trackIdentityAssignments: dedupeTrackAssignments(assignments),
+    teamClusterAssignments: dedupeTeamClusterAssignments(teamClusterAssignments),
     limitations: [
       "Football match context is inferred from indexed text, OCR, VLM captions, and football registry activity; it is not an official broadcast synchronization feed.",
       "Football player identity remains candidate-level unless match context, clock, roster window, and track evidence all support the assignment.",
+      "Kit-color clusters are mapped to teams only when roster-backed player identity evidence connects a track cluster to a known team in the same segment.",
       "Heuristic kit-color clusters can separate visible tracks, but face, jersey OCR, and stronger ReID outputs remain candidate evidence unless the surrounding context agrees."
     ],
     updatedAt: new Date().toISOString()
@@ -235,6 +242,7 @@ function resolveAmericanFootballIdentity(asset: AssetRecord, _index: IndexRecord
   const contexts = new Map<string, MatchContext>();
   const playerCandidates: PlayerIdentityCandidate[] = [];
   const assignments: TrackIdentityAssignment[] = [];
+  const teamClusterAssignments: TeamClusterAssignment[] = [];
   const nextTimeline = timeline.map((segment) => {
     const scored = scoreAmericanFootballGames(asset, segment, games, lookup).slice(0, 2);
     const selected = scored.filter((item, index) => item.status !== "unknown" && (index === 0 || item.score >= scored[0].score - 1.5));
@@ -249,17 +257,20 @@ function resolveAmericanFootballIdentity(asset: AssetRecord, _index: IndexRecord
     });
     const candidatesForSegment = buildAmericanFootballPlayerIdentityCandidates(segment, selected[0] ?? null, clockMappings[0] ?? null, segmentWindows, snapshot.players);
     const assignmentsForSegment = candidatesForSegment.filter(isTrackAssignment);
+    const teamClusterAssignmentsForSegment = buildTeamClusterAssignments(segment, candidatesForSegment);
     playerCandidates.push(...candidatesForSegment);
     assignments.push(...assignmentsForSegment);
+    teamClusterAssignments.push(...teamClusterAssignmentsForSegment);
 
     const identity: SegmentIdentityContext | undefined =
-      selected.length > 0 || clockMappings.length > 0 || candidatesForSegment.length > 0
+      selected.length > 0 || clockMappings.length > 0 || candidatesForSegment.length > 0 || teamClusterAssignmentsForSegment.length > 0
         ? {
             matchContextIds: selected.map((item) => americanFootballContextIdForCandidate(item.candidate)),
             clockMappings,
             activeRosterWindows: segmentWindows,
             playerIdentityCandidates: candidatesForSegment,
-            trackIdentityAssignments: assignmentsForSegment
+            trackIdentityAssignments: assignmentsForSegment,
+            teamClusterAssignments: teamClusterAssignmentsForSegment
           }
         : undefined;
 
@@ -273,6 +284,7 @@ function resolveAmericanFootballIdentity(asset: AssetRecord, _index: IndexRecord
     activeRosterWindows: Array.from(rosterByContext.values()).flat(),
     playerIdentityCandidates: dedupePlayerCandidates(playerCandidates),
     trackIdentityAssignments: dedupeTrackAssignments(assignments),
+    teamClusterAssignments: dedupeTeamClusterAssignments(teamClusterAssignments),
     limitations: [
       "American-football game context uses nflverse play metadata and domain event evidence when available.",
       "A game context can contain many play-level clock mappings because edited videos can splice plays from different games or quarters.",
@@ -296,6 +308,7 @@ function emptyIdentity(status: AssetIdentityIndex["status"], reason: string, gen
     activeRosterWindows: [],
     playerIdentityCandidates: [],
     trackIdentityAssignments: [],
+    teamClusterAssignments: [],
     limitations: [reason],
     updatedAt: new Date().toISOString()
   };
@@ -308,6 +321,7 @@ function combineAssetIdentityIndexes(identities: AssetIdentityIndex[]): AssetIde
   const activeRosterWindows = dedupeRosterWindows(identities.flatMap((identity) => identity.activeRosterWindows));
   const playerIdentityCandidates = dedupePlayerCandidates(identities.flatMap((identity) => identity.playerIdentityCandidates));
   const trackIdentityAssignments = dedupeTrackAssignments(identities.flatMap((identity) => identity.trackIdentityAssignments));
+  const teamClusterAssignments = dedupeTeamClusterAssignments(identities.flatMap((identity) => identity.teamClusterAssignments ?? []));
   return {
     generatedBy: SPORTS_IDENTITY_RESOLVER_ID,
     status: readyCount > 0 ? "ready" : partialCount > 0 || matchContexts.length > 0 ? "partial" : "skipped",
@@ -315,6 +329,7 @@ function combineAssetIdentityIndexes(identities: AssetIdentityIndex[]): AssetIde
     activeRosterWindows,
     playerIdentityCandidates,
     trackIdentityAssignments,
+    teamClusterAssignments,
     limitations: unique([
       "Sports base resolver orchestrates context, clock, roster, and track identity contracts; sport-specific strategies own event semantics.",
       ...identities.flatMap((identity) => identity.limitations)
@@ -564,6 +579,70 @@ function buildFootballPlayerIdentityCandidates(
   }
 
   return dedupePlayerCandidates(candidates).slice(0, 8);
+}
+
+function buildTeamClusterAssignments(segment: TimelineSegment, candidates: PlayerIdentityCandidate[]): TeamClusterAssignment[] {
+  const tracks = new Map((segment.sceneData?.vision?.tracking?.playerTracks ?? []).map((track) => [track.id, track]));
+  const byKey = new Map<string, TeamClusterAssignment>();
+
+  for (const candidate of candidates) {
+    if (!candidate.trackId || !candidate.team || candidate.status === "rejected" || candidate.status === "unknown") continue;
+    const track = tracks.get(candidate.trackId);
+    if (!track?.teamCluster || track.teamCluster === "unknown") continue;
+
+    const teamConfidence = track.teamConfidence ?? 0.42;
+    const confidence = Number(Math.min(0.88, candidate.confidence * 0.66 + teamConfidence * 0.34).toFixed(2));
+    const key = `${candidate.matchContextId ?? "unknown"}:${track.teamCluster}:${candidate.team}:${candidate.videoRange.start}:${candidate.videoRange.end}`;
+    const evidence: IdentityEvidenceItem[] = [
+      ...visualTrackEvidence(segment, candidate.trackId),
+      {
+        source: "knowledge",
+        value: `${candidate.canonicalName ?? candidate.playerId ?? "Unknown player"} roster-backed team ${candidate.team}`,
+        confidence: Math.min(0.82, candidate.confidence)
+      }
+    ];
+    const existing = byKey.get(key);
+    if (!existing || confidence > existing.confidence) {
+      byKey.set(key, {
+        cluster: track.teamCluster,
+        team: candidate.team,
+        matchContextId: candidate.matchContextId,
+        videoRange: candidate.videoRange,
+        confidence,
+        status: candidate.status === "confirmed" && confidence >= 0.72 ? "confirmed" : "candidate",
+        evidence
+      });
+    } else {
+      existing.evidence = dedupeEvidenceItems([...existing.evidence, ...evidence]).slice(0, 8);
+    }
+  }
+
+  const distinctTeamsByCluster = new Map<string, Set<string>>();
+  for (const assignment of byKey.values()) {
+    const key = `${assignment.matchContextId ?? "unknown"}:${assignment.cluster}:${assignment.videoRange.start}:${assignment.videoRange.end}`;
+    distinctTeamsByCluster.set(key, new Set([...(distinctTeamsByCluster.get(key) ?? []), assignment.team ?? "unknown"]));
+  }
+
+  return Array.from(byKey.values())
+    .map((assignment) => {
+      const ambiguityKey = `${assignment.matchContextId ?? "unknown"}:${assignment.cluster}:${assignment.videoRange.start}:${assignment.videoRange.end}`;
+      const ambiguous = (distinctTeamsByCluster.get(ambiguityKey)?.size ?? 0) > 1;
+      if (!ambiguous) return assignment;
+      return {
+        ...assignment,
+        confidence: Number(Math.max(0.2, assignment.confidence * 0.72).toFixed(2)),
+        status: "candidate" as const,
+        evidence: dedupeEvidenceItems([
+          ...assignment.evidence,
+          {
+            source: "knowledge",
+            value: `Cluster ${assignment.cluster} has competing team candidates in this segment.`,
+            confidence: 0.42
+          }
+        ]).slice(0, 8)
+      };
+    })
+    .sort((a, b) => b.confidence - a.confidence || a.cluster.localeCompare(b.cluster) || (a.team ?? "").localeCompare(b.team ?? ""));
 }
 
 function footballCandidateConfidence(match: ScoredFootballMatch, source: { source: IdentityEvidenceItem["source"]; confidence: number }, hasWindow: boolean, hasTrack: boolean, clock: MatchClockMapping | null) {
@@ -1152,13 +1231,21 @@ function enrichSegmentWithIdentity(segment: TimelineSegment, identity: SegmentId
   const candidateText = identity.playerIdentityCandidates
     .map((candidate) => `Player identity ${candidate.status}: ${candidate.canonicalName ?? "unknown"}${candidate.trackId ? ` track ${candidate.trackId}` : ""}.`)
     .join(" ");
-  const searchText = [segment.domain?.searchText, contextText, clockText, candidateText].filter(Boolean).join(" ");
-  const tags = extractLightKeywords([contextText, clockText, candidateText].join(" ")).slice(0, 16);
+  const clusterText = (identity.teamClusterAssignments ?? [])
+    .map((assignment) => `Team cluster ${assignment.status}: ${assignment.cluster} -> ${assignment.team ?? "unknown"}.`)
+    .join(" ");
+  const searchText = [segment.domain?.searchText, contextText, clockText, candidateText, clusterText].filter(Boolean).join(" ");
+  const tags = extractLightKeywords([contextText, clockText, candidateText, clusterText].join(" ")).slice(0, 16);
   return {
     ...segment,
     identity: merged,
     domain: segment.domain ? { ...segment.domain, searchText } : segment.domain,
-    tags: unique([...segment.tags, ...tags, ...identity.playerIdentityCandidates.flatMap((candidate) => (candidate.canonicalName ? [`player.${normalizeLabel(candidate.canonicalName)}`] : []))]).slice(0, 48)
+    tags: unique([
+      ...segment.tags,
+      ...tags,
+      ...identity.playerIdentityCandidates.flatMap((candidate) => (candidate.canonicalName ? [`player.${normalizeLabel(candidate.canonicalName)}`] : [])),
+      ...(identity.teamClusterAssignments ?? []).flatMap((assignment) => (assignment.team ? [`team.${normalizeLabel(assignment.team)}`, `kit.${assignment.cluster}`] : []))
+    ]).slice(0, 48)
   };
 }
 
@@ -1169,7 +1256,8 @@ function mergeSegmentIdentity(existing: SegmentIdentityContext | undefined, next
     clockMappings: dedupeClockMappings([...existing.clockMappings, ...next.clockMappings]),
     activeRosterWindows: dedupeRosterWindows([...existing.activeRosterWindows, ...next.activeRosterWindows]),
     playerIdentityCandidates: dedupePlayerCandidates([...existing.playerIdentityCandidates, ...next.playerIdentityCandidates]),
-    trackIdentityAssignments: dedupeTrackAssignments([...existing.trackIdentityAssignments, ...next.trackIdentityAssignments])
+    trackIdentityAssignments: dedupeTrackAssignments([...existing.trackIdentityAssignments, ...next.trackIdentityAssignments]),
+    teamClusterAssignments: dedupeTeamClusterAssignments([...(existing.teamClusterAssignments ?? []), ...(next.teamClusterAssignments ?? [])])
   };
 }
 
@@ -1200,11 +1288,11 @@ function extractJerseyNumberCandidates(segment: TimelineSegment) {
     .filter((source) => source.source === "ocr" || source.source === "vlm")
     .map((source) => source.text)
     .join(" ");
-  return unique(
-    Array.from(ocr.matchAll(/(?:#|no\.?\s*|number\s+)(\d{1,2})\b/gi))
-      .map((match) => Number(match[1]))
-      .filter((value) => Number.isFinite(value) && value >= 1 && value <= 99)
-  );
+  const jerseyNumbers = [
+    ...Array.from(ocr.matchAll(/(?:#|no\.?\s*|number\s+|shirt\s+|jersey\s+|등번호\s*)(\d{1,2})\b/gi)).map((match) => Number(match[1])),
+    ...Array.from(ocr.matchAll(/\b(\d{1,2})\s*번(?:\s*선수)?/g)).map((match) => Number(match[1]))
+  ];
+  return unique(jerseyNumbers.filter((value) => Number.isFinite(value) && value >= 1 && value <= 99));
 }
 
 function assetMetadataText(asset: AssetRecord) {
@@ -1370,6 +1458,35 @@ function dedupePlayerCandidates(candidates: PlayerIdentityCandidate[]) {
 
 function dedupeTrackAssignments(assignments: TrackIdentityAssignment[]) {
   return dedupePlayerCandidates(assignments).filter(isTrackAssignment);
+}
+
+function dedupeTeamClusterAssignments(assignments: TeamClusterAssignment[]) {
+  const byKey = new Map<string, TeamClusterAssignment>();
+  for (const assignment of assignments) {
+    const key = `${assignment.matchContextId ?? "unknown"}:${assignment.cluster}:${assignment.team ?? "unknown"}:${assignment.videoRange.start}:${assignment.videoRange.end}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...assignment, evidence: dedupeEvidenceItems(assignment.evidence).slice(0, 8) });
+      continue;
+    }
+    byKey.set(key, {
+      ...existing,
+      confidence: Number(Math.max(existing.confidence, assignment.confidence).toFixed(2)),
+      status: existing.status === "confirmed" || assignment.status === "confirmed" ? "confirmed" : existing.status === "candidate" || assignment.status === "candidate" ? "candidate" : "unknown",
+      evidence: dedupeEvidenceItems([...existing.evidence, ...assignment.evidence]).slice(0, 8)
+    });
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.confidence - a.confidence || a.cluster.localeCompare(b.cluster) || (a.team ?? "").localeCompare(b.team ?? ""));
+}
+
+function dedupeEvidenceItems(items: IdentityEvidenceItem[]) {
+  const byKey = new Map<string, IdentityEvidenceItem>();
+  for (const item of items) {
+    const key = `${item.source}:${item.value}`;
+    const existing = byKey.get(key);
+    if (!existing || item.confidence > existing.confidence) byKey.set(key, item);
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.confidence - a.confidence || a.source.localeCompare(b.source) || a.value.localeCompare(b.value));
 }
 
 function addToMap<K, V>(map: Map<K, V[]>, key: K, value: V) {

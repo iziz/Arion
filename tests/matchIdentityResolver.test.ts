@@ -20,7 +20,22 @@ test("match identity resolver keeps separate match contexts and clock mappings i
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.canonicalName, "Son Heung-min");
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.status, "confirmed");
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.evidence.some((item) => item.source === "reid" && item.value.includes("Kit cluster team-1")), true);
+  assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.cluster, "team-1");
+  assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.team, "Tottenham Hotspur");
+  assert.equal(result.identity.teamClusterAssignments?.some((assignment) => assignment.cluster === "team-1" && assignment.team === "Tottenham Hotspur"), true);
   assert.match(result.trace, /^match-identity:sports-identity-resolver-v1:strategies=sports\.football:2:/);
+});
+
+test("football identity resolver uses explicit jersey-number OCR with roster and kit-cluster evidence", () => {
+  const timeline = [segment("seg-palmer", 54, 60, "Chelsea push against Liverpool at 55 minutes.", "LIV 2-1 CHE No. 20 55'", "track-player-20")];
+  const result = resolveTimelineMatchIdentity(assetRecord(timeline), footballIndex(), timeline, { snapshot: snapshot() });
+  const assignment = result.timeline[0].identity?.trackIdentityAssignments[0];
+
+  assert.equal(assignment?.canonicalName, "Cole Palmer");
+  assert.equal(assignment?.shirtNumber, 20);
+  assert.equal(assignment?.evidence.some((item) => item.source === "jersey_ocr" && item.value.includes("20")), true);
+  assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.cluster, "team-1");
+  assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.team, "Chelsea");
 });
 
 test("sports identity resolver applies American football strategy with nflverse play metadata", () => {

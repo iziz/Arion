@@ -1522,8 +1522,22 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
   ).length;
   const matchContextCount = asset.identity?.matchContexts.length ?? asset.timeline.filter((segment) => (segment.identity?.matchContextIds.length ?? 0) > 0).length;
   const trackAssignmentCount = asset.identity?.trackIdentityAssignments.length ?? asset.timeline.reduce((sum, segment) => sum + (segment.identity?.trackIdentityAssignments.length ?? 0), 0);
+  const teamClusterAssignmentCount = asset.identity?.teamClusterAssignments?.length ?? asset.timeline.reduce((sum, segment) => sum + (segment.identity?.teamClusterAssignments?.length ?? 0), 0);
   const clockMappingCount = asset.identity?.matchContexts.reduce((sum, context) => sum + context.clockMappings.length, 0) ?? asset.timeline.reduce((sum, segment) => sum + (segment.identity?.clockMappings.length ?? 0), 0);
   const averageConfidence = averageNumber(domainEvents.map(({ event }) => event.confidence));
+  const identityReviewItems = asset.timeline
+    .flatMap((segment) =>
+      (segment.identity?.playerIdentityCandidates ?? []).map((candidate) => ({
+        segment,
+        candidate,
+        teamCluster: (segment.identity?.teamClusterAssignments ?? []).find(
+          (assignment) => assignment.matchContextId === candidate.matchContextId && assignment.team === candidate.team && assignment.videoRange.start === candidate.videoRange.start
+        )
+      }))
+    )
+    .filter(({ candidate }) => candidate.status !== "confirmed" || candidate.confidence < 0.82)
+    .sort((a, b) => a.candidate.confidence - b.candidate.confidence)
+    .slice(0, 10);
   const isVlmNode = step.id === "domainVlm";
   return (
     <WorkflowNodeDetails
@@ -1541,6 +1555,7 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             { label: "Identity resolved", value: `${identityCount}/${domainEvents.length}`, tone: identityCount > 0 ? "good" : "neutral" },
             { label: "Match contexts", value: matchContextCount.toString(), tone: matchContextCount > 0 ? "good" : "neutral" },
             { label: "Track identities", value: trackAssignmentCount.toString(), tone: trackAssignmentCount > 0 ? "good" : "neutral" },
+            { label: "Team clusters", value: teamClusterAssignmentCount.toString(), tone: teamClusterAssignmentCount > 0 ? "good" : "neutral" },
             { label: "Avg confidence", value: averageConfidence === null ? "Unknown" : `${Math.round(averageConfidence * 100)}%`, tone: averageConfidence !== null && averageConfidence >= 0.55 ? "good" : "warning" },
             { label: "Knowledge VLM checks", value: vlmSegments.length.toString(), tone: vlmSegments.length > 0 ? "good" : "neutral" }
           ]}
@@ -1582,16 +1597,76 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
             {vlmSegments.length === 0 && <span className="empty-inline">No related knowledge VLM checks are stored.</span>}
           </div>
         ) : (
-          <div className="domain-event-list">
-            {domainEvents.slice(0, 12).map(({ segment, event }) => (
-              <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
-            ))}
-            {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
-          </div>
+          <>
+            <IdentityReviewQueue items={identityReviewItems} onOpenMoment={onOpenMoment} />
+            <div className="domain-event-list">
+              {domainEvents.slice(0, 12).map(({ segment, event }) => (
+                <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
+              ))}
+              {domainEvents.length === 0 && <span className="empty-inline">No domain event metadata was generated for this asset.</span>}
+            </div>
+          </>
         )
       }
       rawDetails={rawStepDetails(step, vlmSegments.flatMap((segment) => segment.domain?.vlm?.rawResponse ? [`vlm:${truncateText(segment.domain.vlm.rawResponse, 360)}`] : []))}
     />
+  );
+}
+
+function IdentityReviewQueue({
+  items,
+  onOpenMoment
+}: {
+  items: Array<{
+    segment: AssetRecord["timeline"][number];
+    candidate: NonNullable<AssetRecord["timeline"][number]["identity"]>["playerIdentityCandidates"][number];
+    teamCluster?: NonNullable<NonNullable<AssetRecord["timeline"][number]["identity"]>["teamClusterAssignments"]>[number];
+  }>;
+  onOpenMoment?: OpenMomentHandler;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="domain-event-list">
+        <article className="domain-event-row">
+          <div>
+            <strong>Identity review queue</strong>
+            <span>No low-confidence identity candidates are stored for review.</span>
+          </div>
+        </article>
+      </div>
+    );
+  }
+
+  return (
+    <div className="domain-event-list">
+      <article className="domain-event-row">
+        <div>
+          <strong>Identity review queue</strong>
+          <span>{items.length} candidate{items.length === 1 ? "" : "s"} need evidence review before confirmation.</span>
+        </div>
+      </article>
+      {items.map(({ segment, candidate, teamCluster }) => (
+        <article key={`${segment.id}-${candidate.trackId ?? "no-track"}-${candidate.playerId ?? candidate.canonicalName ?? "unknown"}`} className="domain-event-row">
+          <div>
+            <strong>{candidate.canonicalName ?? "Unknown player"}{candidate.team ? ` · ${candidate.team}` : ""}</strong>
+            <button
+              type="button"
+              className="time-link"
+              aria-label={`Play identity review candidate at ${formatDuration(segment.start)}`}
+              onClick={() => onOpenMoment?.(segment, { start: segment.start, end: segment.end, label: candidate.canonicalName ?? "Identity review candidate" })}
+            >
+              {formatDuration(segment.start)}-{formatDuration(segment.end)} · {candidate.status} · {Math.round(candidate.confidence * 100)}%
+            </button>
+          </div>
+          <div className="domain-structured-grid">
+            <span><b>Track</b>{candidate.trackId ?? "no track"}</span>
+            <span><b>Shirt</b>{candidate.shirtNumber ?? "unknown"}</span>
+            <span><b>Kit cluster</b>{teamCluster ? `${teamCluster.cluster} -> ${teamCluster.team ?? "unknown"} · ${Math.round(teamCluster.confidence * 100)}%` : "not mapped"}</span>
+          </div>
+          <span>{candidate.evidence.slice(0, 4).map((item) => `${item.source}: ${item.value} (${Math.round(item.confidence * 100)}%)`).join(" · ") || "No candidate evidence stored."}</span>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -1666,6 +1741,15 @@ function DomainEventRow({
             {segment.identity.trackIdentityAssignments
               .slice(0, 3)
               .map((assignment) => `${assignment.trackId} -> ${assignment.canonicalName ?? "unknown"} (${assignment.status}, ${Math.round(assignment.confidence * 100)}%)`)
+              .join(" · ")}
+          </p>
+        ) : null}
+        {segment.identity?.teamClusterAssignments?.length ? (
+          <p>
+            Team clusters:{" "}
+            {segment.identity.teamClusterAssignments
+              .slice(0, 3)
+              .map((assignment) => `${assignment.cluster} -> ${assignment.team ?? "unknown"} (${assignment.status}, ${Math.round(assignment.confidence * 100)}%)`)
               .join(" · ")}
           </p>
         ) : null}

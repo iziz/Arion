@@ -253,12 +253,23 @@ export type TrackIdentityAssignment = PlayerIdentityCandidate & {
   trackId: string;
 };
 
+export type TeamClusterAssignment = {
+  cluster: VisionTrackTeamCluster;
+  team: string | null;
+  matchContextId: string | null;
+  videoRange: { start: number; end: number };
+  confidence: number;
+  status: "unknown" | "candidate" | "confirmed" | "rejected";
+  evidence: IdentityEvidenceItem[];
+};
+
 export type SegmentIdentityContext = {
   matchContextIds: string[];
   clockMappings: MatchClockMapping[];
   activeRosterWindows: ActiveRosterWindow[];
   playerIdentityCandidates: PlayerIdentityCandidate[];
   trackIdentityAssignments: TrackIdentityAssignment[];
+  teamClusterAssignments?: TeamClusterAssignment[];
 };
 
 export type AssetIdentityIndex = {
@@ -268,6 +279,7 @@ export type AssetIdentityIndex = {
   activeRosterWindows: ActiveRosterWindow[];
   playerIdentityCandidates: PlayerIdentityCandidate[];
   trackIdentityAssignments: TrackIdentityAssignment[];
+  teamClusterAssignments?: TeamClusterAssignment[];
   limitations: string[];
   updatedAt: string;
 };
