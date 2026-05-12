@@ -50,7 +50,11 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
   const event = trustedDomainEvents(segment)[0] ?? null;
   const football = event?.football;
   const americanFootball = event?.americanFootball;
+  const confirmedTrackIdentity = segment.identity?.trackIdentityAssignments.find(
+    (candidate) => candidate.status === "confirmed" && candidate.trackId === tracking.nearestPlayerTrackId
+  );
   const player =
+    confirmedTrackIdentity?.canonicalName ??
     football?.receivingPlayer.identity?.name ??
     football?.passingPlayer.identity?.name ??
     americanFootball?.quarterback.identity?.name ??

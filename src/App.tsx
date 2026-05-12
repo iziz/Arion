@@ -3,6 +3,8 @@ import type {
   AssetRecord,
   AssetSummaryRecord,
   ClipDetailResult,
+  IdentityReviewPatchRequest,
+  IdentityReviewPatchResult,
   IndexRecord,
   JobRecord,
   KnowledgeSourceId,
@@ -413,6 +415,20 @@ export default function App() {
     await refresh();
   }
 
+  async function reviewIdentityCandidate(request: IdentityReviewPatchRequest) {
+    if (!selectedAsset) return;
+    setMessage("");
+    try {
+      const result = await api.patch<IdentityReviewPatchResult>(`/api/assets/${selectedAsset.id}/identity-review`, request);
+      setSelectedAssetDetail(result.asset);
+      const summary = summarizeAssetRecord(result.asset);
+      setAssets((current) => current.map((asset) => (asset.id === summary.id ? summary : asset)));
+      setMessage(`Identity review saved: ${result.candidate.canonicalName ?? result.candidate.playerId ?? "unknown"} ${result.candidate.status}.`);
+    } catch (error) {
+      setMessage(`Identity review failed: ${getFailureMessage(error)}`);
+    }
+  }
+
   function selectIndex(indexId: string) {
     setActiveTab("data");
     setSelectedIndexId(indexId);
@@ -484,6 +500,7 @@ export default function App() {
       setSelectedKnowledgeDomain={setSelectedKnowledgeDomain}
       playerRef={playerRef}
       retryAssetStage={retryAssetStage}
+      reviewIdentityCandidate={reviewIdentityCandidate}
       selectSegment={selectSegment}
       deleteKnowledgePlayer={deleteKnowledgePlayer}
       query={query}

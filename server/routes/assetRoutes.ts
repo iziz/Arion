@@ -4,14 +4,15 @@ import { sendNotFound } from "../http/middleware";
 import { logJson } from "../observability";
 import { planDomainQueryWithLlm } from "../llmQueryPlanner";
 import { parseDomainFilters } from "../queryPlanner";
+import { applyIdentityReviewPatch, IdentityReviewError } from "../identityReview";
 import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { createQueuedAssetJob, getActiveAssetJob, updateAsset, updateJob } from "../services/jobState";
 import { deleteAssetMedia } from "../services/mediaLifecycle";
 import { publishQueueOutbox } from "../services/queueOutboxPublisher";
-import { getTrackingSummary, listTrackingRecords } from "../trackingStore";
+import { getTrackingSummary, listTrackingRecords, upsertAssetTracking } from "../trackingStore";
 import { isVlmWorkerEnabled } from "../vlmWorkerClient";
 import { createAssetFromUpload, normalizeWorkflowStage } from "../workflows/indexingWorkflow";
-import { deleteAssetCascade, getAsset, getIndex, listAssets, listIndexes } from "../store";
+import { deleteAssetCascade, getAsset, getIndex, listAssets, listIndexes, saveAsset } from "../store";
 import { summarizeAssetRecords } from "../../shared/assetSummary";
 import type { JobRecord } from "../../shared/types";
 
@@ -84,6 +85,35 @@ export function registerAssetRoutes(app: Express, upload: UploadMiddleware) {
         trackId: req.query.trackId ? String(req.query.trackId) : undefined
       })
     });
+  });
+
+  app.patch("/api/assets/:id/identity-review", async (req, res) => {
+    const asset = await getAsset(String(req.params.id));
+    if (!asset) return sendNotFound(res, "Asset not found");
+    try {
+      const result = applyIdentityReviewPatch(asset, req.body);
+      const saved = await saveAsset(result.asset);
+      await upsertAssetTracking(saved);
+      await recordEvent("system.info", "Asset identity candidate reviewed", {
+        indexId: saved.indexId,
+        assetId: saved.id,
+        payload: {
+          segmentId: result.segmentId,
+          trackId: result.candidate.trackId,
+          playerId: result.candidate.playerId,
+          canonicalName: result.candidate.canonicalName,
+          status: result.candidate.status,
+          confidence: result.candidate.confidence
+        }
+      });
+      res.json({ ...result, asset: saved });
+    } catch (error) {
+      if (error instanceof IdentityReviewError) {
+        res.status(error.statusCode).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
   });
 
   app.get("/api/tracking", async (req, res) => {

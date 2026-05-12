@@ -21,6 +21,7 @@ import type {
   ClipDetailResult,
   DomainQueryPlan,
   EventRecord,
+  IdentityReviewPatchRequest,
   IndexRecord,
   JobRecord,
   KnowledgeSourceId,
@@ -86,6 +87,7 @@ export type ConsoleLayoutProps = {
   setSelectedKnowledgeDomain: (domain: KnowledgeSourceId) => void;
   playerRef: RefObject<HTMLVideoElement | null>;
   retryAssetStage: (assetId: string, stage: string) => Promise<void>;
+  reviewIdentityCandidate: (request: IdentityReviewPatchRequest) => Promise<void>;
   selectSegment: (assetId: string, segmentId: string, at: number) => void;
   deleteKnowledgePlayer: (id: string) => Promise<void>;
   query: string;
@@ -635,6 +637,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setSelectedKnowledgeDomain,
     playerRef,
     retryAssetStage,
+    reviewIdentityCandidate,
     selectSegment,
     deleteKnowledgePlayer,
     query,
@@ -964,6 +967,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                   index={selectedIndex}
                   job={selectedAssetJob}
                   onRetryStage={retryAssetStage}
+                  onReviewIdentity={reviewIdentityCandidate}
                   onOpenMoment={(segment, options) => openSearchVideo(selectedAsset, segment, options)}
                 />
               )}

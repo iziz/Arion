@@ -1987,6 +1987,46 @@
   text-transform: uppercase;
 }
 
+.identity-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.identity-review-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #d8e4df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #365049;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: none;
+}
+
+.identity-review-actions button:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+.identity-review-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.identity-review-actions .identity-review-confirm {
+  color: #287e68;
+}
+
+.identity-review-actions .identity-review-reject {
+  color: #a9443a;
+}
+
 .domain-event-details summary {
   cursor: pointer;
   color: #2b8b70;

@@ -1,6 +1,6 @@
-import { CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CheckCircle2, CircleHelp, Edit3, FileVideo, Layers3, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
 import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
-import type { AssetRecord, AssetSummaryRecord, IndexRecord, JobRecord } from "../../../shared/types";
+import type { AssetRecord, AssetSummaryRecord, IdentityReviewPatchRequest, IndexRecord, JobRecord } from "../../../shared/types";
 import { KNOWLEDGE_SOURCES, formatKnowledgeSourceLabel } from "../../../shared/knowledgeSources";
 import { knowledgeTemplateDescriptors, sportsBaseTemplateContract, type KnowledgeTemplateDescriptor } from "../../../shared/knowledgeTemplates";
 import { getAssetFlow, type FlowStep } from "../../assetFlow";
@@ -21,6 +21,7 @@ type MomentOpenOptions = {
 };
 
 type OpenMomentHandler = (segment: AssetRecord["timeline"][number], options?: MomentOpenOptions) => void;
+export type IdentityReviewHandler = (request: IdentityReviewPatchRequest) => Promise<void>;
 
 const SEGMENT_PREVIEW_LIMIT = 120;
 const OCR_TOKEN_PREVIEW_LIMIT = 160;
@@ -302,13 +303,15 @@ export function AssetFlow({
   index,
   job,
   onRetryStage,
-  onOpenMoment
+  onOpenMoment,
+  onReviewIdentity
 }: {
   asset: AssetRecord;
   index: IndexRecord | null;
   job: JobRecord | null;
   onRetryStage: (assetId: string, stage: string) => Promise<void>;
   onOpenMoment?: OpenMomentHandler;
+  onReviewIdentity?: IdentityReviewHandler;
 }) {
   const flow = getAssetFlow(asset, index, job);
   const activeStep = flow.find((step) => step.state === "active") ?? flow.find((step) => step.state === "error") ?? flow.at(-1);
@@ -380,7 +383,7 @@ export function AssetFlow({
                     onRetry={retryNode}
                   >
                     <WorkflowRunDetails job={job} step={step} />
-                    <WorkflowResultContent asset={asset} index={index} step={step} onOpenMoment={onOpenMoment} />
+                    <WorkflowResultContent asset={asset} index={index} step={step} onOpenMoment={onOpenMoment} onReviewIdentity={onReviewIdentity} />
                   </FlowNode>
                 ))}
               </div>
@@ -709,7 +712,19 @@ function searchImpactForStep(step: FlowStep) {
   return getWorkflowSearchImpact(step.id, step.state);
 }
 
-function WorkflowResultContent({ asset, index, step, onOpenMoment }: { asset: AssetRecord; index: IndexRecord | null; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+function WorkflowResultContent({
+  asset,
+  index,
+  step,
+  onOpenMoment,
+  onReviewIdentity
+}: {
+  asset: AssetRecord;
+  index: IndexRecord | null;
+  step: FlowStep;
+  onOpenMoment?: OpenMomentHandler;
+  onReviewIdentity?: IdentityReviewHandler;
+}) {
   const stepId = step.id;
   if (stepId === "input") return <InputSourceResult asset={asset} step={step} />;
   if (stepId === "probe") return <ProbeMetadataResult asset={asset} step={step} />;
@@ -721,7 +736,7 @@ function WorkflowResultContent({ asset, index, step, onOpenMoment }: { asset: As
   if (stepId === "videoVlm") return <VideoVlmResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} index={index} step={step} />;
-  if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
+  if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} onReviewIdentity={onReviewIdentity} />;
   if (stepId === "summary" || stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
 }
@@ -1504,7 +1519,17 @@ function averageNumber(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step: FlowStep; onOpenMoment?: OpenMomentHandler }) {
+function DomainResult({
+  asset,
+  step,
+  onOpenMoment,
+  onReviewIdentity
+}: {
+  asset: AssetRecord;
+  step: FlowStep;
+  onOpenMoment?: OpenMomentHandler;
+  onReviewIdentity?: IdentityReviewHandler;
+}) {
   const domainEvents = asset.timeline.flatMap((segment) =>
     (segment.domain?.events ?? []).map((event) => ({
       segment,
@@ -1598,7 +1623,7 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
           </div>
         ) : (
           <>
-            <IdentityReviewQueue items={identityReviewItems} onOpenMoment={onOpenMoment} />
+            <IdentityReviewQueue items={identityReviewItems} onOpenMoment={onOpenMoment} onReviewIdentity={onReviewIdentity} />
             <div className="domain-event-list">
               {domainEvents.slice(0, 12).map(({ segment, event }) => (
                 <DomainEventRow key={event.id} segment={segment} event={event} onOpenMoment={onOpenMoment} />
@@ -1615,7 +1640,8 @@ function DomainResult({ asset, step, onOpenMoment }: { asset: AssetRecord; step:
 
 function IdentityReviewQueue({
   items,
-  onOpenMoment
+  onOpenMoment,
+  onReviewIdentity
 }: {
   items: Array<{
     segment: AssetRecord["timeline"][number];
@@ -1623,7 +1649,30 @@ function IdentityReviewQueue({
     teamCluster?: NonNullable<NonNullable<AssetRecord["timeline"][number]["identity"]>["teamClusterAssignments"]>[number];
   }>;
   onOpenMoment?: OpenMomentHandler;
+  onReviewIdentity?: IdentityReviewHandler;
 }) {
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  async function reviewCandidate(segment: AssetRecord["timeline"][number], candidate: NonNullable<AssetRecord["timeline"][number]["identity"]>["playerIdentityCandidates"][number], status: IdentityReviewPatchRequest["status"]) {
+    if (!onReviewIdentity) return;
+    const key = identityReviewKey(segment, candidate, status);
+    setPendingKey(key);
+    try {
+      await onReviewIdentity({
+        segmentId: segment.id,
+        status,
+        candidate: {
+          trackId: candidate.trackId,
+          playerId: candidate.playerId,
+          canonicalName: candidate.canonicalName,
+          matchContextId: candidate.matchContextId,
+          videoRange: candidate.videoRange
+        }
+      });
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
   if (items.length === 0) {
     return (
       <div className="domain-event-list">
@@ -1646,7 +1695,7 @@ function IdentityReviewQueue({
         </div>
       </article>
       {items.map(({ segment, candidate, teamCluster }) => (
-        <article key={`${segment.id}-${candidate.trackId ?? "no-track"}-${candidate.playerId ?? candidate.canonicalName ?? "unknown"}`} className="domain-event-row">
+        <article key={identityReviewKey(segment, candidate)} className="domain-event-row">
           <div>
             <strong>{candidate.canonicalName ?? "Unknown player"}{candidate.team ? ` · ${candidate.team}` : ""}</strong>
             <button
@@ -1663,11 +1712,49 @@ function IdentityReviewQueue({
             <span><b>Shirt</b>{candidate.shirtNumber ?? "unknown"}</span>
             <span><b>Kit cluster</b>{teamCluster ? `${teamCluster.cluster} -> ${teamCluster.team ?? "unknown"} · ${Math.round(teamCluster.confidence * 100)}%` : "not mapped"}</span>
           </div>
+          {onReviewIdentity && (
+            <div className="identity-review-actions">
+              <button
+                type="button"
+                className="identity-review-confirm"
+                disabled={candidate.status === "confirmed" || pendingKey !== null}
+                onClick={() => void reviewCandidate(segment, candidate, "confirmed")}
+              >
+                <CheckCircle2 size={14} />
+                Confirm
+              </button>
+              <button
+                type="button"
+                className="identity-review-reject"
+                disabled={candidate.status === "rejected" || pendingKey !== null}
+                onClick={() => void reviewCandidate(segment, candidate, "rejected")}
+              >
+                <XCircle size={14} />
+                Reject
+              </button>
+            </div>
+          )}
           <span>{candidate.evidence.slice(0, 4).map((item) => `${item.source}: ${item.value} (${Math.round(item.confidence * 100)}%)`).join(" · ") || "No candidate evidence stored."}</span>
         </article>
       ))}
     </div>
   );
+}
+
+function identityReviewKey(
+  segment: AssetRecord["timeline"][number],
+  candidate: NonNullable<AssetRecord["timeline"][number]["identity"]>["playerIdentityCandidates"][number],
+  action = "view"
+) {
+  return [
+    segment.id,
+    candidate.trackId ?? "no-track",
+    candidate.playerId ?? candidate.canonicalName ?? "unknown",
+    candidate.matchContextId ?? "no-context",
+    candidate.videoRange.start,
+    candidate.videoRange.end,
+    action
+  ].join(":");
 }
 
 function DomainEventRow({

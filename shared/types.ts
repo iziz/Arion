@@ -263,6 +263,26 @@ export type TeamClusterAssignment = {
   evidence: IdentityEvidenceItem[];
 };
 
+export type IdentityReviewPatchRequest = {
+  segmentId: string;
+  status: "confirmed" | "rejected";
+  reviewer?: string | null;
+  candidate: {
+    trackId?: string | null;
+    playerId?: string | null;
+    canonicalName?: string | null;
+    matchContextId?: string | null;
+    videoRange?: { start: number; end: number } | null;
+  };
+};
+
+export type IdentityReviewPatchResult = {
+  asset: AssetRecord;
+  segmentId: string;
+  candidate: PlayerIdentityCandidate;
+  updatedAt: string;
+};
+
 export type SegmentIdentityContext = {
   matchContextIds: string[];
   clockMappings: MatchClockMapping[];
