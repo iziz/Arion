@@ -208,6 +208,7 @@ export type ActiveRosterWindow = {
   playerId: string | null;
   canonicalName: string;
   team: string | null;
+  position?: string | null;
   shirtNumber: number | null;
   startMinute: number | null;
   endMinute: number | null;
@@ -224,6 +225,9 @@ export type IdentityEvidenceItem = {
     | "lineup"
     | "mot"
     | "reid"
+    | "position"
+    | "movement"
+    | "face"
     | "event_metadata"
     | "play_metadata"
     | "helmet_assignment"
@@ -400,6 +404,8 @@ export type VisionEvidence = {
       teamConfidence?: number;
       teamEvidence?: string[];
       jerseyNumberCandidates?: VisionJerseyNumberCandidate[];
+      movement?: VisionTrackMovement;
+      faceIdentityCandidates?: VisionFaceIdentityCandidate[];
     }>;
     ballTracks?: Array<{
       id: string;
@@ -492,6 +498,31 @@ export type VisionJerseyNumberCandidate = {
   source: "crop_ocr";
   frameAt: number | null;
   samples?: number;
+};
+
+export type VisionTrackMovement = {
+  coordinateMode?: "screen_relative" | "pitch_homography";
+  averageX: number;
+  averageY: number;
+  displacement: number;
+  speedPerSecond: number | null;
+  direction: "left" | "right" | "vertical" | "stationary" | "unknown";
+  fieldZoneHint: "defensive_third" | "middle_third" | "final_third" | "unknown";
+  fieldZoneConfidence: number;
+  widthLaneHint: "far_side" | "central" | "near_side" | "unknown";
+  widthLaneConfidence: number;
+  zoneOccupancy: Array<{ zone: "defensive_third" | "middle_third" | "final_third"; share: number }>;
+  laneOccupancy: Array<{ lane: "far_side" | "central" | "near_side"; share: number }>;
+  samples: number;
+};
+
+export type VisionFaceIdentityCandidate = {
+  playerId?: string | null;
+  canonicalName?: string | null;
+  confidence: number;
+  source: "face_embedding";
+  frameAt: number | null;
+  evidence?: string;
 };
 
 export type VisionBoundingBox = {

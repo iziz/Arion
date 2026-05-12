@@ -36,9 +36,9 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3",
           jerseyOcr: process.env.JERSEY_OCR_ENABLED || "1",
           jerseyOcrLang: process.env.JERSEY_OCR_LANG || "en",
-          jerseyOcrMinConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.35",
-          jerseyOcrMaxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "1",
-          jerseyOcrMaxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32",
+          jerseyOcrMinConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.6",
+          jerseyOcrMaxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "3",
+          jerseyOcrMaxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48",
           jerseyOcrMinBoxHeight: process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
         },
         {
@@ -65,11 +65,11 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           "--jersey-ocr-lang",
           process.env.JERSEY_OCR_LANG || "en",
           "--jersey-ocr-min-confidence",
-          process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.35",
+          process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.6",
           "--jersey-ocr-max-samples-per-track",
-          process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "1",
+          process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "3",
           "--jersey-ocr-max-total-samples",
-          process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32",
+          process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48",
           "--jersey-ocr-min-box-height",
           process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
         ],

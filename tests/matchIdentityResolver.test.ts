@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AssetRecord, IndexRecord, KnowledgeSnapshot, TimelineSegment, VisionEvidence } from "../shared/types";
+import type { AssetRecord, IndexRecord, KnowledgeSnapshot, TimelineSegment, VisionEvidence, VisionFaceIdentityCandidate, VisionTrackMovement } from "../shared/types";
 import { resolveTimelineMatchIdentity } from "../server/domainIndex/matchIdentityResolver";
 
 test("match identity resolver keeps separate match contexts and clock mappings inside one edited asset", () => {
@@ -54,6 +54,52 @@ test("football identity resolver uses crop jersey OCR candidates when broadcast 
   assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.team, "Chelsea");
 });
 
+test("football identity resolver narrows roster candidates with pitch-zone occupancy and position evidence", () => {
+  const timeline = [
+    segment("seg-position", 70, 76, "Tottenham attack Arsenal at 72 minutes.", "TOT 1-0 ARS 72'", "track-forward-7", {
+      movement: {
+        averageX: 0.82,
+        averageY: 0.52,
+        displacement: 0.08,
+        speedPerSecond: 0.04,
+        direction: "right",
+        fieldZoneHint: "final_third",
+        fieldZoneConfidence: 0.78,
+        widthLaneHint: "central",
+        widthLaneConfidence: 0.66,
+        zoneOccupancy: [
+          { zone: "final_third", share: 0.78 },
+          { zone: "middle_third", share: 0.22 }
+        ],
+        laneOccupancy: [
+          { lane: "central", share: 0.66 },
+          { lane: "near_side", share: 0.34 }
+        ],
+        samples: 12
+      }
+    })
+  ];
+  const result = resolveTimelineMatchIdentity(assetRecord(timeline), footballIndex(), timeline, { snapshot: snapshot() });
+  const candidate = result.timeline[0].identity?.playerIdentityCandidates.find((item) => item.trackId === "track-forward-7" && item.canonicalName === "Son Heung-min");
+
+  assert.equal(candidate?.canonicalName, "Son Heung-min");
+  assert.equal(candidate?.evidence.some((item) => item.source === "position" && item.value.includes("FW")), true);
+  assert.equal(candidate?.evidence.some((item) => item.source === "movement" && item.value.includes("final_third 78%")), true);
+});
+
+test("football identity resolver accepts roster-backed face embedding candidates", () => {
+  const timeline = [
+    segment("seg-face", 54, 60, "Chelsea push against Liverpool at 55 minutes.", "LIV 2-1 CHE 55'", "track-face-20", {
+      faceIdentityCandidates: [{ canonicalName: "Cole Palmer", confidence: 0.91, source: "face_embedding", frameAt: 56.4, evidence: "candidate set filtered by active roster" }]
+    })
+  ];
+  const result = resolveTimelineMatchIdentity(assetRecord(timeline), footballIndex(), timeline, { snapshot: snapshot() });
+  const candidate = result.timeline[0].identity?.playerIdentityCandidates.find((item) => item.trackId === "track-face-20" && item.canonicalName === "Cole Palmer");
+
+  assert.equal(candidate?.canonicalName, "Cole Palmer");
+  assert.equal(candidate?.evidence.some((item) => item.source === "face" && item.value.includes("face embedding")), true);
+});
+
 test("sports identity resolver applies American football strategy with nflverse play metadata", () => {
   const timeline = [
     americanFootballSegment(
@@ -84,7 +130,11 @@ function segment(
   speech: string,
   overlay: string,
   trackId: string,
-  options: { jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"] } = {}
+  options: {
+    jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"];
+    movement?: VisionTrackMovement;
+    faceIdentityCandidates?: VisionFaceIdentityCandidate[];
+  } = {}
 ): TimelineSegment {
   return {
     id,
@@ -198,7 +248,14 @@ function americanFootballSegment(id: string, start: number, end: number, speech:
   };
 }
 
-function vision(trackId: string, options: { jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"] } = {}): VisionEvidence {
+function vision(
+  trackId: string,
+  options: {
+    jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"];
+    movement?: VisionTrackMovement;
+    faceIdentityCandidates?: VisionFaceIdentityCandidate[];
+  } = {}
+): VisionEvidence {
   return {
     generatedBy: "test",
     frameAt: 1,
@@ -226,7 +283,9 @@ function vision(trackId: string, options: { jerseyNumberCandidates?: NonNullable
           teamCluster: "team-1",
           teamConfidence: 0.71,
           teamEvidence: ["upper-body kit color #ffffff", "hue distance gap 0.180"],
-          ...(options.jerseyNumberCandidates ? { jerseyNumberCandidates: options.jerseyNumberCandidates } : {})
+          ...(options.jerseyNumberCandidates ? { jerseyNumberCandidates: options.jerseyNumberCandidates } : {}),
+          ...(options.movement ? { movement: options.movement } : {}),
+          ...(options.faceIdentityCandidates ? { faceIdentityCandidates: options.faceIdentityCandidates } : {})
         }
       ],
       ballMovement: { fromPrevious: 0.1, speedPerSecond: 1.2, direction: "right" }
@@ -344,10 +403,10 @@ function snapshot(): KnowledgeSnapshot {
       { value: "Chelsea", aliases: ["Chelsea", "CHE"], domainGroup: "sports.football", league: "Premier League" }
     ],
     players: [
-      player("son-heung-min", "Son Heung-min", "Tottenham Hotspur", 7),
-      player("bukayo-saka", "Bukayo Saka", "Arsenal", 7),
-      player("mohamed-salah", "Mohamed Salah", "Liverpool", 11),
-      player("cole-palmer", "Cole Palmer", "Chelsea", 20)
+      player("son-heung-min", "Son Heung-min", "Tottenham Hotspur", 7, "FW"),
+      player("bukayo-saka", "Bukayo Saka", "Arsenal", 7, "DF"),
+      player("mohamed-salah", "Mohamed Salah", "Liverpool", 11, "FW"),
+      player("cole-palmer", "Cole Palmer", "Chelsea", 20, "MF")
     ],
     matchActivities: [
       activity(1001, "Tottenham Hotspur", "Arsenal", "Tottenham Hotspur", "Son Heung-min", 7),
@@ -434,7 +493,7 @@ function americanFootballSnapshot(): KnowledgeSnapshot {
   };
 }
 
-function player(id: string, canonical: string, team: string, shirtNumber: number): KnowledgeSnapshot["players"][number] {
+function player(id: string, canonical: string, team: string, shirtNumber: number, position: string | null = null): KnowledgeSnapshot["players"][number] {
   return {
     id,
     canonical,
@@ -444,6 +503,7 @@ function player(id: string, canonical: string, team: string, shirtNumber: number
     activeSeasons: ["2025-26"],
     teamsBySeason: { "2025-26": team },
     provider: "local",
+    position,
     shirtNumber
   };
 }

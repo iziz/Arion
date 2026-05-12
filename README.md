@@ -1,6 +1,6 @@
 # Arion
 
-Last checked against code: 2026-05-11.
+Last checked against code: 2026-05-12.
 
 Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, and sports-domain context.
 
@@ -295,7 +295,7 @@ Arion stores evidence at multiple levels:
 - Asset-level intelligence: ASR, OCR, audio/VAD, visual profile, model traces
 - Segment-level scene data: speech, subtitles, screen text, visual metadata, VLM descriptions, vision evidence
 - Domain evidence: sports event labels, captions, scope, players, teams, match identity, action spots
-- Tracking evidence: player/ball tracks, nearest-player links, heuristic kit-color clusters, and crop-based jersey number OCR candidates for visible player separation
+- Tracking evidence: player/ball tracks, nearest-player links, heuristic kit-color clusters, crop-based jersey number OCR candidates, screen-relative pitch-zone/lane occupancy, and roster-backed face candidate hooks for visible player separation
 - Extractive summaries: deterministic asset and moment summaries built before text embedding
 - Embeddings: text passage vectors and visual keyframe vectors
 - Operational evidence: job stage checkpoints, runtime stage status, logs, spans, and events
@@ -359,7 +359,9 @@ Important environment variables:
 | `VISION_DETECTOR_BACKEND` | `auto`, `ultralytics`, or `rfdetr` |
 | `VISION_TRACKER` | Ultralytics tracker config |
 | `JERSEY_OCR_ENABLED` | Enables crop-based jersey number OCR inside the vision tracker; defaults to enabled with bounded sampling |
-| `JERSEY_OCR_MAX_TOTAL_SAMPLES` | Maximum jersey crop OCR calls per tracker run |
+| `JERSEY_OCR_MIN_CONFIDENCE` | Minimum crop OCR confidence for jersey number candidates; defaults to `0.6` |
+| `JERSEY_OCR_MAX_SAMPLES_PER_TRACK` | Maximum jersey crop OCR calls per track; defaults to `3` |
+| `JERSEY_OCR_MAX_TOTAL_SAMPLES` | Maximum jersey crop OCR calls per tracker run; defaults to `48` |
 | `EMBEDDING_MODEL` | Text embedding model |
 | `VISUAL_EMBEDDING_MODEL` | OpenCLIP visual embedding model |
 | `CAPABILITY_*` | Runtime capability policy: `disabled`, `optional`, or `required` |

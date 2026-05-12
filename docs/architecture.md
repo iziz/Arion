@@ -1193,11 +1193,11 @@ The resolver supports multiple context ranges inside one edited asset:
 - each context stores independent `clockMappings[]`
 - segment-level identity points back to one or more context IDs
 
-For football, the resolver builds match candidates from imported match activities and roster windows. It restricts player identity candidates by match context, clock, lineup/substitution/red-card windows, text evidence, and track evidence.
+For football, the resolver builds match candidates from imported match activities and roster windows. It restricts player identity candidates by match context, clock, lineup/substitution/red-card windows, text evidence, crop jersey OCR, kit-cluster evidence, screen-relative pitch-zone/lane occupancy, position metadata, and roster-backed face embedding candidates.
 
 For American football, the resolver builds game/play candidates from nflverse play metadata and action-spot play metadata. It uses `gameId`, `playId`, quarter, clock, down, distance, yardline, participant metadata, and MOT track evidence when available.
 
-The resolver intentionally does not claim stable visual identity from generic face recognition. Current tracking can add heuristic kit-color cluster evidence and crop-based jersey number candidates to track candidates, while helmet assignment, stronger ReID, contact, and calibrated tracking remain candidate evidence unless context, clock, roster/participant evidence, and track evidence agree.
+The resolver intentionally does not claim stable visual identity from generic face recognition. Current tracking can add heuristic kit-color cluster evidence, crop-based jersey number candidates, and screen-relative pitch-zone/lane occupancy to track candidates. Roster-backed face embedding candidates are accepted as evidence when an upstream face model and player gallery provide them, while helmet assignment, stronger ReID, contact, and calibrated tracking remain candidate evidence unless context, clock, roster/participant evidence, and track evidence agree.
 
 ## Storage Architecture
 
@@ -1643,4 +1643,4 @@ These are direct consequences of the code shape:
 - OpenCV heuristic object detection is not a runtime fallback. Detector failures remain unavailable detector evidence, and capability policy decides whether indexing can continue.
 - Direct structured answers come from the current sports related-knowledge adapter. It answers aggregate stat questions from imported related knowledge, not from video moment counts.
 - Knowledge-seeded asset retrieval must resolve the ranked/stat subject from selected related knowledge before searching video evidence; unresolved seeds complete with a knowledge limitation instead of broad moment retrieval.
-- Sports player identity is candidate-first. The current resolver can use match/game context, roster or lineup windows, nflverse play metadata, OCR/ASR/VLM text, MOT track IDs, heuristic kit-color track clusters, and crop jersey OCR candidates. Helmet/stronger ReID/contact evidence hooks remain available, but the system does not implement face-first stable identity.
+- Sports player identity is candidate-first. The current resolver can use match/game context, roster or lineup windows, nflverse play metadata, OCR/ASR/VLM text, MOT track IDs, heuristic kit-color track clusters, crop jersey OCR candidates, screen-relative pitch-zone/lane occupancy, position metadata, and roster-backed face embedding candidates. Helmet/stronger ReID/contact evidence hooks remain available, but the system does not implement face-first stable identity without a configured face model and player gallery.

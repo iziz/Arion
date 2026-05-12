@@ -31,6 +31,14 @@ type JerseyNumberCandidate = {
   source: "text_ocr" | "crop_ocr";
   trackId?: string | null;
 };
+type VisionPlayerTrack = NonNullable<NonNullable<NonNullable<NonNullable<TimelineSegment["sceneData"]>["vision"]>["tracking"]>["playerTracks"]>[number];
+type VisionTrackMovementSummary = NonNullable<VisionPlayerTrack["movement"]>;
+type FootballPositionGroup = "goalkeeper" | "defender" | "midfielder" | "forward" | "wide" | "unknown";
+type VisualRosterSignal = {
+  score: number;
+  faceConfidence: number;
+  evidence: IdentityEvidenceItem[];
+};
 
 type ResolveOptions = {
   snapshot?: KnowledgeSnapshot;
@@ -221,7 +229,8 @@ function resolveFootballIdentity(asset: AssetRecord, _index: IndexRecord, timeli
       "Football match context is inferred from indexed text, OCR, VLM captions, and football registry activity; it is not an official broadcast synchronization feed.",
       "Football player identity remains candidate-level unless match context, clock, roster window, and track evidence all support the assignment.",
       "Kit-color clusters are mapped to teams only when roster-backed player identity evidence connects a track cluster to a known team in the same segment.",
-      "Heuristic kit-color clusters can separate visible tracks, but face, jersey OCR, and stronger ReID outputs remain candidate evidence unless the surrounding context agrees."
+      "Track pitch-zone occupancy is screen-coordinate evidence until homography and team attacking direction are calibrated.",
+      "Face identity evidence is accepted only as roster-backed face embedding candidates; generic tracking does not create a stable face identity without a configured player gallery."
     ],
     updatedAt: new Date().toISOString()
   };
@@ -485,6 +494,7 @@ function buildFootballActiveRosterWindows(matchContextId: string, activities: Ma
         playerId: activity.playerId === null ? known?.id ?? null : String(activity.playerId),
         canonicalName: known?.canonical ?? activity.player,
         team: activity.team || null,
+        position: known?.position ?? null,
         shirtNumber: known?.shirtNumber ?? null,
         startMinute: null,
         endMinute: null,
@@ -591,7 +601,193 @@ function buildFootballPlayerIdentityCandidates(
     }
   }
 
+  candidates.push(...buildFootballVisualRosterIdentityCandidates(segment, match, clock, windows));
+
   return dedupePlayerCandidates(candidates).slice(0, 8);
+}
+
+function buildFootballVisualRosterIdentityCandidates(
+  segment: TimelineSegment,
+  match: ScoredFootballMatch,
+  clock: MatchClockMapping | null,
+  windows: ActiveRosterWindow[]
+): PlayerIdentityCandidate[] {
+  const tracks = segment.sceneData?.vision?.tracking?.playerTracks ?? [];
+  if (tracks.length === 0 || windows.length === 0) return [];
+  const matchContextId = footballContextIdForCandidate(match.candidate);
+  const candidates: PlayerIdentityCandidate[] = [];
+
+  for (const track of tracks.slice(0, 10)) {
+    const scored = windows
+      .map((window) => ({ window, signal: visualRosterSignals(segment, track, window) }))
+      .filter(({ signal }) => signal.score >= 0.14 || signal.faceConfidence >= 0.62)
+      .sort((a, b) => b.signal.score - a.signal.score || b.signal.faceConfidence - a.signal.faceConfidence)
+      .slice(0, 3);
+
+    for (const { window, signal } of scored) {
+      const evidence: IdentityEvidenceItem[] = [
+        { source: "lineup", value: `${window.canonicalName} active roster candidate${window.position ? ` (${window.position})` : ""}`, confidence: 0.58 },
+        { source: "mot", value: `Player track ${track.id}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.48 },
+        ...visualTrackEvidence(segment, track.id),
+        ...signal.evidence
+      ];
+      const faceBoost = signal.faceConfidence >= 0.62 ? signal.faceConfidence * 0.18 : 0;
+      const confidence = Number(Math.min(0.91, match.confidence + 0.1 + Math.min(0.18, signal.score) + faceBoost + (clock ? 0.04 : 0)).toFixed(2));
+      candidates.push({
+        trackId: track.id,
+        playerId: window.playerId,
+        canonicalName: window.canonicalName,
+        team: window.team,
+        shirtNumber: window.shirtNumber,
+        matchContextId,
+        videoRange: { start: segment.start, end: segment.end },
+        matchClock: clock,
+        confidence,
+        status: signal.faceConfidence >= 0.88 && match.status === "confirmed" && clock ? "confirmed" : "candidate",
+        evidence
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function visualRosterSignals(_segment: TimelineSegment, track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
+  const movementSignal = movementPositionSignal(track, window);
+  const faceSignal = faceRosterSignal(track, window);
+  return {
+    score: Number(Math.min(0.42, movementSignal.score + faceSignal.score).toFixed(3)),
+    faceConfidence: faceSignal.faceConfidence,
+    evidence: dedupeEvidenceItems([...movementSignal.evidence, ...faceSignal.evidence]).slice(0, 6)
+  };
+}
+
+function movementPositionSignal(track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
+  const movement = track.movement;
+  const group = footballPositionGroup(window.position);
+  if (!movement || movement.samples < 2 || group === "unknown") return { score: 0, faceConfidence: 0, evidence: [] };
+
+  const zone = movement.fieldZoneHint;
+  const lane = movement.widthLaneHint;
+  const zoneShare = zone === "unknown" ? 0 : Math.max(movement.fieldZoneConfidence ?? 0, fieldZoneShare(movement, zone));
+  const laneShare = lane === "unknown" ? 0 : Math.max(movement.widthLaneConfidence ?? 0, laneOccupancyShare(movement, lane));
+  const speed = movement.speedPerSecond ?? 0;
+  const displacement = movement.displacement ?? 0;
+  let score = 0;
+  const reasons: string[] = [];
+
+  if (group === "goalkeeper") {
+    if ((zone === "defensive_third" || zone === "final_third") && zoneShare >= 0.45 && speed <= 0.06 && displacement <= 0.12) {
+      score += 0.14;
+      reasons.push(`low-movement outer-third occupancy for ${window.position}`);
+    }
+  } else if (group === "defender") {
+    if (zone === "defensive_third") {
+      score += 0.12;
+      reasons.push(`defensive-third occupancy for ${window.position}`);
+    } else if (zone === "middle_third") {
+      score += 0.07;
+      reasons.push(`middle-third support occupancy for ${window.position}`);
+    }
+    if (speed <= 0.08) score += 0.02;
+  } else if (group === "midfielder") {
+    if (zone === "middle_third") {
+      score += 0.12;
+      reasons.push(`middle-third occupancy for ${window.position}`);
+    }
+    if (lane === "central" && laneShare >= 0.45) score += 0.03;
+  } else if (group === "forward") {
+    if (zone === "final_third") {
+      score += 0.12;
+      reasons.push(`final-third occupancy for ${window.position}`);
+    } else if (zone === "middle_third") {
+      score += 0.06;
+      reasons.push(`middle-to-advanced occupancy for ${window.position}`);
+    }
+  } else if (group === "wide") {
+    if (lane === "far_side" || lane === "near_side") {
+      score += 0.11;
+      reasons.push(`wide-lane occupancy for ${window.position}`);
+    }
+    if (zone === "middle_third" || zone === "final_third") score += 0.04;
+  }
+
+  if (score <= 0) return { score: 0, faceConfidence: 0, evidence: [] };
+  if (zoneShare >= 0.55) score += 0.03;
+  const confidence = Math.max(0.4, Math.min(0.62, 0.38 + score + Math.min(0.08, zoneShare * 0.08)));
+  const evidence: IdentityEvidenceItem[] = [
+    {
+      source: "position",
+      value: `${window.canonicalName} roster position ${window.position} matched ${reasons.join(", ")}.`,
+      confidence: Number(confidence.toFixed(2))
+    },
+    {
+      source: "movement",
+      value: `${movementEvidenceLabel(track.id, movement)} ${movement.coordinateMode === "pitch_homography" ? "Pitch homography coordinates are available." : "Screen coordinates are uncalibrated for attacking direction."}`,
+      confidence: Number(Math.max(0.36, Math.min(0.58, (zoneShare + laneShare) / 2)).toFixed(2))
+    }
+  ];
+  return { score: Number(Math.min(0.22, score).toFixed(3)), faceConfidence: 0, evidence };
+}
+
+function faceRosterSignal(track: VisionPlayerTrack, window: ActiveRosterWindow): VisualRosterSignal {
+  const candidates = (track.faceIdentityCandidates ?? [])
+    .filter((candidate) => faceCandidateMatchesWindow(candidate, window))
+    .sort((a, b) => b.confidence - a.confidence);
+  const best = candidates[0];
+  if (!best) return { score: 0, faceConfidence: 0, evidence: [] };
+  const faceConfidence = Math.max(0, Math.min(0.98, best.confidence));
+  const evidence: IdentityEvidenceItem[] = [
+    {
+      source: "face",
+      value: `Roster-backed face embedding candidate matched ${window.canonicalName}${best.frameAt === null ? "" : ` at ${best.frameAt}s`}${best.evidence ? `: ${best.evidence}` : ""}.`,
+      confidence: Number(faceConfidence.toFixed(2))
+    }
+  ];
+  return {
+    score: faceConfidence >= 0.62 ? Number(Math.min(0.24, faceConfidence * 0.24).toFixed(3)) : 0,
+    faceConfidence: Number(faceConfidence.toFixed(3)),
+    evidence
+  };
+}
+
+function faceCandidateMatchesWindow(candidate: NonNullable<VisionPlayerTrack["faceIdentityCandidates"]>[number], window: ActiveRosterWindow) {
+  if (candidate.playerId && window.playerId && candidate.playerId === window.playerId) return true;
+  if (!candidate.canonicalName) return false;
+  return normalizeText(candidate.canonicalName) === normalizeText(window.canonicalName);
+}
+
+function footballPositionGroup(position: string | null | undefined): FootballPositionGroup {
+  if (!position) return "unknown";
+  const normalized = normalizeText(position);
+  if (/\b(gk|goalkeeper|keeper)\b/.test(normalized)) return "goalkeeper";
+  if (/\b(lw|rw|lm|rm|wb|lwb|rwb|wing|winger|wide|fullback|full back)\b/.test(normalized)) return "wide";
+  if (/\b(cb|lb|rb|df|def|defender|centre back|center back|back)\b/.test(normalized)) return "defender";
+  if (/\b(dm|cm|am|mf|mid|midfielder)\b/.test(normalized)) return "midfielder";
+  if (/\b(fw|st|cf|forward|striker|attacker)\b/.test(normalized)) return "forward";
+  return "unknown";
+}
+
+function fieldZoneShare(movement: VisionTrackMovementSummary, zone: VisionTrackMovementSummary["fieldZoneHint"]) {
+  if (zone === "unknown") return 0;
+  return movement.zoneOccupancy.find((item) => item.zone === zone)?.share ?? 0;
+}
+
+function laneOccupancyShare(movement: VisionTrackMovementSummary, lane: VisionTrackMovementSummary["widthLaneHint"]) {
+  if (lane === "unknown") return 0;
+  return movement.laneOccupancy.find((item) => item.lane === lane)?.share ?? 0;
+}
+
+function movementEvidenceLabel(trackId: string, movement: VisionTrackMovementSummary) {
+  const zoneShare = movement.fieldZoneHint === "unknown" ? 0 : fieldZoneShare(movement, movement.fieldZoneHint);
+  const laneShare = movement.widthLaneHint === "unknown" ? 0 : laneOccupancyShare(movement, movement.widthLaneHint);
+  return `Track ${trackId} occupied ${movement.fieldZoneHint} ${formatPercent(zoneShare || movement.fieldZoneConfidence)} and ${movement.widthLaneHint} lane ${formatPercent(
+    laneShare || movement.widthLaneConfidence
+  )}.`;
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function buildTeamClusterAssignments(segment: TimelineSegment, candidates: PlayerIdentityCandidate[]): TeamClusterAssignment[] {
@@ -933,6 +1129,7 @@ function buildAmericanFootballParticipantWindows(matchContextId: string, plays: 
         playerId: participant.playerId ?? known?.id ?? null,
         canonicalName: known?.canonical ?? participant.name ?? "Unknown player",
         team: participant.team,
+        position: known?.position ?? null,
         shirtNumber: known?.shirtNumber ?? null,
         startMinute: play.quarter && play.clock ? elapsedGameMinute(play.quarter, play.clock) : null,
         endMinute: play.quarter && play.clock ? elapsedGameMinute(play.quarter, play.clock) : null,
@@ -1326,19 +1523,6 @@ function extractJerseyNumberCandidates(segment: TimelineSegment): JerseyNumberCa
         trackId: track.id,
         confidence: Math.max(0.45, Math.min(0.82, candidate.confidence)),
         value: `Jersey crop OCR #${candidate.number} on ${track.id}${candidate.text ? ` (${candidate.text})` : ""}`
-      });
-    }
-  }
-
-  for (const box of segment.sceneData?.vision?.objects.players.boxes ?? []) {
-    for (const candidate of box.jerseyNumberCandidates ?? []) {
-      if (!isValidJerseyNumber(candidate.number)) continue;
-      candidates.push({
-        number: candidate.number,
-        source: "crop_ocr",
-        trackId: box.trackId ?? null,
-        confidence: Math.max(0.45, Math.min(0.78, candidate.confidence)),
-        value: `Jersey crop OCR #${candidate.number}${box.trackId ? ` on ${box.trackId}` : ""}${candidate.text ? ` (${candidate.text})` : ""}`
       });
     }
   }

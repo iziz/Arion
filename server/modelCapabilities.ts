@@ -124,7 +124,9 @@ export async function getRuntimeCapabilities() {
         jerseyOcr: {
           enabled: !["0", "false", "no", "off"].includes((process.env.JERSEY_OCR_ENABLED || "1").toLowerCase()),
           language: process.env.JERSEY_OCR_LANG || "en",
-          maxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32"
+          minConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.6",
+          maxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "3",
+          maxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "48"
         }
       },
       videoVlm: {

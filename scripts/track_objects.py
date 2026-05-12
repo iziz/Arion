@@ -24,9 +24,9 @@ def main() -> None:
     parser.add_argument("--vid-stride", type=int, default=int(os.environ.get("VISION_TRACKER_VID_STRIDE", "3")))
     parser.add_argument("--jersey-ocr", nargs="?", const="1", default=os.environ.get("JERSEY_OCR_ENABLED", "1"))
     parser.add_argument("--jersey-ocr-lang", default=os.environ.get("JERSEY_OCR_LANG", "en"))
-    parser.add_argument("--jersey-ocr-min-confidence", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_CONFIDENCE", "0.35")))
-    parser.add_argument("--jersey-ocr-max-samples-per-track", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_SAMPLES_PER_TRACK", "1")))
-    parser.add_argument("--jersey-ocr-max-total-samples", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_TOTAL_SAMPLES", "32")))
+    parser.add_argument("--jersey-ocr-min-confidence", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_CONFIDENCE", "0.6")))
+    parser.add_argument("--jersey-ocr-max-samples-per-track", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_SAMPLES_PER_TRACK", "3")))
+    parser.add_argument("--jersey-ocr-max-total-samples", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_TOTAL_SAMPLES", "48")))
     parser.add_argument("--jersey-ocr-min-box-height", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_BOX_HEIGHT", "0.12")))
     args = parser.parse_args()
     payload = json.load(sys.stdin)
@@ -263,6 +263,9 @@ def summarize_tracks(tracks: dict, team_assignments: dict[str, dict] | None = No
         appearance = aggregate_appearance(track["appearances"])
         if appearance:
             summary["appearance"] = appearance
+        movement = movement_profile_for_track(track)
+        if movement:
+            summary["movement"] = movement
         jersey_candidates = aggregate_jersey_number_candidates(track["jerseyNumbers"])
         if jersey_candidates:
             summary["jerseyNumberCandidates"] = jersey_candidates
@@ -465,6 +468,8 @@ def aggregate_jersey_number_candidates(candidates: list[dict]) -> list[dict]:
             grouped[number].append(candidate)
     summaries = []
     for number, items in grouped.items():
+        if number in {6, 9} and len(items) < 2:
+            continue
         confidences = [float(item.get("confidence") or 0.0) for item in items]
         best = sorted(items, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)[0]
         confidence = min(0.96, (sum(confidences) / max(1, len(confidences))) + min(0.12, (len(items) - 1) * 0.04))
@@ -488,7 +493,7 @@ def parse_jersey_numbers_from_raw(text: str) -> list[int]:
     values = parse_jersey_numbers(upper)
     compact = re.sub(r"[^A-Z0-9]", "", upper)
     if re.search(r"\d", upper):
-        values.extend(parse_jersey_numbers(normalize_jersey_text(upper)))
+        pass
     elif len(compact) == 2 and all(char in "ODILSB" for char in compact):
         values.extend(parse_jersey_numbers(normalize_jersey_text(compact)))
     seen = set()
@@ -647,6 +652,87 @@ def movement_for_track(track: dict | None) -> dict:
         "speedPerSecond": round(distance_value / seconds, 4),
         "direction": movement_direction(start_center, end_center),
     }
+
+
+def movement_profile_for_track(track: dict | None) -> dict | None:
+    if not track or len(track["centers"]) == 0:
+        return None
+    ordered = sorted(track["centers"], key=lambda item: item[0])
+    xs = [center_value[0] for _at, center_value in ordered]
+    ys = [center_value[1] for _at, center_value in ordered]
+    zone_occupancy = occupancy([(field_zone_hint(x), 1.0) for x in xs])
+    lane_occupancy = occupancy([(width_lane_hint(y), 1.0) for y in ys])
+    primary_zone, zone_confidence = primary_occupancy(zone_occupancy, "unknown")
+    primary_lane, lane_confidence = primary_occupancy(lane_occupancy, "unknown")
+    if len(ordered) < 2:
+        return {
+            "coordinateMode": "screen_relative",
+            "averageX": round(sum(xs) / len(xs), 4),
+            "averageY": round(sum(ys) / len(ys), 4),
+            "displacement": 0,
+            "speedPerSecond": None,
+            "direction": "unknown",
+            "fieldZoneHint": primary_zone,
+            "fieldZoneConfidence": zone_confidence,
+            "widthLaneHint": primary_lane,
+            "widthLaneConfidence": lane_confidence,
+            "zoneOccupancy": zone_occupancy,
+            "laneOccupancy": lane_occupancy,
+            "samples": len(ordered),
+        }
+    start_at, start_center = ordered[0]
+    end_at, end_center = ordered[-1]
+    displacement = distance(start_center, end_center)
+    seconds = max(0.001, end_at - start_at)
+    return {
+        "coordinateMode": "screen_relative",
+        "averageX": round(sum(xs) / len(xs), 4),
+        "averageY": round(sum(ys) / len(ys), 4),
+        "displacement": round(displacement, 4),
+        "speedPerSecond": round(displacement / seconds, 4),
+        "direction": movement_direction(start_center, end_center),
+        "fieldZoneHint": primary_zone,
+        "fieldZoneConfidence": zone_confidence,
+        "widthLaneHint": primary_lane,
+        "widthLaneConfidence": lane_confidence,
+        "zoneOccupancy": zone_occupancy,
+        "laneOccupancy": lane_occupancy,
+        "samples": len(ordered),
+    }
+
+
+def field_zone_hint(x_value: float) -> str:
+    if x_value < 0.34:
+        return "defensive_third"
+    if x_value < 0.67:
+        return "middle_third"
+    return "final_third"
+
+
+def width_lane_hint(y_value: float) -> str:
+    if y_value < 0.34:
+        return "far_side"
+    if y_value < 0.67:
+        return "central"
+    return "near_side"
+
+
+def occupancy(values: list[tuple[str, float]]) -> list[dict]:
+    counts: Counter[str] = Counter()
+    total = 0.0
+    for key, weight in values:
+        counts[key] += float(weight)
+        total += float(weight)
+    if total <= 0:
+        return []
+    return [{"zone" if key in {"defensive_third", "middle_third", "final_third"} else "lane": key, "share": round(value / total, 3)} for key, value in counts.most_common()]
+
+
+def primary_occupancy(items: list[dict], fallback: str) -> tuple[str, float]:
+    if not items:
+        return fallback, 0
+    item = sorted(items, key=lambda value: value.get("share", 0), reverse=True)[0]
+    return str(item.get("zone") or item.get("lane") or fallback), round(float(item.get("share") or 0), 3)
 
 
 def proximity_from_distances(distances: list[float]) -> dict:
