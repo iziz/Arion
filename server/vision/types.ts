@@ -1,4 +1,13 @@
-import type { VisionBoundingBox, VisionEvidence, VisionFaceIdentityCandidate, VisionJerseyNumberCandidate, VisionTrackAppearance, VisionTrackMovement, VisionTrackTeamCluster } from "../../shared/types";
+import type {
+  VisionBoundingBox,
+  VisionEvidence,
+  VisionFaceIdentityCandidate,
+  VisionJerseyNumberCandidate,
+  VisionTrackAppearance,
+  VisionTrackMovement,
+  VisionTrackTeamCluster,
+  VisionTrackingDiagnostics
+} from "../../shared/types";
 
 export type DetectorFrame = {
   segmentId: string;
@@ -55,6 +64,7 @@ export type TrackerSegment = {
   provider: string;
   model: string;
   tracker: string;
+  diagnostics?: VisionTrackingDiagnostics;
 };
 
 export type TrackerResult = {
@@ -63,6 +73,7 @@ export type TrackerResult = {
   model: string;
   tracker: string;
   segments: TrackerSegment[];
+  diagnostics?: VisionTrackingDiagnostics;
   error?: string | null;
 };
 

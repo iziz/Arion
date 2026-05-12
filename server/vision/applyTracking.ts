@@ -1,4 +1,4 @@
-import type { TimelineSegment, VisionEvidence } from "../../shared/types";
+import type { TimelineSegment, VisionEvidence, VisionTrackingDiagnostics } from "../../shared/types";
 import { estimateZoneFromDetections, inferTrackingFieldCalibration, mergeTrackingCandidates } from "./evidenceMerge";
 import { assignPlayerTracks, averageTrackConfidence, center, distance, maxConfidence, movementDirection, nearestTrackedPlayer, primaryBox } from "./geometry";
 import type { Point, TrackerResult } from "./types";
@@ -153,6 +153,7 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
         idSwitches: summary.idSwitches,
         playerTracks: summary.playerTracks,
         ballTracks: summary.ballTracks,
+        diagnostics: mergeTrackerDiagnostics(vision.tracking?.diagnostics, result.diagnostics, summary.diagnostics),
         ballMovement: summary.ballMovement
       },
       eventCandidates: mergeTrackingCandidates(vision.eventCandidates, "tracked", summary.ballMovement, summary.proximity, detectedZone.zone),
@@ -172,4 +173,15 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
       }
     };
   });
+}
+
+function mergeTrackerDiagnostics(
+  existing?: VisionTrackingDiagnostics,
+  run?: VisionTrackingDiagnostics,
+  segment?: VisionTrackingDiagnostics
+): VisionTrackingDiagnostics | undefined {
+  const diagnostics: VisionTrackingDiagnostics = { ...(existing ?? {}) };
+  if (run) diagnostics.run = run;
+  if (segment) diagnostics.segment = segment;
+  return Object.keys(diagnostics).length > 0 ? diagnostics : undefined;
 }

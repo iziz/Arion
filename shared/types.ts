@@ -351,6 +351,8 @@ export type VideoVlmEvidence = {
   error: string | null;
 };
 
+export type VisionTrackingDiagnostics = Record<string, unknown>;
+
 export type VisionEvidence = {
   generatedBy: string;
   trust?: EvidenceTrustTier;
@@ -415,6 +417,7 @@ export type VisionEvidence = {
       firstSeen: number | null;
       lastSeen: number | null;
     }>;
+    diagnostics?: VisionTrackingDiagnostics;
     ballMovement: {
       fromPrevious: number | null;
       speedPerSecond: number | null;
@@ -542,6 +545,7 @@ export type VisionBoundingBox = {
   source: string;
   appearance?: VisionTrackAppearance;
   jerseyNumberCandidates?: VisionJerseyNumberCandidate[];
+  faceIdentityCandidates?: VisionFaceIdentityCandidate[];
 };
 
 export type TimelineSegment = {

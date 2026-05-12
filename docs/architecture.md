@@ -752,6 +752,7 @@ Stage details:
    - There is no OpenCV heuristic detector fallback. Detector unavailability remains unavailable evidence and is handled by capability policy.
    - Tracking uses the Vision runtime service.
    - The Ultralytics tracking path samples upper-body player crops, computes a deterministic kit-color appearance profile, clusters visible player tracks into `team-1`, `team-2`, or `unknown`, and can attach bounded crop-based jersey number OCR candidates.
+   - Tracker output includes run-level and segment-level diagnostics for media metadata, runtime sampling, frame coverage, box and track distributions, OCR and face candidate paths, dependency versions, and homography/team-direction calibration status.
    - The output is merged into timeline `sceneData.vision`.
 8. Event classification
    - `applyEventClassification` derives event labels from text and vision features.

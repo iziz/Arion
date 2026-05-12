@@ -48,6 +48,7 @@ def main() -> None:
             "tracker": args.tracker,
             "segments": [],
             "error": f"{type(error).__name__}: {error}",
+            "diagnostics": unavailable_diagnostics(args, f"{type(error).__name__}: {error}"),
         }
     print(json.dumps(result, ensure_ascii=False))
 
@@ -60,13 +61,17 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
     if not segment_items:
         return unavailable(args, "No segments were provided for tracking.")
 
-    fps = read_fps(cv2, args.media_path)
+    media_info = read_media_info(cv2, args.media_path)
+    fps = float(media_info.get("fps") or 30.0)
     model = YOLO(args.model)
     jersey_ocr = JerseyNumberOcr(args)
     face_identity = FaceIdentityMatcher(args)
     field_calibration = FieldCalibration.from_path(args.field_calibration)
     segment_frames: dict[str, list[dict]] = defaultdict(list)
     frame_number = 0
+    processed_frame_count = 0
+    outside_segment_frame_count = 0
+    boxless_segment_frame_count = 0
     for result in model.track(
         source=args.media_path,
         stream=True,
@@ -76,24 +81,44 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
         vid_stride=max(1, args.vid_stride),
         verbose=False,
     ):
+        processed_frame_count += 1
         at = frame_number / fps
         frame_number += max(1, args.vid_stride)
         segment = segment_for_time(segment_items, at)
         if not segment:
+            outside_segment_frame_count += 1
             continue
         boxes = boxes_from_result(result, jersey_ocr, face_identity, at)
         if boxes:
             segment_frames[segment["id"]].append({"at": round(at, 3), "boxes": boxes})
+        else:
+            boxless_segment_frame_count += 1
 
     team_assignments = cluster_team_profiles(summarize_tracks(collect_tracks(segment_frames)))
-    summaries = [summarize_segment(segment, segment_frames.get(segment["id"], []), args, team_assignments, field_calibration) for segment in segment_items]
-    summaries = [summary for summary in summaries if summary["trackedFrameCount"] > 0]
+    all_summaries = [summarize_segment(segment, segment_frames.get(segment["id"], []), args, team_assignments, field_calibration) for segment in segment_items]
+    summaries = [summary for summary in all_summaries if summary["trackedFrameCount"] > 0]
+    diagnostics = tracker_diagnostics(
+        args,
+        media_info,
+        segment_items,
+        segment_frames,
+        all_summaries,
+        summaries,
+        processed_frame_count,
+        outside_segment_frame_count,
+        boxless_segment_frame_count,
+        jersey_ocr,
+        face_identity,
+        field_calibration,
+        cv2,
+    )
     return {
         "available": True,
         "provider": "ultralytics-track",
         "model": args.model,
         "tracker": args.tracker,
         "segments": summaries,
+        "diagnostics": diagnostics,
         "error": None,
     }
 
@@ -106,6 +131,28 @@ def unavailable(args: argparse.Namespace, error: str) -> dict:
         "tracker": args.tracker,
         "segments": [],
         "error": error,
+        "diagnostics": unavailable_diagnostics(args, error),
+    }
+
+
+def unavailable_diagnostics(args: argparse.Namespace, error: str) -> dict:
+    return {
+        "schema": "tracking_diagnostics_v1",
+        "status": "unavailable",
+        "error": error,
+        "config": {
+            "model": args.model,
+            "tracker": args.tracker,
+            "confidenceThreshold": round(float(args.conf), 4),
+            "vidStride": max(1, int(args.vid_stride)),
+            "jerseyOcrEnabled": parse_bool(args.jersey_ocr),
+            "faceIdentityEnabled": parse_bool(args.face_identity),
+            "fieldCalibrationConfigured": bool(str(args.field_calibration or "").strip()),
+        },
+        "runtime": {
+            "processedFrameCount": 0,
+            "emittedSegmentCount": 0,
+        },
     }
 
 
@@ -124,10 +171,43 @@ def normalize_segments(segments: list[dict]) -> list[dict]:
 
 
 def read_fps(cv2, media_path: str) -> float:
+    return float(read_media_info(cv2, media_path).get("fps") or 30.0)
+
+
+def read_media_info(cv2, media_path: str) -> dict:
     capture = cv2.VideoCapture(media_path)
     fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    codec = fourcc_to_string(capture.get(cv2.CAP_PROP_FOURCC) or 0)
     capture.release()
-    return fps if fps > 0 else 30.0
+    effective_fps = fps if fps > 0 else 30.0
+    exists = os.path.exists(media_path)
+    return {
+        "sourceFile": os.path.basename(media_path),
+        "exists": exists,
+        "sizeBytes": os.path.getsize(media_path) if exists else None,
+        "fps": round(effective_fps, 3),
+        "reportedFps": round(fps, 3) if fps > 0 else None,
+        "width": width or None,
+        "height": height or None,
+        "frameCount": frame_count or None,
+        "durationSeconds": round(frame_count / effective_fps, 3) if frame_count > 0 and effective_fps > 0 else None,
+        "codec": codec,
+    }
+
+
+def fourcc_to_string(value) -> str | None:
+    try:
+        code = int(value)
+    except Exception:
+        return None
+    if code <= 0:
+        return None
+    chars = [chr((code >> (8 * index)) & 0xFF) for index in range(4)]
+    text = "".join(chars).strip()
+    return text if text and all(31 < ord(char) < 127 for char in text) else None
 
 
 def segment_for_time(segments: list[dict], at: float) -> dict | None:
@@ -208,10 +288,12 @@ def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespac
     primary_ball = top_track(ball_tracks)
     primary_player = nearest_counter.most_common(1)[0][0] if nearest_counter else (top_track(player_tracks) or {}).get("id")
     ball_movement = movement_for_track(tracks.get(primary_ball["id"]) if primary_ball else None)
-    track_coverage = len(frames) / max(1, expected_frame_count(segment, args.vid_stride))
+    expected_count = expected_frame_count(segment, args.vid_stride)
+    track_coverage = len(frames) / max(1, expected_count)
+    calibration_summary = field_calibration.segment_summary(player_tracks, primary_player) if field_calibration else None
     summary = {
         "segmentId": segment["id"],
-        "frameCount": expected_frame_count(segment, args.vid_stride),
+        "frameCount": expected_count,
         "trackedFrameCount": len(frames),
         "trackCoverage": round(min(1.0, track_coverage), 3),
         "ballTrackId": primary_ball["id"] if primary_ball else None,
@@ -225,11 +307,236 @@ def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespac
         "provider": "ultralytics-track",
         "model": args.model,
         "tracker": args.tracker,
+        "diagnostics": segment_diagnostics(
+            segment,
+            frames,
+            track_summaries,
+            player_tracks,
+            ball_tracks,
+            best_frame,
+            distances,
+            expected_count,
+            track_coverage,
+            calibration_summary,
+        ),
     }
-    calibration_summary = field_calibration.segment_summary(player_tracks, primary_player) if field_calibration else None
     if calibration_summary:
         summary["fieldCalibration"] = calibration_summary
     return summary
+
+
+def segment_diagnostics(
+    segment: dict,
+    frames: list[dict],
+    track_summaries: list[dict],
+    player_tracks: list[dict],
+    ball_tracks: list[dict],
+    best_frame: dict | None,
+    distances: list[float],
+    expected_count: int,
+    track_coverage: float,
+    calibration_summary: dict | None,
+) -> dict:
+    boxes = [box for frame in frames for box in frame.get("boxes", [])]
+    boxes_by_label = Counter(str(box.get("label") or "unknown") for box in boxes)
+    confidence_by_label: defaultdict[str, list[float]] = defaultdict(list)
+    boxes_without_track = 0
+    jersey_box_count = 0
+    jersey_candidate_count = 0
+    face_box_count = 0
+    face_candidate_count = 0
+    for box in boxes:
+        label = str(box.get("label") or "unknown")
+        confidence_by_label[label].append(float(box.get("confidence") or 0))
+        if not box.get("trackId"):
+            boxes_without_track += 1
+        jersey_candidates = box.get("jerseyNumberCandidates") or []
+        if jersey_candidates:
+            jersey_box_count += 1
+            jersey_candidate_count += len(jersey_candidates)
+        face_candidates = box.get("faceIdentityCandidates") or []
+        if face_candidates:
+            face_box_count += 1
+            face_candidate_count += len(face_candidates)
+
+    team_clusters = Counter(str(track.get("teamCluster") or "unassigned") for track in player_tracks)
+    movement_modes = Counter(str((track.get("movement") or {}).get("coordinateMode") or "missing") for track in player_tracks)
+    field_zones = Counter(str((track.get("movement") or {}).get("fieldZoneHint") or "unknown") for track in player_tracks)
+    width_lanes = Counter(str((track.get("movement") or {}).get("widthLaneHint") or "unknown") for track in player_tracks)
+    frame_times = [float(frame.get("at")) for frame in frames if frame.get("at") is not None]
+    best_boxes = (best_frame or {}).get("boxes", [])
+    return {
+        "schema": "tracking_segment_diagnostics_v1",
+        "segmentId": segment["id"],
+        "segmentStart": round(float(segment["start"]), 3),
+        "segmentEnd": round(float(segment["end"]), 3),
+        "segmentDurationSeconds": round(max(0.0, float(segment["end"]) - float(segment["start"])), 3),
+        "expectedFrameCount": expected_count,
+        "expectedFrameCountAssumptionFps": 30,
+        "trackedFrameCount": len(frames),
+        "trackCoverage": round(min(1.0, track_coverage), 3),
+        "firstTrackedFrameAt": round(min(frame_times), 3) if frame_times else None,
+        "lastTrackedFrameAt": round(max(frame_times), 3) if frame_times else None,
+        "bestFrameAt": (best_frame or {}).get("at"),
+        "bestFrameBoxCount": len(best_boxes),
+        "frameBoxCount": numeric_summary([len(frame.get("boxes", [])) for frame in frames]),
+        "framesWithPlayers": sum(1 for frame in frames if any(box.get("label") == "person" for box in frame.get("boxes", []))),
+        "framesWithBall": sum(1 for frame in frames if any(box.get("label") == "sports_ball" for box in frame.get("boxes", []))),
+        "boxCount": len(boxes),
+        "boxesByLabel": compact_counter(boxes_by_label),
+        "boxesWithoutTrackId": boxes_without_track,
+        "boxConfidence": {label: numeric_summary(values) for label, values in sorted(confidence_by_label.items())},
+        "trackCount": len(track_summaries),
+        "playerTrackCount": len(player_tracks),
+        "ballTrackCount": len(ball_tracks),
+        "trackFrameCount": numeric_summary([int(track.get("frames") or 0) for track in track_summaries]),
+        "trackConfidence": numeric_summary([float(track.get("confidence") or 0) for track in track_summaries]),
+        "topTrackIds": [track.get("id") for track in track_summaries[:16] if track.get("id")],
+        "candidateEvidence": {
+            "jerseyBoxCount": jersey_box_count,
+            "jerseyCandidateCount": jersey_candidate_count,
+            "faceBoxCount": face_box_count,
+            "faceCandidateCount": face_candidate_count,
+        },
+        "teamClusters": compact_counter(team_clusters),
+        "movementCoordinateModes": compact_counter(movement_modes),
+        "fieldZoneHints": compact_counter(field_zones),
+        "widthLaneHints": compact_counter(width_lanes),
+        "proximitySampleCount": len(distances),
+        "proximityDistance": numeric_summary(distances),
+        "fieldCalibrationStatus": (calibration_summary or {}).get("status") or "not_configured",
+    }
+
+
+def tracker_diagnostics(
+    args: argparse.Namespace,
+    media_info: dict,
+    segment_items: list[dict],
+    segment_frames: dict[str, list[dict]],
+    all_summaries: list[dict],
+    emitted_summaries: list[dict],
+    processed_frame_count: int,
+    outside_segment_frame_count: int,
+    boxless_segment_frame_count: int,
+    jersey_ocr,
+    face_identity,
+    field_calibration,
+    cv2,
+) -> dict:
+    all_boxes = [box for frames in segment_frames.values() for frame in frames for box in frame.get("boxes", [])]
+    boxes_by_label = Counter(str(box.get("label") or "unknown") for box in all_boxes)
+    emitted_ids = {summary["segmentId"] for summary in emitted_summaries}
+    empty_segments = [segment["id"] for segment in segment_items if segment["id"] not in emitted_ids]
+    player_tracks = [track for summary in emitted_summaries for track in summary.get("playerTracks", [])]
+    ball_tracks = [track for summary in emitted_summaries for track in summary.get("ballTracks", [])]
+    team_clusters = Counter(str(track.get("teamCluster") or "unassigned") for track in player_tracks)
+    movement_modes = Counter(str((track.get("movement") or {}).get("coordinateMode") or "missing") for track in player_tracks)
+    field_zones = Counter(str((track.get("movement") or {}).get("fieldZoneHint") or "unknown") for track in player_tracks)
+    width_lanes = Counter(str((track.get("movement") or {}).get("widthLaneHint") or "unknown") for track in player_tracks)
+    return {
+        "schema": "tracking_diagnostics_v1",
+        "media": media_info,
+        "config": {
+            "model": args.model,
+            "tracker": args.tracker,
+            "confidenceThreshold": round(float(args.conf), 4),
+            "vidStride": max(1, int(args.vid_stride)),
+            "segmentCount": len(segment_items),
+            "jerseyOcrEnabled": parse_bool(args.jersey_ocr),
+            "faceIdentityEnabled": parse_bool(args.face_identity),
+            "fieldCalibrationConfigured": bool(str(args.field_calibration or "").strip()),
+        },
+        "runtime": {
+            "processedFrameCount": processed_frame_count,
+            "segmentMatchedFrameCount": sum(len(frames) for frames in segment_frames.values()),
+            "outsideSegmentFrameCount": outside_segment_frame_count,
+            "boxlessSegmentFrameCount": boxless_segment_frame_count,
+            "emittedSegmentCount": len(emitted_summaries),
+            "emptySegmentCount": len(empty_segments),
+            "emptySegmentIds": empty_segments[:32],
+        },
+        "segments": {
+            "inputCount": len(segment_items),
+            "inputDurationSeconds": round(sum(max(0.0, float(item["end"]) - float(item["start"])) for item in segment_items), 3),
+            "emittedIds": [summary["segmentId"] for summary in emitted_summaries[:64]],
+            "trackCoverage": numeric_summary([float(summary.get("trackCoverage") or 0) for summary in all_summaries]),
+            "trackedFrameCount": numeric_summary([int(summary.get("trackedFrameCount") or 0) for summary in all_summaries]),
+            "expectedFrameCount": numeric_summary([int(summary.get("frameCount") or 0) for summary in all_summaries]),
+        },
+        "boxes": {
+            "total": len(all_boxes),
+            "byLabel": compact_counter(boxes_by_label),
+            "withoutTrackId": sum(1 for box in all_boxes if not box.get("trackId")),
+            "confidence": numeric_summary([float(box.get("confidence") or 0) for box in all_boxes]),
+        },
+        "tracks": {
+            "playerTrackCount": len(player_tracks),
+            "ballTrackCount": len(ball_tracks),
+            "idSwitches": sum(int(summary.get("idSwitches") or 0) for summary in emitted_summaries),
+            "playerFrameCount": numeric_summary([int(track.get("frames") or 0) for track in player_tracks]),
+            "ballFrameCount": numeric_summary([int(track.get("frames") or 0) for track in ball_tracks]),
+            "teamClusters": compact_counter(team_clusters),
+            "movementCoordinateModes": compact_counter(movement_modes),
+            "fieldZoneHints": compact_counter(field_zones),
+            "widthLaneHints": compact_counter(width_lanes),
+            "tracksWithJerseyCandidates": sum(1 for track in player_tracks if track.get("jerseyNumberCandidates")),
+            "tracksWithFaceCandidates": sum(1 for track in player_tracks if track.get("faceIdentityCandidates")),
+        },
+        "jerseyOcr": jersey_ocr.diagnostics(),
+        "faceIdentity": face_identity.diagnostics(),
+        "fieldCalibration": field_calibration_diagnostics(args.field_calibration, field_calibration),
+        "dependencies": dependency_versions(cv2),
+    }
+
+
+def numeric_summary(values: list) -> dict:
+    usable = [float(value) for value in values if value is not None]
+    if not usable:
+        return {"count": 0, "min": None, "max": None, "mean": None, "median": None}
+    return {
+        "count": len(usable),
+        "min": round(min(usable), 4),
+        "max": round(max(usable), 4),
+        "mean": round(sum(usable) / len(usable), 4),
+        "median": round(float(median(usable)), 4),
+    }
+
+
+def compact_counter(counter: Counter) -> dict:
+    return {str(key): int(value) for key, value in counter.items() if value}
+
+
+def dependency_versions(cv2) -> dict:
+    versions = {
+        "python": sys.version.split()[0],
+        "opencv": getattr(cv2, "__version__", None),
+    }
+    try:
+        from importlib import metadata as importlib_metadata
+
+        for package in ["ultralytics", "numpy", "paddleocr", "onnxruntime"]:
+            try:
+                versions[package] = importlib_metadata.version(package)
+            except Exception:
+                versions[package] = None
+    except Exception:
+        pass
+    return versions
+
+
+def field_calibration_diagnostics(path_value: str | None, field_calibration) -> dict:
+    path_value = str(path_value or "").strip()
+    if field_calibration:
+        return field_calibration.diagnostics()
+    return {
+        "configured": bool(path_value),
+        "status": "unavailable" if path_value else "not_configured",
+        "method": None,
+        "sourceFile": os.path.basename(path_value) if path_value else None,
+        "pathExists": os.path.exists(path_value) if path_value else False,
+        "homographyLoaded": False,
+        "teamAttackingDirectionCount": 0,
+    }
 
 
 def empty_track_map():
@@ -308,33 +615,66 @@ class JerseyNumberOcr:
         self.min_box_height = max(0.0, float(args.jersey_ocr_min_box_height))
         self.sample_counts: defaultdict[str, int] = defaultdict(int)
         self.total_samples = 0
+        self.boxes_seen = 0
+        self.boxes_eligible = 0
+        self.crop_batches = 0
+        self.crop_count = 0
+        self.ocr_crop_calls = 0
+        self.tokens_seen = 0
+        self.candidate_count = 0
+        self.skip_reasons: Counter[str] = Counter()
         self._ocr = None
         self._available = None
 
     def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
-        if not self.enabled or label != "person" or not track_id or image is None:
+        if label != "person":
+            self.skip_reasons["non_person"] += 1
+            return []
+        self.boxes_seen += 1
+        if not self.enabled:
+            self.skip_reasons["disabled"] += 1
+            return []
+        if not track_id:
+            self.skip_reasons["missing_track_id"] += 1
+            return []
+        if image is None:
+            self.skip_reasons["missing_image"] += 1
             return []
         if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
+            self.skip_reasons["sample_budget_disabled"] += 1
             return []
         if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
+            self.skip_reasons["sample_budget_exhausted"] += 1
             return []
         height, _width = image.shape[:2]
         if height <= 0 or (y2 - y1) / height < self.min_box_height:
+            self.skip_reasons["box_too_small"] += 1
             return []
+        self.boxes_eligible += 1
         crops = jersey_number_crops(image, x1, y1, x2, y2)
         remaining = self.max_total_samples - self.total_samples
         crops = crops[:remaining]
         if not crops:
+            self.skip_reasons["empty_crop"] += 1
             return []
         ocr = self.ocr()
         if ocr is None:
+            self.skip_reasons["ocr_unavailable"] += 1
             return []
         self.sample_counts[track_id] += 1
         self.total_samples += len(crops)
+        self.crop_batches += 1
+        self.crop_count += len(crops)
+        self.ocr_crop_calls += len(crops)
         tokens = []
         for crop in crops:
             tokens.extend(run_jersey_crop_ocr(ocr, crop))
-        return jersey_candidates_from_tokens(tokens, self.min_confidence, at)
+        self.tokens_seen += len(tokens)
+        candidates = jersey_candidates_from_tokens(tokens, self.min_confidence, at)
+        self.candidate_count += len(candidates)
+        if not candidates:
+            self.skip_reasons["no_candidate_after_threshold"] += 1
+        return candidates
 
     def ocr(self):
         if self._available is False:
@@ -353,6 +693,29 @@ class JerseyNumberOcr:
         except Exception:
             self._available = False
             return None
+
+    def diagnostics(self) -> dict:
+        sampled_tracks = len([track_id for track_id, count in self.sample_counts.items() if count > 0])
+        return {
+            "enabled": self.enabled,
+            "available": self._available is True,
+            "availabilityState": "available" if self._available is True else "unavailable" if self._available is False else "not_checked",
+            "language": self.lang,
+            "minConfidence": self.min_confidence,
+            "minBoxHeight": self.min_box_height,
+            "maxSamplesPerTrack": self.max_samples_per_track,
+            "maxTotalSamples": self.max_total_samples,
+            "personBoxesSeen": self.boxes_seen,
+            "eligibleBoxes": self.boxes_eligible,
+            "sampledTrackCount": sampled_tracks,
+            "sampledBoxesByTrack": dict(sorted(self.sample_counts.items())[:32]),
+            "cropBatchCount": self.crop_batches,
+            "cropSampleCount": self.crop_count,
+            "ocrCropCallCount": self.ocr_crop_calls,
+            "ocrTokenCount": self.tokens_seen,
+            "candidateCount": self.candidate_count,
+            "skipReasons": compact_counter(self.skip_reasons),
+        }
 
 
 class FaceEmbeddingModel:
@@ -410,6 +773,15 @@ class FaceEmbeddingModel:
         except Exception:
             return None
 
+    def diagnostics(self) -> dict:
+        return {
+            "configured": bool(self.model_path),
+            "sourceFile": os.path.basename(self.model_path) if self.model_path else None,
+            "pathExists": os.path.exists(self.model_path) if self.model_path else False,
+            "availabilityState": "available" if self._available is True else "unavailable" if self._available is False else "not_checked",
+            "inputShape": self._input_shape,
+        }
+
 
 class FaceIdentityMatcher:
     def __init__(self, args: argparse.Namespace):
@@ -419,27 +791,85 @@ class FaceIdentityMatcher:
         self.max_total_samples = max(0, int(args.face_identity_max_total_samples))
         self.sample_counts: defaultdict[str, int] = defaultdict(int)
         self.total_samples = 0
+        self.boxes_seen = 0
+        self.boxes_eligible = 0
+        self.face_crop_attempts = 0
+        self.face_crop_count = 0
+        self.embedding_attempts = 0
+        self.embedding_count = 0
+        self.candidate_count = 0
+        self.skip_reasons: Counter[str] = Counter()
         self.model = FaceEmbeddingModel(args.face_identity_model)
         self.gallery = load_face_gallery(args.face_identity_gallery)
 
     def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
-        if not self.enabled or label != "person" or not track_id or image is None:
+        if label != "person":
+            self.skip_reasons["non_person"] += 1
+            return []
+        self.boxes_seen += 1
+        if not self.enabled:
+            self.skip_reasons["disabled"] += 1
+            return []
+        if not track_id:
+            self.skip_reasons["missing_track_id"] += 1
+            return []
+        if image is None:
+            self.skip_reasons["missing_image"] += 1
             return []
         if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
+            self.skip_reasons["sample_budget_disabled"] += 1
             return []
         if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
+            self.skip_reasons["sample_budget_exhausted"] += 1
             return []
         if not self.gallery or not self.model.available():
+            self.skip_reasons["gallery_or_model_unavailable"] += 1
             return []
+        self.boxes_eligible += 1
+        self.face_crop_attempts += 1
         face_crop = crop_face_candidate(image, x1, y1, x2, y2)
         if face_crop is None:
+            self.skip_reasons["face_not_detected"] += 1
             return []
+        self.face_crop_count += 1
         self.sample_counts[track_id] += 1
         self.total_samples += 1
+        self.embedding_attempts += 1
         embedding = self.model.embed(face_crop)
         if not embedding:
+            self.skip_reasons["embedding_failed"] += 1
             return []
-        return face_candidates_from_embedding(embedding, self.gallery, self.min_confidence, at)
+        self.embedding_count += 1
+        candidates = face_candidates_from_embedding(embedding, self.gallery, self.min_confidence, at)
+        self.candidate_count += len(candidates)
+        if not candidates:
+            self.skip_reasons["no_candidate_after_threshold"] += 1
+        return candidates
+
+    def diagnostics(self) -> dict:
+        sampled_tracks = len([track_id for track_id, count in self.sample_counts.items() if count > 0])
+        gallery_embeddings = sum(len(player.get("embeddings") or []) for player in self.gallery)
+        gallery_teams = Counter(str(player.get("team") or "unknown") for player in self.gallery)
+        return {
+            "enabled": self.enabled,
+            "minConfidence": self.min_confidence,
+            "maxSamplesPerTrack": self.max_samples_per_track,
+            "maxTotalSamples": self.max_total_samples,
+            "personBoxesSeen": self.boxes_seen,
+            "eligibleBoxes": self.boxes_eligible,
+            "sampledTrackCount": sampled_tracks,
+            "sampledBoxesByTrack": dict(sorted(self.sample_counts.items())[:32]),
+            "faceCropAttemptCount": self.face_crop_attempts,
+            "faceCropCount": self.face_crop_count,
+            "embeddingAttemptCount": self.embedding_attempts,
+            "embeddingCount": self.embedding_count,
+            "candidateCount": self.candidate_count,
+            "galleryPlayerCount": len(self.gallery),
+            "galleryEmbeddingCount": gallery_embeddings,
+            "galleryTeams": compact_counter(gallery_teams),
+            "model": self.model.diagnostics(),
+            "skipReasons": compact_counter(self.skip_reasons),
+        }
 
 
 class FieldCalibration:
@@ -501,6 +931,20 @@ class FieldCalibration:
                 "Homography quality depends on the external calibration points.",
                 "Team attacking direction is config-driven unless a possession-aware calibration stage provides it.",
             ],
+        }
+
+    def diagnostics(self) -> dict:
+        return {
+            "configured": True,
+            "status": "calibrated" if valid_homography(self.homography) else "unavailable",
+            "method": "homography" if valid_homography(self.homography) else None,
+            "sourceFile": os.path.basename(self.source_path),
+            "pathExists": os.path.exists(self.source_path),
+            "homographyLoaded": valid_homography(self.homography),
+            "attackingDirection": self.attacking_direction,
+            "attackingDirectionConfidence": self.attacking_direction_confidence,
+            "teamAttackingDirectionCount": len(self.team_attacking_directions),
+            "teamsWithDirection": [item.get("team") for item in self.team_attacking_directions if item.get("team")][:16],
         }
 
 
@@ -1154,6 +1598,12 @@ if __name__ == "__main__":
                     "tracker": os.environ.get("VISION_TRACKER", "bytetrack.yaml"),
                     "segments": [],
                     "error": f"{type(fatal).__name__}: {fatal}",
+                    "diagnostics": {
+                        "schema": "tracking_diagnostics_v1",
+                        "status": "unavailable",
+                        "error": f"{type(fatal).__name__}: {fatal}",
+                        "runtime": {"processedFrameCount": 0, "emittedSegmentCount": 0},
+                    },
                 },
                 ensure_ascii=False,
             )

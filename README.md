@@ -391,6 +391,8 @@ Important environment variables:
 | `VISUAL_EMBEDDING_MODEL` | OpenCLIP visual embedding model |
 | `CAPABILITY_*` | Runtime capability policy: `disabled`, `optional`, or `required` |
 
+Tracker runs emit media, sampling, frame, box, track, OCR, face, dependency, and homography diagnostics under `sceneData.vision.tracking.diagnostics` for operations and data validation.
+
 Start from [.env.example](.env.example). Do not commit local `.env` values.
 
 ## Verification
