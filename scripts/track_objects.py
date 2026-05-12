@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import argparse
 import colorsys
+import hashlib
 import json
 import math
 import os
 import re
 import sys
 import tempfile
+import time
+import uuid
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from statistics import median
 
 
@@ -35,11 +39,14 @@ def main() -> None:
     parser.add_argument("--face-identity-max-samples-per-track", type=int, default=int(os.environ.get("FACE_IDENTITY_MAX_SAMPLES_PER_TRACK", "2")))
     parser.add_argument("--face-identity-max-total-samples", type=int, default=int(os.environ.get("FACE_IDENTITY_MAX_TOTAL_SAMPLES", "32")))
     parser.add_argument("--field-calibration", default=os.environ.get("FIELD_CALIBRATION_CONFIG", ""))
+    parser.add_argument("--diagnostics-frame-limit", type=int, default=int(os.environ.get("TRACKER_DIAGNOSTICS_FRAME_LIMIT", "240")))
+    parser.add_argument("--diagnostics-decision-limit", type=int, default=int(os.environ.get("TRACKER_DIAGNOSTICS_DECISION_LIMIT", "160")))
     args = parser.parse_args()
     payload = json.load(sys.stdin)
     segments = payload.get("segments", [])
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     try:
-        result = track_objects(args, segments)
+        result = track_objects(args, segments, metadata)
     except Exception as error:
         result = {
             "available": False,
@@ -48,18 +55,22 @@ def main() -> None:
             "tracker": args.tracker,
             "segments": [],
             "error": f"{type(error).__name__}: {error}",
-            "diagnostics": unavailable_diagnostics(args, f"{type(error).__name__}: {error}"),
+            "diagnostics": unavailable_diagnostics(args, f"{type(error).__name__}: {error}", metadata),
         }
     print(json.dumps(result, ensure_ascii=False))
 
 
-def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
+def track_objects(args: argparse.Namespace, segments: list[dict], metadata: dict | None = None) -> dict:
     import cv2
     from ultralytics import YOLO
 
+    metadata = metadata if isinstance(metadata, dict) else {}
+    started_at = utc_now_iso()
+    started_perf = time.perf_counter()
+    run_id = str(metadata.get("runId") or f"tracker-{uuid.uuid4()}")
     segment_items = normalize_segments(segments)
     if not segment_items:
-        return unavailable(args, "No segments were provided for tracking.")
+        return unavailable(args, "No segments were provided for tracking.", metadata, run_id=run_id, started_at=started_at, duration_ms=elapsed_ms(started_perf))
 
     media_info = read_media_info(cv2, args.media_path)
     fps = float(media_info.get("fps") or 30.0)
@@ -68,6 +79,8 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
     face_identity = FaceIdentityMatcher(args)
     field_calibration = FieldCalibration.from_path(args.field_calibration)
     segment_frames: dict[str, list[dict]] = defaultdict(list)
+    frame_audit: list[dict] = []
+    frame_audit_overflow = 0
     frame_number = 0
     processed_frame_count = 0
     outside_segment_frame_count = 0
@@ -82,15 +95,40 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
         verbose=False,
     ):
         processed_frame_count += 1
-        at = frame_number / fps
+        source_frame_number = frame_number
+        at = source_frame_number / fps
         frame_number += max(1, args.vid_stride)
         segment = segment_for_time(segment_items, at)
         if not segment:
             outside_segment_frame_count += 1
+            frame_audit_overflow += append_frame_audit(
+                frame_audit,
+                args.diagnostics_frame_limit,
+                processed_frame_count,
+                source_frame_number,
+                at,
+                None,
+                [],
+                "outside_segment",
+                "frame_time_not_in_any_requested_segment",
+            )
             continue
-        boxes = boxes_from_result(result, jersey_ocr, face_identity, at)
+        boxes = boxes_from_result(result, jersey_ocr, face_identity, at, processed_frame_count, source_frame_number)
+        frame_status = "tracked" if boxes else "no_boxes"
+        frame_reason = None if boxes else "detector_returned_no_supported_person_or_ball_boxes"
+        frame_audit_overflow += append_frame_audit(
+            frame_audit,
+            args.diagnostics_frame_limit,
+            processed_frame_count,
+            source_frame_number,
+            at,
+            segment,
+            boxes,
+            frame_status,
+            frame_reason,
+        )
         if boxes:
-            segment_frames[segment["id"]].append({"at": round(at, 3), "boxes": boxes})
+            segment_frames[segment["id"]].append({"at": round(at, 3), "frameIndex": processed_frame_count, "sourceFrameNumber": source_frame_number, "boxes": boxes})
         else:
             boxless_segment_frame_count += 1
 
@@ -111,6 +149,12 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
         face_identity,
         field_calibration,
         cv2,
+        metadata,
+        run_id,
+        started_at,
+        elapsed_ms(started_perf),
+        frame_audit,
+        frame_audit_overflow,
     )
     return {
         "available": True,
@@ -123,7 +167,7 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
     }
 
 
-def unavailable(args: argparse.Namespace, error: str) -> dict:
+def unavailable(args: argparse.Namespace, error: str, metadata: dict | None = None, run_id: str | None = None, started_at: str | None = None, duration_ms: float | None = None) -> dict:
     return {
         "available": False,
         "provider": "ultralytics-track",
@@ -131,15 +175,18 @@ def unavailable(args: argparse.Namespace, error: str) -> dict:
         "tracker": args.tracker,
         "segments": [],
         "error": error,
-        "diagnostics": unavailable_diagnostics(args, error),
+        "diagnostics": unavailable_diagnostics(args, error, metadata, run_id=run_id, started_at=started_at, duration_ms=duration_ms),
     }
 
 
-def unavailable_diagnostics(args: argparse.Namespace, error: str) -> dict:
+def unavailable_diagnostics(args: argparse.Namespace, error: str, metadata: dict | None = None, run_id: str | None = None, started_at: str | None = None, duration_ms: float | None = None) -> dict:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    started_at = started_at or utc_now_iso()
     return {
         "schema": "tracking_diagnostics_v1",
         "status": "unavailable",
         "error": error,
+        "provenance": provenance_metadata(metadata, run_id or str(metadata.get("runId") or f"tracker-{uuid.uuid4()}"), started_at, duration_ms),
         "config": {
             "model": args.model,
             "tracker": args.tracker,
@@ -148,11 +195,14 @@ def unavailable_diagnostics(args: argparse.Namespace, error: str) -> dict:
             "jerseyOcrEnabled": parse_bool(args.jersey_ocr),
             "faceIdentityEnabled": parse_bool(args.face_identity),
             "fieldCalibrationConfigured": bool(str(args.field_calibration or "").strip()),
+            "diagnosticsFrameLimit": max(0, int(args.diagnostics_frame_limit)),
+            "diagnosticsDecisionLimit": max(0, int(args.diagnostics_decision_limit)),
         },
         "runtime": {
             "processedFrameCount": 0,
             "emittedSegmentCount": 0,
         },
+        "fingerprints": tracker_fingerprints(args),
     }
 
 
@@ -188,6 +238,8 @@ def read_media_info(cv2, media_path: str) -> dict:
         "sourceFile": os.path.basename(media_path),
         "exists": exists,
         "sizeBytes": os.path.getsize(media_path) if exists else None,
+        "mtime": round(os.path.getmtime(media_path), 3) if exists else None,
+        "contentFingerprint": file_content_fingerprint(media_path) if exists else None,
         "fps": round(effective_fps, 3),
         "reportedFps": round(fps, 3) if fps > 0 else None,
         "width": width or None,
@@ -217,7 +269,29 @@ def segment_for_time(segments: list[dict], at: float) -> dict | None:
     return None
 
 
-def boxes_from_result(result, jersey_ocr=None, face_identity=None, at: float | None = None) -> list[dict]:
+def append_frame_audit(audit: list[dict], limit: int, frame_index: int, source_frame_number: int, at: float, segment: dict | None, boxes: list[dict], status: str, reason: str | None) -> int:
+    if len(audit) >= max(0, int(limit)):
+        return 1
+    boxes_by_label = Counter(str(box.get("label") or "unknown") for box in boxes)
+    track_ids = [box.get("trackId") for box in boxes if box.get("trackId")]
+    audit.append(
+        {
+            "frameIndex": frame_index,
+            "sourceFrameNumber": source_frame_number,
+            "frameAt": round(at, 3),
+            "segmentId": segment.get("id") if segment else None,
+            "status": status,
+            "reason": reason,
+            "boxCount": len(boxes),
+            "boxesByLabel": compact_counter(boxes_by_label),
+            "trackIds": track_ids[:12],
+            "maxConfidence": round(max([float(box.get("confidence") or 0) for box in boxes], default=0.0), 3),
+        }
+    )
+    return 0
+
+
+def boxes_from_result(result, jersey_ocr=None, face_identity=None, at: float | None = None, frame_index: int | None = None, source_frame_number: int | None = None) -> list[dict]:
     names = result.names or {}
     width = int(result.orig_shape[1])
     height = int(result.orig_shape[0])
@@ -249,12 +323,34 @@ def boxes_from_result(result, jersey_ocr=None, face_identity=None, at: float | N
         appearance = appearance_from_box(image, x1, y1, x2, y2, label)
         if appearance:
             item["appearance"] = appearance
+        audit_context = {
+            "frameIndex": frame_index,
+            "sourceFrameNumber": source_frame_number,
+            "frameAt": round(at, 3) if at is not None else None,
+            "trackId": track_id,
+            "label": label,
+            "confidence": item["confidence"],
+            "bbox": {
+                "x1": round(x1, 2),
+                "y1": round(y1, 2),
+                "x2": round(x2, 2),
+                "y2": round(y2, 2),
+                "width": round(x2 - x1, 2),
+                "height": round(y2 - y1, 2),
+            },
+            "normalizedBbox": {
+                "x": item["x"],
+                "y": item["y"],
+                "width": item["width"],
+                "height": item["height"],
+            },
+        }
         if jersey_ocr:
-            jersey_candidates = jersey_ocr.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at)
+            jersey_candidates = jersey_ocr.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at, audit_context)
             if jersey_candidates:
                 item["jerseyNumberCandidates"] = jersey_candidates
         if face_identity:
-            face_candidates = face_identity.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at)
+            face_candidates = face_identity.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at, audit_context)
             if face_candidates:
                 item["faceIdentityCandidates"] = face_candidates
         boxes.append(item)
@@ -377,8 +473,22 @@ def segment_diagnostics(
         "trackCoverage": round(min(1.0, track_coverage), 3),
         "firstTrackedFrameAt": round(min(frame_times), 3) if frame_times else None,
         "lastTrackedFrameAt": round(max(frame_times), 3) if frame_times else None,
+        "firstFrameIndex": min([int(frame.get("frameIndex")) for frame in frames if frame.get("frameIndex") is not None], default=None),
+        "lastFrameIndex": max([int(frame.get("frameIndex")) for frame in frames if frame.get("frameIndex") is not None], default=None),
         "bestFrameAt": (best_frame or {}).get("at"),
         "bestFrameBoxCount": len(best_boxes),
+        "frameTrace": [
+            {
+                "frameIndex": frame.get("frameIndex"),
+                "sourceFrameNumber": frame.get("sourceFrameNumber"),
+                "frameAt": frame.get("at"),
+                "boxCount": len(frame.get("boxes", [])),
+                "boxesByLabel": compact_counter(Counter(str(box.get("label") or "unknown") for box in frame.get("boxes", []))),
+                "trackIds": [box.get("trackId") for box in frame.get("boxes", []) if box.get("trackId")][:12],
+            }
+            for frame in frames[:80]
+        ],
+        "frameTraceOverflow": max(0, len(frames) - 80),
         "frameBoxCount": numeric_summary([len(frame.get("boxes", [])) for frame in frames]),
         "framesWithPlayers": sum(1 for frame in frames if any(box.get("label") == "person" for box in frame.get("boxes", []))),
         "framesWithBall": sum(1 for frame in frames if any(box.get("label") == "sports_ball" for box in frame.get("boxes", []))),
@@ -422,6 +532,12 @@ def tracker_diagnostics(
     face_identity,
     field_calibration,
     cv2,
+    metadata: dict,
+    run_id: str,
+    started_at: str,
+    duration_ms: float,
+    frame_audit: list[dict],
+    frame_audit_overflow: int,
 ) -> dict:
     all_boxes = [box for frames in segment_frames.values() for frame in frames for box in frame.get("boxes", [])]
     boxes_by_label = Counter(str(box.get("label") or "unknown") for box in all_boxes)
@@ -435,6 +551,8 @@ def tracker_diagnostics(
     width_lanes = Counter(str((track.get("movement") or {}).get("widthLaneHint") or "unknown") for track in player_tracks)
     return {
         "schema": "tracking_diagnostics_v1",
+        "status": "available",
+        "provenance": provenance_metadata(metadata, run_id, started_at, duration_ms),
         "media": media_info,
         "config": {
             "model": args.model,
@@ -445,6 +563,8 @@ def tracker_diagnostics(
             "jerseyOcrEnabled": parse_bool(args.jersey_ocr),
             "faceIdentityEnabled": parse_bool(args.face_identity),
             "fieldCalibrationConfigured": bool(str(args.field_calibration or "").strip()),
+            "diagnosticsFrameLimit": max(0, int(args.diagnostics_frame_limit)),
+            "diagnosticsDecisionLimit": max(0, int(args.diagnostics_decision_limit)),
         },
         "runtime": {
             "processedFrameCount": processed_frame_count,
@@ -454,6 +574,11 @@ def tracker_diagnostics(
             "emittedSegmentCount": len(emitted_summaries),
             "emptySegmentCount": len(empty_segments),
             "emptySegmentIds": empty_segments[:32],
+        },
+        "frameAudit": {
+            "limit": max(0, int(args.diagnostics_frame_limit)),
+            "items": frame_audit,
+            "overflowCount": frame_audit_overflow,
         },
         "segments": {
             "inputCount": len(segment_items),
@@ -485,6 +610,7 @@ def tracker_diagnostics(
         "jerseyOcr": jersey_ocr.diagnostics(),
         "faceIdentity": face_identity.diagnostics(),
         "fieldCalibration": field_calibration_diagnostics(args.field_calibration, field_calibration),
+        "fingerprints": tracker_fingerprints(args),
         "dependencies": dependency_versions(cv2),
     }
 
@@ -537,6 +663,98 @@ def field_calibration_diagnostics(path_value: str | None, field_calibration) -> 
         "homographyLoaded": False,
         "teamAttackingDirectionCount": 0,
     }
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def elapsed_ms(started_perf: float) -> float:
+    return round((time.perf_counter() - started_perf) * 1000, 3)
+
+
+def provenance_metadata(metadata: dict, run_id: str, started_at: str, duration_ms: float | None) -> dict:
+    ended_at = utc_now_iso()
+    return {
+        "runId": run_id,
+        "assetId": safe_metadata_value(metadata.get("assetId")),
+        "jobId": safe_metadata_value(metadata.get("jobId")),
+        "stage": safe_metadata_value(metadata.get("stage") or "vision-tracking"),
+        "attempt": safe_metadata_value(metadata.get("attempt")),
+        "requestedBy": safe_metadata_value(metadata.get("requestedBy")),
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "durationMs": duration_ms,
+        "host": os.uname().nodename if hasattr(os, "uname") else None,
+        "pid": os.getpid(),
+    }
+
+
+def safe_metadata_value(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:160] if text else None
+
+
+def tracker_fingerprints(args: argparse.Namespace) -> dict:
+    return {
+        "detectorModel": file_fingerprint(args.model, include_sha256=True),
+        "trackerConfig": file_fingerprint(args.tracker, include_sha256=True),
+        "faceIdentityModel": file_fingerprint(args.face_identity_model, include_sha256=True),
+        "faceIdentityGallery": file_fingerprint(args.face_identity_gallery, include_sha256=True),
+        "fieldCalibration": file_fingerprint(args.field_calibration, include_sha256=True),
+    }
+
+
+def file_fingerprint(path_value: str | None, include_sha256: bool = False) -> dict:
+    path_value = str(path_value or "").strip()
+    exists = bool(path_value) and os.path.exists(path_value)
+    result = {
+        "configured": bool(path_value),
+        "sourceFile": os.path.basename(path_value) if path_value else None,
+        "pathExists": exists,
+        "sizeBytes": os.path.getsize(path_value) if exists else None,
+        "mtime": round(os.path.getmtime(path_value), 3) if exists else None,
+    }
+    if exists:
+        result["contentFingerprint"] = file_content_fingerprint(path_value)
+    if include_sha256 and exists and os.path.isfile(path_value):
+        result["sha256"] = file_sha256(path_value)
+    return result
+
+
+def file_content_fingerprint(path_value: str, sample_size: int = 1024 * 1024) -> dict:
+    try:
+        size = os.path.getsize(path_value)
+        digest = hashlib.sha256()
+        with open(path_value, "rb") as handle:
+            head = handle.read(sample_size)
+            digest.update(head)
+            tail_size = 0
+            if size > sample_size:
+                handle.seek(max(0, size - sample_size))
+                tail = handle.read(sample_size)
+                digest.update(tail)
+                tail_size = len(tail)
+        return {
+            "algorithm": "sha256_head_tail",
+            "sampleBytes": len(head) + tail_size,
+            "sha256": digest.hexdigest(),
+        }
+    except Exception:
+        return {"algorithm": "sha256_head_tail", "sampleBytes": 0, "sha256": None}
+
+
+def file_sha256(path_value: str) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with open(path_value, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception:
+        return None
 
 
 def empty_track_map():
@@ -613,6 +831,7 @@ class JerseyNumberOcr:
         self.max_samples_per_track = max(0, int(args.jersey_ocr_max_samples_per_track))
         self.max_total_samples = max(0, int(args.jersey_ocr_max_total_samples))
         self.min_box_height = max(0.0, float(args.jersey_ocr_min_box_height))
+        self.decision_limit = max(0, int(args.diagnostics_decision_limit))
         self.sample_counts: defaultdict[str, int] = defaultdict(int)
         self.total_samples = 0
         self.boxes_seen = 0
@@ -623,43 +842,53 @@ class JerseyNumberOcr:
         self.tokens_seen = 0
         self.candidate_count = 0
         self.skip_reasons: Counter[str] = Counter()
+        self.decision_audit: list[dict] = []
+        self.decision_audit_overflow = 0
         self._ocr = None
         self._available = None
 
-    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
+    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None, audit_context: dict | None = None) -> list[dict]:
         if label != "person":
             self.skip_reasons["non_person"] += 1
             return []
         self.boxes_seen += 1
         if not self.enabled:
             self.skip_reasons["disabled"] += 1
+            self.record_decision(audit_context, "skipped", "disabled")
             return []
         if not track_id:
             self.skip_reasons["missing_track_id"] += 1
+            self.record_decision(audit_context, "skipped", "missing_track_id")
             return []
         if image is None:
             self.skip_reasons["missing_image"] += 1
+            self.record_decision(audit_context, "skipped", "missing_image")
             return []
         if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
             self.skip_reasons["sample_budget_disabled"] += 1
+            self.record_decision(audit_context, "skipped", "sample_budget_disabled")
             return []
         if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
             self.skip_reasons["sample_budget_exhausted"] += 1
+            self.record_decision(audit_context, "skipped", "sample_budget_exhausted")
             return []
         height, _width = image.shape[:2]
         if height <= 0 or (y2 - y1) / height < self.min_box_height:
             self.skip_reasons["box_too_small"] += 1
+            self.record_decision(audit_context, "skipped", "box_too_small")
             return []
         self.boxes_eligible += 1
-        crops = jersey_number_crops(image, x1, y1, x2, y2)
+        crops = jersey_number_crop_items(image, x1, y1, x2, y2)
         remaining = self.max_total_samples - self.total_samples
         crops = crops[:remaining]
         if not crops:
             self.skip_reasons["empty_crop"] += 1
+            self.record_decision(audit_context, "skipped", "empty_crop")
             return []
         ocr = self.ocr()
         if ocr is None:
             self.skip_reasons["ocr_unavailable"] += 1
+            self.record_decision(audit_context, "skipped", "ocr_unavailable", {"cropCount": len(crops)})
             return []
         self.sample_counts[track_id] += 1
         self.total_samples += len(crops)
@@ -667,13 +896,32 @@ class JerseyNumberOcr:
         self.crop_count += len(crops)
         self.ocr_crop_calls += len(crops)
         tokens = []
-        for crop in crops:
-            tokens.extend(run_jersey_crop_ocr(ocr, crop))
+        for index, crop_item in enumerate(crops):
+            crop_tokens = run_jersey_crop_ocr(ocr, crop_item["image"])
+            for token in crop_tokens:
+                token["cropIndex"] = index
+                token["window"] = crop_item["window"]
+                token["preprocess"] = crop_item["preprocess"]
+            tokens.extend(crop_tokens)
         self.tokens_seen += len(tokens)
         candidates = jersey_candidates_from_tokens(tokens, self.min_confidence, at)
         self.candidate_count += len(candidates)
+        token_decisions = jersey_token_decisions(tokens, self.min_confidence)
         if not candidates:
             self.skip_reasons["no_candidate_after_threshold"] += 1
+            self.record_decision(
+                audit_context,
+                "rejected",
+                "no_candidate_after_threshold",
+                {"cropCount": len(crops), "tokens": token_decisions[:12], "acceptedCandidates": []},
+            )
+        else:
+            self.record_decision(
+                audit_context,
+                "accepted",
+                None,
+                {"cropCount": len(crops), "tokens": token_decisions[:12], "acceptedCandidates": candidates},
+            )
         return candidates
 
     def ocr(self):
@@ -693,6 +941,19 @@ class JerseyNumberOcr:
         except Exception:
             self._available = False
             return None
+
+    def record_decision(self, context: dict | None, status: str, reason: str | None, extra: dict | None = None) -> None:
+        if len(self.decision_audit) >= self.decision_limit:
+            self.decision_audit_overflow += 1
+            return
+        item = {
+            **(context or {}),
+            "status": status,
+            "reason": reason,
+        }
+        if extra:
+            item.update(extra)
+        self.decision_audit.append(item)
 
     def diagnostics(self) -> dict:
         sampled_tracks = len([track_id for track_id, count in self.sample_counts.items() if count > 0])
@@ -715,6 +976,11 @@ class JerseyNumberOcr:
             "ocrTokenCount": self.tokens_seen,
             "candidateCount": self.candidate_count,
             "skipReasons": compact_counter(self.skip_reasons),
+            "decisionAudit": {
+                "limit": self.decision_limit,
+                "items": self.decision_audit,
+                "overflowCount": self.decision_audit_overflow,
+            },
         }
 
 
@@ -774,10 +1040,12 @@ class FaceEmbeddingModel:
             return None
 
     def diagnostics(self) -> dict:
+        fingerprint = file_fingerprint(self.model_path, include_sha256=True)
         return {
             "configured": bool(self.model_path),
             "sourceFile": os.path.basename(self.model_path) if self.model_path else None,
             "pathExists": os.path.exists(self.model_path) if self.model_path else False,
+            "fingerprint": fingerprint,
             "availabilityState": "available" if self._available is True else "unavailable" if self._available is False else "not_checked",
             "inputShape": self._input_shape,
         }
@@ -789,6 +1057,7 @@ class FaceIdentityMatcher:
         self.min_confidence = max(0.0, min(1.0, float(args.face_identity_min_confidence)))
         self.max_samples_per_track = max(0, int(args.face_identity_max_samples_per_track))
         self.max_total_samples = max(0, int(args.face_identity_max_total_samples))
+        self.decision_limit = max(0, int(args.diagnostics_decision_limit))
         self.sample_counts: defaultdict[str, int] = defaultdict(int)
         self.total_samples = 0
         self.boxes_seen = 0
@@ -799,37 +1068,47 @@ class FaceIdentityMatcher:
         self.embedding_count = 0
         self.candidate_count = 0
         self.skip_reasons: Counter[str] = Counter()
+        self.decision_audit: list[dict] = []
+        self.decision_audit_overflow = 0
+        self.gallery_path = args.face_identity_gallery
         self.model = FaceEmbeddingModel(args.face_identity_model)
         self.gallery = load_face_gallery(args.face_identity_gallery)
 
-    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
+    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None, audit_context: dict | None = None) -> list[dict]:
         if label != "person":
             self.skip_reasons["non_person"] += 1
             return []
         self.boxes_seen += 1
         if not self.enabled:
             self.skip_reasons["disabled"] += 1
+            self.record_decision(audit_context, "skipped", "disabled")
             return []
         if not track_id:
             self.skip_reasons["missing_track_id"] += 1
+            self.record_decision(audit_context, "skipped", "missing_track_id")
             return []
         if image is None:
             self.skip_reasons["missing_image"] += 1
+            self.record_decision(audit_context, "skipped", "missing_image")
             return []
         if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
             self.skip_reasons["sample_budget_disabled"] += 1
+            self.record_decision(audit_context, "skipped", "sample_budget_disabled")
             return []
         if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
             self.skip_reasons["sample_budget_exhausted"] += 1
+            self.record_decision(audit_context, "skipped", "sample_budget_exhausted")
             return []
         if not self.gallery or not self.model.available():
             self.skip_reasons["gallery_or_model_unavailable"] += 1
+            self.record_decision(audit_context, "skipped", "gallery_or_model_unavailable")
             return []
         self.boxes_eligible += 1
         self.face_crop_attempts += 1
         face_crop = crop_face_candidate(image, x1, y1, x2, y2)
         if face_crop is None:
             self.skip_reasons["face_not_detected"] += 1
+            self.record_decision(audit_context, "skipped", "face_not_detected")
             return []
         self.face_crop_count += 1
         self.sample_counts[track_id] += 1
@@ -838,13 +1117,41 @@ class FaceIdentityMatcher:
         embedding = self.model.embed(face_crop)
         if not embedding:
             self.skip_reasons["embedding_failed"] += 1
+            self.record_decision(audit_context, "skipped", "embedding_failed")
             return []
         self.embedding_count += 1
-        candidates = face_candidates_from_embedding(embedding, self.gallery, self.min_confidence, at)
+        match_decisions = face_match_decisions(embedding, self.gallery, self.min_confidence)
+        candidates = face_candidates_from_decisions(match_decisions, at)
         self.candidate_count += len(candidates)
         if not candidates:
             self.skip_reasons["no_candidate_after_threshold"] += 1
+            self.record_decision(
+                audit_context,
+                "rejected",
+                "no_candidate_after_threshold",
+                {"topMatches": match_decisions[:8], "acceptedCandidates": []},
+            )
+        else:
+            self.record_decision(
+                audit_context,
+                "accepted",
+                None,
+                {"topMatches": match_decisions[:8], "acceptedCandidates": candidates},
+            )
         return candidates
+
+    def record_decision(self, context: dict | None, status: str, reason: str | None, extra: dict | None = None) -> None:
+        if len(self.decision_audit) >= self.decision_limit:
+            self.decision_audit_overflow += 1
+            return
+        item = {
+            **(context or {}),
+            "status": status,
+            "reason": reason,
+        }
+        if extra:
+            item.update(extra)
+        self.decision_audit.append(item)
 
     def diagnostics(self) -> dict:
         sampled_tracks = len([track_id for track_id, count in self.sample_counts.items() if count > 0])
@@ -867,8 +1174,14 @@ class FaceIdentityMatcher:
             "galleryPlayerCount": len(self.gallery),
             "galleryEmbeddingCount": gallery_embeddings,
             "galleryTeams": compact_counter(gallery_teams),
+            "galleryFingerprint": file_fingerprint(self.gallery_path, include_sha256=True),
             "model": self.model.diagnostics(),
             "skipReasons": compact_counter(self.skip_reasons),
+            "decisionAudit": {
+                "limit": self.decision_limit,
+                "items": self.decision_audit,
+                "overflowCount": self.decision_audit_overflow,
+            },
         }
 
 
@@ -934,6 +1247,8 @@ class FieldCalibration:
         }
 
     def diagnostics(self) -> dict:
+        calibration_points = self.payload.get("points") or self.payload.get("calibrationPoints") or self.payload.get("correspondences") or []
+        reprojection_error = self.payload.get("reprojectionError") or self.payload.get("meanReprojectionError")
         return {
             "configured": True,
             "status": "calibrated" if valid_homography(self.homography) else "unavailable",
@@ -941,6 +1256,11 @@ class FieldCalibration:
             "sourceFile": os.path.basename(self.source_path),
             "pathExists": os.path.exists(self.source_path),
             "homographyLoaded": valid_homography(self.homography),
+            "schemaVersion": self.payload.get("schemaVersion") or self.payload.get("version"),
+            "calibrationPointCount": len(calibration_points) if isinstance(calibration_points, list) else None,
+            "reprojectionError": round(float(reprojection_error), 4) if is_number(reprojection_error) else None,
+            "pitchCoordinateConvention": self.payload.get("pitchCoordinateConvention") or "normalized_0_1",
+            "sourceMedia": self.payload.get("sourceMedia") or self.payload.get("sourceFile"),
             "attackingDirection": self.attacking_direction,
             "attackingDirectionConfidence": self.attacking_direction_confidence,
             "teamAttackingDirectionCount": len(self.team_attacking_directions),
@@ -1008,21 +1328,41 @@ def crop_face_candidate(image, x1: float, y1: float, x2: float, y2: float):
 
 
 def face_candidates_from_embedding(embedding: list[float], gallery: list[dict], min_confidence: float, at: float | None) -> list[dict]:
-    candidates = []
+    return face_candidates_from_decisions(face_match_decisions(embedding, gallery, min_confidence), at)
+
+
+def face_match_decisions(embedding: list[float], gallery: list[dict], min_confidence: float) -> list[dict]:
+    decisions = []
     for player in gallery:
         scores = [cosine_similarity(embedding, gallery_embedding) for gallery_embedding in player["embeddings"]]
         if not scores:
             continue
         score = max(scores)
-        if score < min_confidence:
-            continue
-        candidates.append({
+        decisions.append({
             "playerId": player.get("playerId"),
             "canonicalName": player.get("canonicalName"),
-            "confidence": round(clamp01(score), 3),
+            "team": player.get("team"),
+            "score": round(clamp01(score), 3),
+            "threshold": round(min_confidence, 3),
+            "accepted": score >= min_confidence,
+            "rejectionReason": None if score >= min_confidence else "below_threshold",
+            "galleryEmbeddingCount": len(player["embeddings"]),
+        })
+    return sorted(decisions, key=lambda item: item["score"], reverse=True)
+
+
+def face_candidates_from_decisions(decisions: list[dict], at: float | None) -> list[dict]:
+    candidates = []
+    for decision in decisions:
+        if not decision.get("accepted"):
+            continue
+        candidates.append({
+            "playerId": decision.get("playerId"),
+            "canonicalName": decision.get("canonicalName"),
+            "confidence": round(clamp01(float(decision.get("score") or 0)), 3),
             "source": "face_embedding",
             "frameAt": round(at, 3) if at is not None else None,
-            "evidence": f"Matched {len(player['embeddings'])} gallery embedding(s)",
+            "evidence": f"Matched {int(decision.get('galleryEmbeddingCount') or 0)} gallery embedding(s)",
         })
     return sorted(candidates, key=lambda item: item["confidence"], reverse=True)[:3]
 
@@ -1054,6 +1394,10 @@ def jersey_number_crop(image, x1: float, y1: float, x2: float, y2: float):
 
 
 def jersey_number_crops(image, x1: float, y1: float, x2: float, y2: float) -> list:
+    return [item["image"] for item in jersey_number_crop_items(image, x1, y1, x2, y2)]
+
+
+def jersey_number_crop_items(image, x1: float, y1: float, x2: float, y2: float) -> list[dict]:
     import cv2
 
     height, width = image.shape[:2]
@@ -1080,9 +1424,24 @@ def jersey_number_crops(image, x1: float, y1: float, x2: float, y2: float) -> li
         resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(gray)
-        crops.append(cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR))
+        window = f"{round(left_ratio, 2)}-{round(right_ratio, 2)}:{round(top_ratio, 2)}-{round(bottom_ratio, 2)}"
+        crops.append(
+            {
+                "window": window,
+                "preprocess": "clahe",
+                "sourceBox": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "image": cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR),
+            }
+        )
         thresholded = cv2.adaptiveThreshold(clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 7)
-        crops.append(cv2.cvtColor(thresholded, cv2.COLOR_GRAY2BGR))
+        crops.append(
+            {
+                "window": window,
+                "preprocess": "adaptive_threshold",
+                "sourceBox": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "image": cv2.cvtColor(thresholded, cv2.COLOR_GRAY2BGR),
+            }
+        )
     return crops[:4]
 
 
@@ -1163,28 +1522,14 @@ def pick_ocr_value(data: dict, keys: list[str], fallback):
 
 def jersey_candidates_from_tokens(tokens: list[dict], min_confidence: float, at: float | None) -> list[dict]:
     by_number = {}
-    for token in tokens:
-        raw_text = str(token.get("text") or "").strip()
-        if not raw_text:
+    for decision in jersey_token_decisions(tokens, min_confidence):
+        if not decision.get("accepted"):
             continue
-        try:
-            confidence = float(token.get("confidence") or 0.0)
-        except Exception:
-            confidence = 0.0
-        numbers = parse_jersey_numbers_from_raw(raw_text)
-        if not numbers:
-            continue
-        if not re.search(r"\d", raw_text):
-            confidence *= 0.82
-        elif normalize_jersey_text(raw_text) != raw_text.upper():
-            confidence *= 0.92
-        if confidence < min_confidence:
-            continue
-        for number in numbers:
+        for number in decision.get("numbers") or []:
             candidate = {
                 "number": number,
-                "confidence": round(max(0.0, min(0.95, confidence)), 3),
-                "text": raw_text,
+                "confidence": round(max(0.0, min(0.95, float(decision.get("adjustedConfidence") or 0))), 3),
+                "text": str(decision.get("text") or number),
                 "source": "crop_ocr",
                 "frameAt": round(at, 3) if at is not None else None,
             }
@@ -1192,6 +1537,47 @@ def jersey_candidates_from_tokens(tokens: list[dict], min_confidence: float, at:
             if not existing or candidate["confidence"] > existing["confidence"]:
                 by_number[number] = candidate
     return sorted(by_number.values(), key=lambda item: item["confidence"], reverse=True)[:2]
+
+
+def jersey_token_decisions(tokens: list[dict], min_confidence: float) -> list[dict]:
+    decisions = []
+    for token in tokens:
+        raw_text = str(token.get("text") or "").strip()
+        try:
+            raw_confidence = float(token.get("confidence") or 0.0)
+        except Exception:
+            raw_confidence = 0.0
+        if not raw_text:
+            decisions.append(token_decision(token, raw_text, raw_confidence, raw_confidence, [], False, "empty_text"))
+            continue
+        numbers = parse_jersey_numbers_from_raw(raw_text)
+        adjusted_confidence = raw_confidence
+        if not re.search(r"\d", raw_text):
+            adjusted_confidence *= 0.82
+        elif normalize_jersey_text(raw_text) != raw_text.upper():
+            adjusted_confidence *= 0.92
+        if not numbers:
+            decisions.append(token_decision(token, raw_text, raw_confidence, adjusted_confidence, [], False, "no_jersey_number"))
+            continue
+        if adjusted_confidence < min_confidence:
+            decisions.append(token_decision(token, raw_text, raw_confidence, adjusted_confidence, numbers, False, "below_threshold"))
+            continue
+        decisions.append(token_decision(token, raw_text, raw_confidence, adjusted_confidence, numbers, True, None))
+    return decisions
+
+
+def token_decision(token: dict, text: str, raw_confidence: float, adjusted_confidence: float, numbers: list[int], accepted: bool, reason: str | None) -> dict:
+    return {
+        "text": text,
+        "rawConfidence": round(clamp01(raw_confidence), 3),
+        "adjustedConfidence": round(clamp01(adjusted_confidence), 3),
+        "numbers": numbers[:4],
+        "accepted": accepted,
+        "rejectionReason": reason,
+        "cropIndex": token.get("cropIndex"),
+        "window": token.get("window"),
+        "preprocess": token.get("preprocess"),
+    }
 
 
 def aggregate_jersey_number_candidates(candidates: list[dict]) -> list[dict]:

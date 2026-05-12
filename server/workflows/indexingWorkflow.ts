@@ -345,7 +345,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         ? await traceAsync(
             "stage.vision_tracking",
             { jobId, assetId, segments: detectionStage.trackedV0Timeline.length },
-            () => detectTimelineTracks(filePath, detectionStage.trackedV0Timeline),
+            () => detectTimelineTracks(filePath, detectionStage.trackedV0Timeline, { assetId, jobId, stage: "vision-tracking" }),
             "stage.vision_tracking"
           )
         : { available: false, provider: "disabled", model: timelineStage.capabilityPolicy.visionDetector, tracker: timelineStage.capabilityPolicy.visionTracker, segments: [], error: "Vision tracker disabled by capability policy." };

@@ -212,12 +212,16 @@ async def track_objects(request: Request) -> JSONResponse:
         body_or_env(body, "faceIdentityMaxTotalSamples", "FACE_IDENTITY_MAX_TOTAL_SAMPLES", "32"),
         "--field-calibration",
         body_or_env(body, "fieldCalibration", "FIELD_CALIBRATION_CONFIG", ""),
+        "--diagnostics-frame-limit",
+        body_or_env(body, "diagnosticsFrameLimit", "TRACKER_DIAGNOSTICS_FRAME_LIMIT", "240"),
+        "--diagnostics-decision-limit",
+        body_or_env(body, "diagnosticsDecisionLimit", "TRACKER_DIAGNOSTICS_DECISION_LIMIT", "160"),
     ]
     return await run_script_response(
         request,
         args,
         body,
-        stdin_payload={"segments": body.get("segments") or []},
+        stdin_payload={"segments": body.get("segments") or [], "metadata": body.get("metadata") or {}},
     )
 
 

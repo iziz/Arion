@@ -82,7 +82,7 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
   const trackedV0Timeline = applyVisionTracking(applyVisionDetections(thumbnailTimeline, detections));
   if (index) assertCapabilityAvailable(index, "visionDetector", detections.available, detections.error ?? "Detector returned unavailable.");
   const tracks = !index || isCapabilityEnabled(index, "visionTracker")
-    ? await detectTimelineTracks(filePath, trackedV0Timeline)
+    ? await detectTimelineTracks(filePath, trackedV0Timeline, { assetId: asset.id, stage: "rebuild-embeddings" })
     : { available: false, provider: "disabled", model: detections.model, tracker: capabilityPolicy?.visionTracker ?? "disabled", segments: [], error: "Vision tracker disabled by capability policy." };
   console.error(`[rebuild] ${asset.id} tracking ${tracks.available ? "ready" : "fallback"} (${tracks.segments.length} segments)`);
   const trackerTrace = tracks.available

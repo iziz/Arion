@@ -5,7 +5,15 @@ import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "../modelRu
 import { detectorModel, pythonBin, trackerName, trackerScript } from "./runtimeConfig";
 import type { TrackerResult } from "./types";
 
-export async function detectTimelineTracks(filePath: string, timeline: TimelineSegment[]) {
+export type TrackerRunMetadata = {
+  assetId?: string;
+  jobId?: string;
+  stage?: string;
+  attempt?: string | number | null;
+  requestedBy?: string | null;
+};
+
+export async function detectTimelineTracks(filePath: string, timeline: TimelineSegment[], metadata: TrackerRunMetadata = {}) {
   const items = timeline.map((segment) => ({
     id: segment.id,
     start: segment.start,
@@ -46,7 +54,10 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           faceIdentityMinConfidence: process.env.FACE_IDENTITY_MIN_CONFIDENCE || "0.62",
           faceIdentityMaxSamplesPerTrack: process.env.FACE_IDENTITY_MAX_SAMPLES_PER_TRACK || "2",
           faceIdentityMaxTotalSamples: process.env.FACE_IDENTITY_MAX_TOTAL_SAMPLES || "32",
-          fieldCalibration: process.env.FIELD_CALIBRATION_CONFIG || ""
+          fieldCalibration: process.env.FIELD_CALIBRATION_CONFIG || "",
+          diagnosticsFrameLimit: process.env.TRACKER_DIAGNOSTICS_FRAME_LIMIT || "240",
+          diagnosticsDecisionLimit: process.env.TRACKER_DIAGNOSTICS_DECISION_LIMIT || "160",
+          metadata
         },
         {
           metricKey: "model.vision.tracker.service"
@@ -92,7 +103,11 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           "--face-identity-max-total-samples",
           process.env.FACE_IDENTITY_MAX_TOTAL_SAMPLES || "32",
           "--field-calibration",
-          process.env.FIELD_CALIBRATION_CONFIG || ""
+          process.env.FIELD_CALIBRATION_CONFIG || "",
+          "--diagnostics-frame-limit",
+          process.env.TRACKER_DIAGNOSTICS_FRAME_LIMIT || "240",
+          "--diagnostics-decision-limit",
+          process.env.TRACKER_DIAGNOSTICS_DECISION_LIMIT || "160"
         ],
         { stdio: ["pipe", "pipe", "pipe"] }
       );
@@ -108,7 +123,7 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
         if (code === 0) resolve(output);
         else reject(new Error(Buffer.concat(stderrChunks).toString("utf8") || `Vision tracker exited with code ${code}`));
       });
-      child.stdin.end(JSON.stringify({ segments: items }));
+      child.stdin.end(JSON.stringify({ segments: items, metadata }));
     });
     return parsePythonJson<TrackerResult>(stdout);
   } catch (error) {
