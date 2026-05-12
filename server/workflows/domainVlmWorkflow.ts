@@ -2,6 +2,7 @@ import { withDomainSegment } from "../domainIndex";
 import { embedTimelineSegments } from "../localEmbeddingRuntime";
 import { upsertAssetVectors } from "../localVectorStore";
 import { logJson, traceAsync } from "../observability";
+import { buildRawMatchVideoProfile } from "../rawMatchProfile";
 import { updateJob } from "../services/jobState";
 import { getAsset, getIndex, saveAsset } from "../store";
 import { upsertAssetTracking } from "../trackingStore";
@@ -75,6 +76,7 @@ export async function runDomainVlmRefineJob(jobId: string, assetId: string) {
       ...asset,
       summary: summarized.summary,
       timeline,
+      rawMatchProfile: buildRawMatchVideoProfile({ ...asset, summary: summarized.summary, timeline }, timeline),
       intelligence: {
         ...asset.intelligence,
         modelTrace

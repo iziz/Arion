@@ -12,6 +12,7 @@ import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTi
 import { applyEventClassification } from "../server/eventClassifier";
 import { isKnowledgeActionSpottingConfigured, runKnowledgeActionSpotting } from "../server/knowledgeAdapters";
 import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, resolveCapabilityPolicy } from "../server/modelCapabilities";
+import { buildRawMatchVideoProfile } from "../server/rawMatchProfile";
 import { enrichDomainTimeline } from "../server/workflows/domainVlmWorkflow";
 import { upsertAssetTracking } from "../server/trackingStore";
 import { applyExtractiveVideoSummaries, EXTRACTIVE_SUMMARY_TRACE_PREFIX } from "../server/intelligenceCore/extractiveSummary";
@@ -141,6 +142,7 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
     timeline,
     keyframes,
     summary: summarized.summary,
+    rawMatchProfile: buildRawMatchVideoProfile({ ...asset, summary: summarized.summary, timeline }, timeline),
     intelligence: {
       ...asset.intelligence,
       modelTrace

@@ -33,7 +33,7 @@ export type WebhookEventType =
 export type KnowledgeSourceId = string;
 export type KnowledgeDomainGroup = "sports.football" | "sports.american_football";
 
-export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "inferred" | "heuristic" | "unavailable";
+export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "candidate" | "inferred" | "heuristic" | "unavailable";
 export type CapabilityMode = "disabled" | "optional" | "required";
 
 export type CapabilityPolicy = {
@@ -304,6 +304,68 @@ export type AssetIdentityIndex = {
   playerIdentityCandidates: PlayerIdentityCandidate[];
   trackIdentityAssignments: TrackIdentityAssignment[];
   teamClusterAssignments?: TeamClusterAssignment[];
+  limitations: string[];
+  updatedAt: string;
+};
+
+export type RawMatchVideoProfile = {
+  generatedBy: "raw-match-video-profile-v1";
+  status: "unknown" | "partial" | "ready";
+  sourceContext: {
+    status: "unknown" | "partial" | "confirmed";
+    matchContextIds: string[];
+    teams: string[];
+    competitions: string[];
+    evidence: string[];
+  };
+  technical: {
+    duration: number | null;
+    fps: number | null;
+    resolution: string | null;
+    videoCodec: string | null;
+    audioCodec: string | null;
+    qualityFlags: string[];
+  };
+  observed: {
+    pitchVisible: boolean;
+    pitchConfidence: number;
+    scoreboardTexts: string[];
+    clockCandidates: MatchClockMapping[];
+    teamKitClusters: Array<{
+      cluster: VisionTrackTeamCluster;
+      trackCount: number;
+      segmentCount: number;
+      confidence: number;
+      colors: string[];
+      trust: EvidenceTrustTier;
+      evidence: string[];
+    }>;
+  };
+  trackingReadiness: {
+    playerCoverage: number;
+    ballCoverage: number;
+    averageTrackCoverage: number;
+    idSwitches: number;
+    usableForEvents: boolean;
+    usableForIdentity: boolean;
+    limitations: string[];
+  };
+  identityReadiness: {
+    jerseyOcrUsable: boolean;
+    faceUsable: boolean;
+    rosterRequired: boolean;
+    candidateCount: number;
+    confirmedAssignmentCount: number;
+    evidence: string[];
+    limitations: string[];
+  };
+  eventReadiness: {
+    candidateCount: number;
+    domainEventCount: number;
+    eventTypes: Array<{ type: string; count: number; confidence: number; trust: EvidenceTrustTier }>;
+    limitations: string[];
+  };
+  trustSummary: Record<EvidenceTrustTier, number>;
   limitations: string[];
   updatedAt: string;
 };
@@ -737,6 +799,7 @@ export type AssetRecord = {
   timeline: TimelineSegment[];
   keyframes: KeyframeRecord[];
   identity?: AssetIdentityIndex;
+  rawMatchProfile?: RawMatchVideoProfile;
   technicalMetadata: {
     storageProvider: StorageProvider;
     bucket: string;

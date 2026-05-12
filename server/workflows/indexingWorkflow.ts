@@ -16,6 +16,7 @@ import { getKnowledgeActionSpottingModelLabel, isKnowledgeActionSpottingConfigur
 import { upsertAssetTracking } from "../trackingStore";
 import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineRelatedKnowledgeTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync } from "../observability";
+import { buildRawMatchVideoProfile } from "../rawMatchProfile";
 import { normalizeUploadedText } from "../textEncoding";
 import { getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
 import { createQueuedAssetJob, updateAsset, updateJob } from "../services/jobState";
@@ -354,6 +355,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         : `vision-tracker-unavailable:${tracks.error ?? "tracker unavailable"}`;
       assertCapabilityAvailable(timelineStage.embeddingIndex, "visionTracker", tracks.available, tracks.error ?? "Tracker returned unavailable.");
       const detectedTimeline = applyEventClassification(applyVisionTracks(detectionStage.trackedV0Timeline, tracks));
+      const rawMatchProfile = buildRawMatchVideoProfile({ ...timelineStage.refreshed, timeline: detectedTimeline }, detectedTimeline);
       await persistIndexingSnapshot(assetId, {
         status: "embedding",
         progress: 80,
@@ -361,6 +363,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         summary: timelineStage.output.summary,
         timeline: detectedTimeline,
         keyframes: timelineStage.keyframes,
+        rawMatchProfile,
         modelTrace: [videoVlmTrace, detectionStage.detectorTrace, trackerTrace]
       });
       return { trackerTrace, detectedTimeline };
@@ -449,6 +452,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         timeline: timelineForDomain,
         keyframes: timelineStage.keyframes,
         identity: assetIdentity,
+        rawMatchProfile: buildRawMatchVideoProfile({ ...timelineStage.refreshed, timeline: timelineForDomain, identity: assetIdentity }, timelineForDomain),
         modelTrace: [knowledgeActionTrace, domainVlmTrace, matchIdentityTrace]
       });
       return { knowledgeActionTrace, domainVlmTrace, matchIdentityTrace, timelineForDomain };
@@ -576,6 +580,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         summary: summaryStage.summary,
         timeline,
         keyframes: timelineStage.keyframes,
+        rawMatchProfile: buildRawMatchVideoProfile({ ...latest, summary: summaryStage.summary, timeline }, timeline),
         status: "indexed",
         progress: 100,
         error: null,
@@ -730,6 +735,7 @@ type IndexingSnapshotPatch = {
   timeline?: AssetRecord["timeline"];
   keyframes?: AssetRecord["keyframes"];
   identity?: AssetRecord["identity"];
+  rawMatchProfile?: AssetRecord["rawMatchProfile"];
   modelTrace?: string[];
 };
 
@@ -743,6 +749,7 @@ async function persistIndexingSnapshot(assetId: string, patch: IndexingSnapshotP
     timeline: patch.timeline ?? current.timeline,
     keyframes: patch.keyframes ?? current.keyframes,
     identity: patch.identity ?? current.identity,
+    rawMatchProfile: patch.rawMatchProfile ?? current.rawMatchProfile,
     status: patch.status ?? current.status,
     progress: patch.progress ?? current.progress,
     intelligence: {
@@ -792,6 +799,7 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
   let timeline = asset.timeline;
   let keyframes = asset.keyframes;
   let identity = asset.identity;
+  let rawMatchProfile = asset.rawMatchProfile;
   const intelligence: LocalIntelligence = {
     ...asset.intelligence,
     audio: asset.intelligence.audio,
@@ -829,11 +837,13 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
     tags = [];
     summary = "";
     timeline = [];
+    rawMatchProfile = undefined;
   }
   if (evidence.has("keyframes")) keyframes = [];
   if (timeline.length > 0) {
     timeline = invalidateTimelineEvidence(timeline, evidence);
   }
+  if (evidence.has("vision-detector") || evidence.has("vision-tracker") || evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) rawMatchProfile = undefined;
   if (evidence.has("knowledge-action") || evidence.has("domain") || evidence.has("domain-vlm")) identity = undefined;
   if (evidence.has("summary")) {
     summary = "";
@@ -851,6 +861,7 @@ export function invalidateAssetForRetryStage(asset: AssetRecord, retryStage: str
     timeline,
     keyframes,
     identity,
+    rawMatchProfile,
     intelligence,
     updatedAt: new Date().toISOString()
   };

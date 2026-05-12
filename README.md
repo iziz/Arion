@@ -393,7 +393,7 @@ Important environment variables:
 | `VISUAL_EMBEDDING_MODEL` | OpenCLIP visual embedding model |
 | `CAPABILITY_*` | Runtime capability policy: `disabled`, `optional`, or `required` |
 
-Tracker runs emit run provenance, media fingerprints, sampled frame audit records, box/track distributions, OCR and face decision audits, dependency versions, model/gallery/calibration fingerprints, and homography diagnostics under `sceneData.vision.tracking.diagnostics` for operations and data validation.
+Tracker runs emit run provenance, media fingerprints, sampled frame audit records, box/track distributions, OCR and face decision audits, dependency versions, model/gallery/calibration fingerprints, and homography diagnostics under `sceneData.vision.tracking.diagnostics` for operations and data validation. Indexed assets also keep a `rawMatchProfile` that summarizes what can and cannot be known from an unknown source recording without confirmed match context.
 
 Start from [.env.example](.env.example). Do not commit local `.env` values.
 
