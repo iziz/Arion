@@ -83,7 +83,7 @@ These roles are evidence fields on the indexed event. They are not query-time la
 Identity status remains conservative:
 
 - `confirmed` requires confirmed match context, strong ASR/OCR/VLM text evidence, active roster window, track evidence, and clock evidence.
-- jersey OCR is candidate evidence unless roster and track evidence also support the same player.
+- Jersey OCR is candidate evidence unless roster and track evidence also support the same player. The tracker can now emit crop-based jersey number candidates on player tracks, but the identity resolver still requires match context and active-roster agreement before creating player candidates from those numbers.
 - Tracking can now attach heuristic upper-body kit-color clusters (`team-1`, `team-2`, or `unknown`) to player tracks. These clusters separate visible players inside a match screen but are not mapped to home/away teams without additional scoreboard, roster, or manual evidence.
 
 ## Participant-Aware Query Planning
@@ -169,6 +169,7 @@ The asset workflow now exposes domain behavior in two places:
   - match clock mapping count
   - per-segment context and clock evidence
   - per-segment track identity candidates
+  - crop-based jersey number OCR candidates when the tracker sees isolated shirt numbers
 
 ## Knowledge UI Exposure
 

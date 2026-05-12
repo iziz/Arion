@@ -107,6 +107,7 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
         `Nearest player track ${tracking.nearestPlayerTrackId}`,
         vision.proximity?.ballNearPlayer ? "Ball near player" : "Nearest player linked by center distance",
         ...(nearestPlayerTrack?.teamEvidence ?? []),
+        ...(nearestPlayerTrack?.jerseyNumberCandidates?.slice(0, 2).map((candidate) => `Jersey crop OCR #${candidate.number} (${Math.round(candidate.confidence * 100)}%)`) ?? []),
         player ? `Resolved player ${player}` : ""
       ].filter(Boolean)
     });

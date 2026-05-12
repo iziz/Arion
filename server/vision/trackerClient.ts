@@ -33,7 +33,13 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           model: detectorModel,
           tracker: trackerName,
           confidence: process.env.VISION_TRACKER_CONF || "0.2",
-          vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3"
+          vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3",
+          jerseyOcr: process.env.JERSEY_OCR_ENABLED || "1",
+          jerseyOcrLang: process.env.JERSEY_OCR_LANG || "en",
+          jerseyOcrMinConfidence: process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.35",
+          jerseyOcrMaxSamplesPerTrack: process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "1",
+          jerseyOcrMaxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32",
+          jerseyOcrMinBoxHeight: process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
         },
         {
           metricKey: "model.vision.tracker.service"
@@ -53,7 +59,19 @@ export async function detectTimelineTracks(filePath: string, timeline: TimelineS
           "--conf",
           process.env.VISION_TRACKER_CONF || "0.2",
           "--vid-stride",
-          process.env.VISION_TRACKER_VID_STRIDE || "3"
+          process.env.VISION_TRACKER_VID_STRIDE || "3",
+          "--jersey-ocr",
+          process.env.JERSEY_OCR_ENABLED || "1",
+          "--jersey-ocr-lang",
+          process.env.JERSEY_OCR_LANG || "en",
+          "--jersey-ocr-min-confidence",
+          process.env.JERSEY_OCR_MIN_CONFIDENCE || "0.35",
+          "--jersey-ocr-max-samples-per-track",
+          process.env.JERSEY_OCR_MAX_SAMPLES_PER_TRACK || "1",
+          "--jersey-ocr-max-total-samples",
+          process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32",
+          "--jersey-ocr-min-box-height",
+          process.env.JERSEY_OCR_MIN_BOX_HEIGHT || "0.12"
         ],
         { stdio: ["pipe", "pipe", "pipe"] }
       );

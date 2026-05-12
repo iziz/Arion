@@ -24,6 +24,13 @@ type MatchActivity = NonNullable<KnowledgeSnapshot["matchActivities"]>[number];
 type AmericanFootballPlay = NonNullable<KnowledgeSnapshot["americanFootballPlays"]>[number];
 type KnowledgePlayer = KnowledgeSnapshot["players"][number];
 type TeamRecord = KnowledgeSnapshot["teams"][number];
+type JerseyNumberCandidate = {
+  number: number;
+  confidence: number;
+  value: string;
+  source: "text_ocr" | "crop_ocr";
+  trackId?: string | null;
+};
 
 type ResolveOptions = {
   snapshot?: KnowledgeSnapshot;
@@ -554,16 +561,22 @@ function buildFootballPlayerIdentityCandidates(
     }
   }
 
-  for (const jerseyNumber of extractJerseyNumberCandidates(segment)) {
-    const matchedWindows = windows.filter((window) => window.shirtNumber === jerseyNumber);
+  for (const jersey of extractJerseyNumberCandidates(segment)) {
+    const matchedWindows = windows.filter((window) => window.shirtNumber === jersey.number);
+    const jerseyTrackId = jersey.trackId ?? trackId;
     for (const window of matchedWindows) {
       const evidence: IdentityEvidenceItem[] = [
-        { source: "jersey_ocr", value: `Jersey number ${jerseyNumber}`, confidence: 0.64 },
+        { source: "jersey_ocr", value: jersey.value, confidence: jersey.confidence },
         { source: "lineup", value: `${window.canonicalName} active roster window`, confidence: 0.72 },
-        ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }, ...visualTrackEvidence(segment, trackId)] : [])
+        ...(jerseyTrackId
+          ? [
+              { source: "mot" as const, value: `Player track ${jerseyTrackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 },
+              ...visualTrackEvidence(segment, jerseyTrackId)
+            ]
+          : [])
       ];
       candidates.push({
-        trackId,
+        trackId: jerseyTrackId,
         playerId: window.playerId,
         canonicalName: window.canonicalName,
         team: window.team,
@@ -571,7 +584,7 @@ function buildFootballPlayerIdentityCandidates(
         matchContextId: footballContextIdForCandidate(match.candidate),
         videoRange: { start: segment.start, end: segment.end },
         matchClock: clock,
-        confidence: Number(Math.min(0.9, match.confidence + 0.18 + (trackId ? 0.08 : 0)).toFixed(2)),
+        confidence: Number(Math.min(0.92, match.confidence + 0.18 + (jerseyTrackId ? 0.08 : 0) + (jersey.source === "crop_ocr" ? 0.03 : 0)).toFixed(2)),
         status: "candidate",
         evidence
       });
@@ -1283,16 +1296,66 @@ function segmentTextSources(segment: TimelineSegment): Array<{ source: IdentityE
   ].filter((item) => item.text.trim().length > 0);
 }
 
-function extractJerseyNumberCandidates(segment: TimelineSegment) {
+function extractJerseyNumberCandidates(segment: TimelineSegment): JerseyNumberCandidate[] {
+  const candidates: JerseyNumberCandidate[] = [];
   const ocr = segmentTextSources(segment)
     .filter((source) => source.source === "ocr" || source.source === "vlm")
     .map((source) => source.text)
     .join(" ");
-  const jerseyNumbers = [
+  for (const number of [
     ...Array.from(ocr.matchAll(/(?:#|no\.?\s*|number\s+|shirt\s+|jersey\s+|등번호\s*)(\d{1,2})\b/gi)).map((match) => Number(match[1])),
     ...Array.from(ocr.matchAll(/\b(\d{1,2})\s*번(?:\s*선수)?/g)).map((match) => Number(match[1]))
-  ];
-  return unique(jerseyNumbers.filter((value) => Number.isFinite(value) && value >= 1 && value <= 99));
+  ]) {
+    if (isValidJerseyNumber(number)) {
+      candidates.push({
+        number,
+        source: "text_ocr",
+        confidence: 0.64,
+        value: `Jersey number ${number}`
+      });
+    }
+  }
+
+  const tracking = segment.sceneData?.vision?.tracking;
+  for (const track of tracking?.playerTracks ?? []) {
+    for (const candidate of track.jerseyNumberCandidates ?? []) {
+      if (!isValidJerseyNumber(candidate.number)) continue;
+      candidates.push({
+        number: candidate.number,
+        source: "crop_ocr",
+        trackId: track.id,
+        confidence: Math.max(0.45, Math.min(0.82, candidate.confidence)),
+        value: `Jersey crop OCR #${candidate.number} on ${track.id}${candidate.text ? ` (${candidate.text})` : ""}`
+      });
+    }
+  }
+
+  for (const box of segment.sceneData?.vision?.objects.players.boxes ?? []) {
+    for (const candidate of box.jerseyNumberCandidates ?? []) {
+      if (!isValidJerseyNumber(candidate.number)) continue;
+      candidates.push({
+        number: candidate.number,
+        source: "crop_ocr",
+        trackId: box.trackId ?? null,
+        confidence: Math.max(0.45, Math.min(0.78, candidate.confidence)),
+        value: `Jersey crop OCR #${candidate.number}${box.trackId ? ` on ${box.trackId}` : ""}${candidate.text ? ` (${candidate.text})` : ""}`
+      });
+    }
+  }
+
+  const deduped = new Map<string, JerseyNumberCandidate>();
+  for (const candidate of candidates) {
+    const key = `${candidate.source}:${candidate.number}:${candidate.trackId ?? ""}`;
+    const existing = deduped.get(key);
+    if (!existing || candidate.confidence > existing.confidence) {
+      deduped.set(key, candidate);
+    }
+  }
+  return Array.from(deduped.values()).sort((left, right) => right.confidence - left.confidence).slice(0, 8);
+}
+
+function isValidJerseyNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 99;
 }
 
 function assetMetadataText(asset: AssetRecord) {

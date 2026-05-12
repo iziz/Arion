@@ -186,6 +186,18 @@ async def track_objects(request: Request) -> JSONResponse:
         str(body.get("confidence") or os.environ.get("VISION_TRACKER_CONF") or "0.2"),
         "--vid-stride",
         str(body.get("vidStride") or os.environ.get("VISION_TRACKER_VID_STRIDE") or "3"),
+        "--jersey-ocr",
+        body_or_env(body, "jerseyOcr", "JERSEY_OCR_ENABLED", "1"),
+        "--jersey-ocr-lang",
+        body_or_env(body, "jerseyOcrLang", "JERSEY_OCR_LANG", "en"),
+        "--jersey-ocr-min-confidence",
+        body_or_env(body, "jerseyOcrMinConfidence", "JERSEY_OCR_MIN_CONFIDENCE", "0.35"),
+        "--jersey-ocr-max-samples-per-track",
+        body_or_env(body, "jerseyOcrMaxSamplesPerTrack", "JERSEY_OCR_MAX_SAMPLES_PER_TRACK", "1"),
+        "--jersey-ocr-max-total-samples",
+        body_or_env(body, "jerseyOcrMaxTotalSamples", "JERSEY_OCR_MAX_TOTAL_SAMPLES", "32"),
+        "--jersey-ocr-min-box-height",
+        body_or_env(body, "jerseyOcrMinBoxHeight", "JERSEY_OCR_MIN_BOX_HEIGHT", "0.12"),
     ]
     return await run_script_response(
         request,
@@ -502,6 +514,12 @@ def require_string(body: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise HTTPException(status_code=400, detail=f"{key} is required")
     return value
+
+
+def body_or_env(body: dict[str, Any], key: str, env_key: str, fallback: str) -> str:
+    if key in body and body[key] is not None:
+        return str(body[key])
+    return os.environ.get(env_key) or fallback
 
 
 def normalize_auto(value: Any) -> str | None:

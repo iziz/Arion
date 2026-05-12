@@ -2088,7 +2088,13 @@ function formatTrackKitClusters(
     .filter((track) => track.teamCluster && track.teamCluster !== "unknown")
     .slice(0, 4)
     .map((track) => `${track.id}:${track.teamCluster}${track.appearance?.dominantHex ? ` ${track.appearance.dominantHex}` : ""}`);
-  return clusters.length > 0 ? `kits ${clusters.join(", ")}` : "";
+  const jerseys = (tracks ?? [])
+    .flatMap((track) => (track.jerseyNumberCandidates ?? []).slice(0, 1).map((candidate) => `${track.id}:#${candidate.number}`))
+    .slice(0, 4);
+  return [
+    clusters.length > 0 ? `kits ${clusters.join(", ")}` : "",
+    jerseys.length > 0 ? `jerseys ${jerseys.join(", ")}` : ""
+  ].filter(Boolean).join("; ");
 }
 
 function dedupeTextComparisons(comparisons: NonNullable<ReturnType<typeof getSearchSceneData>["text"]["comparisons"]>) {

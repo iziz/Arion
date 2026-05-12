@@ -38,6 +38,22 @@ test("football identity resolver uses explicit jersey-number OCR with roster and
   assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.team, "Chelsea");
 });
 
+test("football identity resolver uses crop jersey OCR candidates when broadcast text has no shirt cue", () => {
+  const timeline = [
+    segment("seg-palmer-crop", 54, 60, "Chelsea push against Liverpool at 55 minutes.", "LIV 2-1 CHE 55'", "track-player-20", {
+      jerseyNumberCandidates: [{ number: 20, confidence: 0.73, text: "20", source: "crop_ocr", frameAt: 56.2, samples: 1 }]
+    })
+  ];
+  const result = resolveTimelineMatchIdentity(assetRecord(timeline), footballIndex(), timeline, { snapshot: snapshot() });
+  const assignment = result.timeline[0].identity?.trackIdentityAssignments[0];
+
+  assert.equal(assignment?.canonicalName, "Cole Palmer");
+  assert.equal(assignment?.trackId, "track-player-20");
+  assert.equal(assignment?.shirtNumber, 20);
+  assert.equal(assignment?.evidence.some((item) => item.source === "jersey_ocr" && item.value.includes("crop OCR #20")), true);
+  assert.equal(result.timeline[0].identity?.teamClusterAssignments?.[0]?.team, "Chelsea");
+});
+
 test("sports identity resolver applies American football strategy with nflverse play metadata", () => {
   const timeline = [
     americanFootballSegment(
@@ -61,7 +77,15 @@ test("sports identity resolver applies American football strategy with nflverse 
   assert.match(result.trace, /sports\.american_football/);
 });
 
-function segment(id: string, start: number, end: number, speech: string, overlay: string, trackId: string): TimelineSegment {
+function segment(
+  id: string,
+  start: number,
+  end: number,
+  speech: string,
+  overlay: string,
+  trackId: string,
+  options: { jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"] } = {}
+): TimelineSegment {
   return {
     id,
     start,
@@ -86,7 +110,7 @@ function segment(id: string, start: number, end: number, speech: string, overlay
         watermarks: [],
         comparisons: []
       },
-      vision: vision(trackId)
+      vision: vision(trackId, options)
     },
     tags: [],
     modalities: ["visual", "audio", "transcription"],
@@ -174,7 +198,7 @@ function americanFootballSegment(id: string, start: number, end: number, speech:
   };
 }
 
-function vision(trackId: string): VisionEvidence {
+function vision(trackId: string, options: { jerseyNumberCandidates?: NonNullable<NonNullable<VisionEvidence["tracking"]>["playerTracks"]>[number]["jerseyNumberCandidates"] } = {}): VisionEvidence {
   return {
     generatedBy: "test",
     frameAt: 1,
@@ -201,7 +225,8 @@ function vision(trackId: string): VisionEvidence {
           appearance: { dominantHex: "#ffffff", hue: 0, saturation: 0.12, brightness: 0.98, samplePixels: 240, region: "upper_body" },
           teamCluster: "team-1",
           teamConfidence: 0.71,
-          teamEvidence: ["upper-body kit color #ffffff", "hue distance gap 0.180"]
+          teamEvidence: ["upper-body kit color #ffffff", "hue distance gap 0.180"],
+          ...(options.jerseyNumberCandidates ? { jerseyNumberCandidates: options.jerseyNumberCandidates } : {})
         }
       ],
       ballMovement: { fromPrevious: 0.1, speedPerSecond: 1.2, direction: "right" }

@@ -120,7 +120,12 @@ export async function getRuntimeCapabilities() {
         provider: "Ultralytics MOT",
         tracker: trackerName,
         confidence: process.env.VISION_TRACKER_CONF || "0.2",
-        vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3"
+        vidStride: process.env.VISION_TRACKER_VID_STRIDE || "3",
+        jerseyOcr: {
+          enabled: !["0", "false", "no", "off"].includes((process.env.JERSEY_OCR_ENABLED || "1").toLowerCase()),
+          language: process.env.JERSEY_OCR_LANG || "en",
+          maxTotalSamples: process.env.JERSEY_OCR_MAX_TOTAL_SAMPLES || "32"
+        }
       },
       videoVlm: {
         provider: "Qwen2.5-VL worker",

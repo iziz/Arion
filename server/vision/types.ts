@@ -1,4 +1,4 @@
-import type { VisionBoundingBox, VisionEvidence, VisionTrackAppearance, VisionTrackTeamCluster } from "../../shared/types";
+import type { VisionBoundingBox, VisionEvidence, VisionJerseyNumberCandidate, VisionTrackAppearance, VisionTrackTeamCluster } from "../../shared/types";
 
 export type DetectorFrame = {
   segmentId: string;
@@ -33,6 +33,7 @@ export type TrackSummary = {
   teamCluster?: VisionTrackTeamCluster;
   teamConfidence?: number;
   teamEvidence?: string[];
+  jerseyNumberCandidates?: VisionJerseyNumberCandidate[];
 };
 
 export type TrackerSegment = {

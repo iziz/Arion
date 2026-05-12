@@ -160,7 +160,7 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
         ...vision.limitations.filter((item) => !item.includes("Tracking v0") && !item.includes("tracker/re-id")),
         `Tracking v2 uses ${summary.provider} with ${summary.tracker}; IDs are aggregated from sampled video frames.`,
         "Team clusters are kit-color heuristics from tracked upper-body crops; they are not mapped to home/away without roster, scoreboard, or manual evidence.",
-        "Jersey identity and pitch homography are still not calibrated."
+        "Crop-based jersey OCR is candidate-level evidence only; identity still requires match context, roster, and track agreement."
       ]
     };
 

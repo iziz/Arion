@@ -751,7 +751,7 @@ Stage details:
    - Detector output is applied only when a configured detector backend such as Ultralytics or RF-DETR is available.
    - There is no OpenCV heuristic detector fallback. Detector unavailability remains unavailable evidence and is handled by capability policy.
    - Tracking uses the Vision runtime service.
-   - The Ultralytics tracking path samples upper-body player crops, computes a deterministic kit-color appearance profile, and clusters visible player tracks into `team-1`, `team-2`, or `unknown` without mapping those clusters to home/away teams.
+   - The Ultralytics tracking path samples upper-body player crops, computes a deterministic kit-color appearance profile, clusters visible player tracks into `team-1`, `team-2`, or `unknown`, and can attach bounded crop-based jersey number OCR candidates.
    - The output is merged into timeline `sceneData.vision`.
 8. Event classification
    - `applyEventClassification` derives event labels from text and vision features.
@@ -1197,7 +1197,7 @@ For football, the resolver builds match candidates from imported match activitie
 
 For American football, the resolver builds game/play candidates from nflverse play metadata and action-spot play metadata. It uses `gameId`, `playId`, quarter, clock, down, distance, yardline, participant metadata, and MOT track evidence when available.
 
-The resolver intentionally does not claim stable visual identity from generic face recognition. Current tracking can add heuristic kit-color cluster evidence to track candidates, while jersey OCR, helmet assignment, stronger ReID, contact, and calibrated tracking remain candidate evidence unless context, clock, roster/participant evidence, and track evidence agree.
+The resolver intentionally does not claim stable visual identity from generic face recognition. Current tracking can add heuristic kit-color cluster evidence and crop-based jersey number candidates to track candidates, while helmet assignment, stronger ReID, contact, and calibrated tracking remain candidate evidence unless context, clock, roster/participant evidence, and track evidence agree.
 
 ## Storage Architecture
 
@@ -1643,4 +1643,4 @@ These are direct consequences of the code shape:
 - OpenCV heuristic object detection is not a runtime fallback. Detector failures remain unavailable detector evidence, and capability policy decides whether indexing can continue.
 - Direct structured answers come from the current sports related-knowledge adapter. It answers aggregate stat questions from imported related knowledge, not from video moment counts.
 - Knowledge-seeded asset retrieval must resolve the ranked/stat subject from selected related knowledge before searching video evidence; unresolved seeds complete with a knowledge limitation instead of broad moment retrieval.
-- Sports player identity is candidate-first. The current resolver can use match/game context, roster or lineup windows, nflverse play metadata, OCR/ASR/VLM text, MOT track IDs, and heuristic kit-color track clusters. Jersey/helmet/stronger ReID/contact evidence hooks remain available, but the system does not implement face-first stable identity.
+- Sports player identity is candidate-first. The current resolver can use match/game context, roster or lineup windows, nflverse play metadata, OCR/ASR/VLM text, MOT track IDs, heuristic kit-color track clusters, and crop jersey OCR candidates. Helmet/stronger ReID/contact evidence hooks remain available, but the system does not implement face-first stable identity.

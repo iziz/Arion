@@ -8,7 +8,9 @@ import colorsys
 import json
 import math
 import os
+import re
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from statistics import median
 
@@ -20,6 +22,12 @@ def main() -> None:
     parser.add_argument("--tracker", default=os.environ.get("VISION_TRACKER", "bytetrack.yaml"))
     parser.add_argument("--conf", type=float, default=float(os.environ.get("VISION_TRACKER_CONF", "0.2")))
     parser.add_argument("--vid-stride", type=int, default=int(os.environ.get("VISION_TRACKER_VID_STRIDE", "3")))
+    parser.add_argument("--jersey-ocr", nargs="?", const="1", default=os.environ.get("JERSEY_OCR_ENABLED", "1"))
+    parser.add_argument("--jersey-ocr-lang", default=os.environ.get("JERSEY_OCR_LANG", "en"))
+    parser.add_argument("--jersey-ocr-min-confidence", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_CONFIDENCE", "0.35")))
+    parser.add_argument("--jersey-ocr-max-samples-per-track", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_SAMPLES_PER_TRACK", "1")))
+    parser.add_argument("--jersey-ocr-max-total-samples", type=int, default=int(os.environ.get("JERSEY_OCR_MAX_TOTAL_SAMPLES", "32")))
+    parser.add_argument("--jersey-ocr-min-box-height", type=float, default=float(os.environ.get("JERSEY_OCR_MIN_BOX_HEIGHT", "0.12")))
     args = parser.parse_args()
     payload = json.load(sys.stdin)
     segments = payload.get("segments", [])
@@ -47,6 +55,7 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
 
     fps = read_fps(cv2, args.media_path)
     model = YOLO(args.model)
+    jersey_ocr = JerseyNumberOcr(args)
     segment_frames: dict[str, list[dict]] = defaultdict(list)
     frame_number = 0
     for result in model.track(
@@ -63,7 +72,7 @@ def track_objects(args: argparse.Namespace, segments: list[dict]) -> dict:
         segment = segment_for_time(segment_items, at)
         if not segment:
             continue
-        boxes = boxes_from_result(result)
+        boxes = boxes_from_result(result, jersey_ocr, at)
         if boxes:
             segment_frames[segment["id"]].append({"at": round(at, 3), "boxes": boxes})
 
@@ -119,11 +128,12 @@ def segment_for_time(segments: list[dict], at: float) -> dict | None:
     return None
 
 
-def boxes_from_result(result) -> list[dict]:
+def boxes_from_result(result, jersey_ocr=None, at: float | None = None) -> list[dict]:
     names = result.names or {}
     width = int(result.orig_shape[1])
     height = int(result.orig_shape[0])
     boxes = []
+    image = getattr(result, "orig_img", None)
     for box in result.boxes:
         cls = int(box.cls[0])
         name = str(names.get(cls, cls)).lower()
@@ -147,9 +157,13 @@ def boxes_from_result(result) -> list[dict]:
             "height": round((y2 - y1) / height, 4),
             "source": "ultralytics-track",
         }
-        appearance = appearance_from_box(getattr(result, "orig_img", None), x1, y1, x2, y2, label)
+        appearance = appearance_from_box(image, x1, y1, x2, y2, label)
         if appearance:
             item["appearance"] = appearance
+        if jersey_ocr:
+            jersey_candidates = jersey_ocr.candidates_for_box(image, x1, y1, x2, y2, label, track_id, at)
+            if jersey_candidates:
+                item["jerseyNumberCandidates"] = jersey_candidates
         boxes.append(item)
     return boxes
 
@@ -202,7 +216,7 @@ def summarize_segment(segment: dict, frames: list[dict], args: argparse.Namespac
 
 
 def empty_track_map():
-    return defaultdict(lambda: {"label": "", "frames": 0, "confidence": [], "centers": [], "appearances": [], "firstSeen": None, "lastSeen": None})
+    return defaultdict(lambda: {"label": "", "frames": 0, "confidence": [], "centers": [], "appearances": [], "jerseyNumbers": [], "firstSeen": None, "lastSeen": None})
 
 
 def collect_tracks(segment_frames: dict[str, list[dict]]) -> dict:
@@ -227,6 +241,8 @@ def collect_box_track(tracks: dict, box: dict, at: float) -> None:
     item["centers"].append((at, center(box)))
     if box.get("appearance"):
         item["appearances"].append(box["appearance"])
+    if box.get("jerseyNumberCandidates"):
+        item["jerseyNumbers"].extend(box["jerseyNumberCandidates"])
     item["firstSeen"] = at if item["firstSeen"] is None else min(item["firstSeen"], at)
     item["lastSeen"] = at if item["lastSeen"] is None else max(item["lastSeen"], at)
 
@@ -247,11 +263,254 @@ def summarize_tracks(tracks: dict, team_assignments: dict[str, dict] | None = No
         appearance = aggregate_appearance(track["appearances"])
         if appearance:
             summary["appearance"] = appearance
+        jersey_candidates = aggregate_jersey_number_candidates(track["jerseyNumbers"])
+        if jersey_candidates:
+            summary["jerseyNumberCandidates"] = jersey_candidates
         assignment = team_assignments.get(track_id)
         if assignment:
             summary.update(assignment)
         summaries.append(summary)
     return sorted(summaries, key=lambda item: (item["frames"], item["confidence"]), reverse=True)
+
+
+class JerseyNumberOcr:
+    def __init__(self, args: argparse.Namespace):
+        self.enabled = parse_bool(args.jersey_ocr)
+        self.lang = args.jersey_ocr_lang
+        self.min_confidence = max(0.0, min(1.0, float(args.jersey_ocr_min_confidence)))
+        self.max_samples_per_track = max(0, int(args.jersey_ocr_max_samples_per_track))
+        self.max_total_samples = max(0, int(args.jersey_ocr_max_total_samples))
+        self.min_box_height = max(0.0, float(args.jersey_ocr_min_box_height))
+        self.sample_counts: defaultdict[str, int] = defaultdict(int)
+        self.total_samples = 0
+        self._ocr = None
+        self._available = None
+
+    def candidates_for_box(self, image, x1: float, y1: float, x2: float, y2: float, label: str, track_id: str | None, at: float | None) -> list[dict]:
+        if not self.enabled or label != "person" or not track_id or image is None:
+            return []
+        if self.max_samples_per_track <= 0 or self.max_total_samples <= 0:
+            return []
+        if self.sample_counts[track_id] >= self.max_samples_per_track or self.total_samples >= self.max_total_samples:
+            return []
+        height, _width = image.shape[:2]
+        if height <= 0 or (y2 - y1) / height < self.min_box_height:
+            return []
+        crop = jersey_number_crop(image, x1, y1, x2, y2)
+        if crop is None:
+            return []
+        ocr = self.ocr()
+        if ocr is None:
+            return []
+        self.sample_counts[track_id] += 1
+        self.total_samples += 1
+        tokens = run_jersey_crop_ocr(ocr, crop)
+        return jersey_candidates_from_tokens(tokens, self.min_confidence, at)
+
+    def ocr(self):
+        if self._available is False:
+            return None
+        if self._ocr is not None:
+            return self._ocr
+        try:
+            from paddleocr import PaddleOCR
+
+            try:
+                self._ocr = PaddleOCR(use_angle_cls=True, lang=self.lang)
+            except Exception:
+                self._ocr = PaddleOCR(lang=self.lang)
+            self._available = True
+            return self._ocr
+        except Exception:
+            self._available = False
+            return None
+
+
+def jersey_number_crop(image, x1: float, y1: float, x2: float, y2: float):
+    import cv2
+
+    height, width = image.shape[:2]
+    box_width = max(1.0, x2 - x1)
+    box_height = max(1.0, y2 - y1)
+    left = clamp_int(x1 + box_width * 0.24, 0, width - 1)
+    right = clamp_int(x1 + box_width * 0.76, left + 1, width)
+    top = clamp_int(y1 + box_height * 0.22, 0, height - 1)
+    bottom = clamp_int(y1 + box_height * 0.7, top + 1, height)
+    if right - left < 12 or bottom - top < 12:
+        return None
+    crop = image[top:bottom, left:right]
+    if crop.size == 0:
+        return None
+    target_width = 144
+    scale = max(2.0, min(4.0, target_width / max(1, crop.shape[1])))
+    resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(gray)
+    return cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR)
+
+
+def run_jersey_crop_ocr(ocr, crop) -> list[dict]:
+    import cv2
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="arion-jersey-", suffix=".png", delete=False) as handle:
+            temp_path = handle.name
+        cv2.imwrite(temp_path, crop)
+        if hasattr(ocr, "predict"):
+            result = ocr.predict(temp_path)
+            return collect_predict_text_scores(result)
+        result = ocr.ocr(temp_path)
+        return collect_legacy_text_scores(result)
+    except Exception:
+        return []
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+def collect_legacy_text_scores(result) -> list[dict]:
+    tokens = []
+    for page in result or []:
+        for line in page or []:
+            if len(line) < 2:
+                continue
+            text_info = line[1]
+            if not text_info:
+                continue
+            text = str(text_info[0]).strip()
+            try:
+                confidence = float(text_info[1]) if len(text_info) > 1 else 0.0
+            except Exception:
+                confidence = 0.0
+            if text:
+                tokens.append({"text": text, "confidence": confidence})
+    return tokens
+
+
+def collect_predict_text_scores(result) -> list[dict]:
+    tokens = []
+    for page in result or []:
+        if isinstance(page, dict):
+            data = page
+        else:
+            json_data = getattr(page, "json", None)
+            data = json_data() if callable(json_data) else getattr(page, "__dict__", {})
+        if not isinstance(data, dict):
+            data = {}
+        if "res" in data and isinstance(data["res"], dict):
+            data = data["res"]
+        texts = pick_ocr_value(data, ["rec_texts", "texts"], [])
+        scores = pick_ocr_value(data, ["rec_scores", "scores"], [])
+        for index, text in enumerate(texts):
+            text = str(text).strip()
+            if not text:
+                continue
+            try:
+                confidence = float(scores[index])
+            except Exception:
+                confidence = 0.0
+            tokens.append({"text": text, "confidence": confidence})
+    return tokens
+
+
+def pick_ocr_value(data: dict, keys: list[str], fallback):
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return fallback
+
+
+def jersey_candidates_from_tokens(tokens: list[dict], min_confidence: float, at: float | None) -> list[dict]:
+    by_number = {}
+    for token in tokens:
+        raw_text = str(token.get("text") or "").strip()
+        if not raw_text:
+            continue
+        try:
+            confidence = float(token.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        numbers = parse_jersey_numbers_from_raw(raw_text)
+        if not numbers:
+            continue
+        if not re.search(r"\d", raw_text):
+            confidence *= 0.82
+        elif normalize_jersey_text(raw_text) != raw_text.upper():
+            confidence *= 0.92
+        if confidence < min_confidence:
+            continue
+        for number in numbers:
+            candidate = {
+                "number": number,
+                "confidence": round(max(0.0, min(0.95, confidence)), 3),
+                "text": raw_text,
+                "source": "crop_ocr",
+                "frameAt": round(at, 3) if at is not None else None,
+            }
+            existing = by_number.get(number)
+            if not existing or candidate["confidence"] > existing["confidence"]:
+                by_number[number] = candidate
+    return sorted(by_number.values(), key=lambda item: item["confidence"], reverse=True)[:2]
+
+
+def aggregate_jersey_number_candidates(candidates: list[dict]) -> list[dict]:
+    grouped: defaultdict[int, list[dict]] = defaultdict(list)
+    for candidate in candidates:
+        number = candidate.get("number")
+        if isinstance(number, int) and 1 <= number <= 99:
+            grouped[number].append(candidate)
+    summaries = []
+    for number, items in grouped.items():
+        confidences = [float(item.get("confidence") or 0.0) for item in items]
+        best = sorted(items, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)[0]
+        confidence = min(0.96, (sum(confidences) / max(1, len(confidences))) + min(0.12, (len(items) - 1) * 0.04))
+        summaries.append({
+            "number": number,
+            "confidence": round(confidence, 3),
+            "text": str(best.get("text") or number),
+            "source": "crop_ocr",
+            "frameAt": best.get("frameAt"),
+            "samples": len(items),
+        })
+    return sorted(summaries, key=lambda item: (item["confidence"], item["samples"]), reverse=True)[:3]
+
+
+def normalize_jersey_text(text: str) -> str:
+    return text.upper().translate(str.maketrans({"O": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8"}))
+
+
+def parse_jersey_numbers_from_raw(text: str) -> list[int]:
+    upper = text.upper()
+    values = parse_jersey_numbers(upper)
+    compact = re.sub(r"[^A-Z0-9]", "", upper)
+    if re.search(r"\d", upper):
+        values.extend(parse_jersey_numbers(normalize_jersey_text(upper)))
+    elif len(compact) == 2 and all(char in "ODILSB" for char in compact):
+        values.extend(parse_jersey_numbers(normalize_jersey_text(compact)))
+    seen = set()
+    unique_values = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique_values.append(value)
+    return unique_values
+
+
+def parse_jersey_numbers(text: str) -> list[int]:
+    values = []
+    for match in re.finditer(r"(?<![A-Z0-9])(\d{1,2})(?![A-Z0-9])", text):
+        value = int(match.group(1))
+        if 1 <= value <= 99:
+            values.append(value)
+    return values
+
+
+def parse_bool(value) -> bool:
+    return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def appearance_from_box(image, x1: float, y1: float, x2: float, y2: float, label: str) -> dict | None:
