@@ -322,13 +322,15 @@ class JerseyNumberOcr:
         if height <= 0 or (y2 - y1) / height < self.min_box_height:
             return []
         crops = jersey_number_crops(image, x1, y1, x2, y2)
+        remaining = self.max_total_samples - self.total_samples
+        crops = crops[:remaining]
         if not crops:
             return []
         ocr = self.ocr()
         if ocr is None:
             return []
         self.sample_counts[track_id] += 1
-        self.total_samples += 1
+        self.total_samples += len(crops)
         tokens = []
         for crop in crops:
             tokens.extend(run_jersey_crop_ocr(ocr, crop))
