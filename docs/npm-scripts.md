@@ -1,6 +1,6 @@
 # npm Scripts
 
-Last checked against `package.json`: 2026-05-08.
+Last checked against `package.json`: 2026-05-11.
 
 This document is the canonical reference for `package.json` scripts. Keep it in sync when scripts are added, renamed, or removed.
 

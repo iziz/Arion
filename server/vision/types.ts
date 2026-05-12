@@ -1,4 +1,4 @@
-import type { VisionBoundingBox, VisionEvidence } from "../../shared/types";
+import type { VisionBoundingBox, VisionEvidence, VisionTrackAppearance, VisionTrackTeamCluster } from "../../shared/types";
 
 export type DetectorFrame = {
   segmentId: string;
@@ -29,6 +29,10 @@ export type TrackSummary = {
   confidence: number;
   firstSeen: number | null;
   lastSeen: number | null;
+  appearance?: VisionTrackAppearance;
+  teamCluster?: VisionTrackTeamCluster;
+  teamConfidence?: number;
+  teamEvidence?: string[];
 };
 
 export type TrackerSegment = {

@@ -1,6 +1,6 @@
 # Arion
 
-Last checked against code: 2026-05-08.
+Last checked against code: 2026-05-11.
 
 Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, and sports-domain context.
 
@@ -295,6 +295,7 @@ Arion stores evidence at multiple levels:
 - Asset-level intelligence: ASR, OCR, audio/VAD, visual profile, model traces
 - Segment-level scene data: speech, subtitles, screen text, visual metadata, VLM descriptions, vision evidence
 - Domain evidence: sports event labels, captions, scope, players, teams, match identity, action spots
+- Tracking evidence: player/ball tracks, nearest-player links, and heuristic kit-color clusters for visible player separation
 - Extractive summaries: deterministic asset and moment summaries built before text embedding
 - Embeddings: text passage vectors and visual keyframe vectors
 - Operational evidence: job stage checkpoints, runtime stage status, logs, spans, and events

@@ -71,7 +71,7 @@ export function applyVisionTracking(timeline: TimelineSegment[]): TimelineSegmen
       eventCandidates: mergeTrackingCandidates(vision.eventCandidates, trackingStatus, ballMovement, proximity, vision.fieldZone.zone),
       limitations: [
         ...vision.limitations.filter((item) => !item.includes("tracker/re-id")),
-        "Tracking v0 links boxes by nearest centers only; player identity and team assignment are not stable IDs."
+        "Tracking v0 links boxes by nearest centers only; player identity and team-kit clustering are not stable IDs."
       ]
     };
 
@@ -159,7 +159,8 @@ export function applyVisionTracks(timeline: TimelineSegment[], result: TrackerRe
       limitations: [
         ...vision.limitations.filter((item) => !item.includes("Tracking v0") && !item.includes("tracker/re-id")),
         `Tracking v2 uses ${summary.provider} with ${summary.tracker}; IDs are aggregated from sampled video frames.`,
-        "Team assignment, jersey identity, and pitch homography are still not calibrated."
+        "Team clusters are kit-color heuristics from tracked upper-body crops; they are not mapped to home/away without roster, scoreboard, or manual evidence.",
+        "Jersey identity and pitch homography are still not calibrated."
       ]
     };
 

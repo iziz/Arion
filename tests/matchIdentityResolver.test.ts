@@ -19,6 +19,7 @@ test("match identity resolver keeps separate match contexts and clock mappings i
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.trackId, "track-player-7");
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.canonicalName, "Son Heung-min");
   assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.status, "confirmed");
+  assert.equal(result.timeline[0].identity?.trackIdentityAssignments[0]?.evidence.some((item) => item.source === "reid" && item.value.includes("Kit cluster team-1")), true);
   assert.match(result.trace, /^match-identity:sports-identity-resolver-v1:strategies=sports\.football:2:/);
 });
 
@@ -174,6 +175,20 @@ function vision(trackId: string): VisionEvidence {
       nearestPlayerTrackId: trackId,
       continuity: 0.76,
       version: "tracking_v2",
+      playerTracks: [
+        {
+          id: trackId,
+          label: "person",
+          frames: 12,
+          confidence: 0.82,
+          firstSeen: 1,
+          lastSeen: 4,
+          appearance: { dominantHex: "#ffffff", hue: 0, saturation: 0.12, brightness: 0.98, samplePixels: 240, region: "upper_body" },
+          teamCluster: "team-1",
+          teamConfidence: 0.71,
+          teamEvidence: ["upper-body kit color #ffffff", "hue distance gap 0.180"]
+        }
+      ],
       ballMovement: { fromPrevious: 0.1, speedPerSecond: 1.2, direction: "right" }
     },
     eventClassification: {

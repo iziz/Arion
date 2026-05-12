@@ -46,6 +46,7 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
   const vision = segment.sceneData?.vision;
   const tracking = vision?.tracking;
   if (!vision || !tracking) return [];
+  const nearestPlayerTrack = tracking.nearestPlayerTrackId ? tracking.playerTracks?.find((track) => track.id === tracking.nearestPlayerTrackId) ?? null : null;
   const event = trustedDomainEvents(segment)[0] ?? null;
   const football = event?.football;
   const americanFootball = event?.americanFootball;
@@ -70,6 +71,9 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
     normalizedDistance: vision.proximity?.normalizedDistance ?? null,
     player,
     event: event?.eventType ?? vision.eventClassification?.label ?? null,
+    teamCluster: nearestPlayerTrack?.teamCluster,
+    teamConfidence: nearestPlayerTrack?.teamConfidence,
+    appearance: nearestPlayerTrack?.appearance,
     createdAt: now,
     updatedAt: now
   } satisfies Omit<TrackingRecord, "id" | "trackType" | "trackId" | "linkedTrackId" | "evidence">;
@@ -98,6 +102,7 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
       evidence: [
         `Nearest player track ${tracking.nearestPlayerTrackId}`,
         vision.proximity?.ballNearPlayer ? "Ball near player" : "Nearest player linked by center distance",
+        ...(nearestPlayerTrack?.teamEvidence ?? []),
         player ? `Resolved player ${player}` : ""
       ].filter(Boolean)
     });
@@ -113,6 +118,7 @@ function trackingRecordsForSegment(asset: AssetRecord, segment: TimelineSegment,
       evidence: [
         `Linked ${tracking.ballTrackId} to ${tracking.nearestPlayerTrackId}`,
         vision.proximity?.normalizedDistance !== null && vision.proximity?.normalizedDistance !== undefined ? `Distance ${vision.proximity.normalizedDistance}` : "",
+        ...(nearestPlayerTrack?.teamEvidence ?? []),
         event?.caption ?? ""
       ].filter(Boolean)
     });

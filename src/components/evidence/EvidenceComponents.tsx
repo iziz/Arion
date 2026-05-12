@@ -347,10 +347,19 @@ function formatVisionSummary(scene: SearchSceneData) {
     vision.fieldZone.zone !== "unknown" ? vision.fieldZone.zone : "",
     vision.fieldCalibration ? `field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}` : "",
     vision.tracking?.ballTrackId ?? "",
+    formatTrackKitClusters(vision.tracking?.playerTracks),
     vision.eventClassification && vision.eventClassification.label !== "unknown"
       ? `${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%`
       : ""
   ].filter(Boolean).join(" · ");
+}
+
+function formatTrackKitClusters(tracks: NonNullable<NonNullable<SearchSceneData["vision"]>["tracking"]>["playerTracks"] | undefined) {
+  const clusters = (tracks ?? [])
+    .filter((track) => track.teamCluster && track.teamCluster !== "unknown")
+    .slice(0, 4)
+    .map((track) => `${track.id}:${track.teamCluster}${track.appearance?.dominantHex ? ` ${track.appearance.dominantHex}` : ""}`);
+  return clusters.length > 0 ? `kits ${clusters.join(", ")}` : "";
 }
 
 function formatSearchReason(reason: SearchResult["matchReasons"][number]): {
@@ -546,7 +555,13 @@ export function ClipDetailDrawer({
                 <>
                   {scene.text.speech && <span><b>Speech</b>{truncateText(scene.text.speech, 140)}</span>}
                   {scene.text.subtitles.length > 0 && <span><b>Subtitle</b>{truncateText(scene.text.subtitles.join(" "), 140)}</span>}
-                  {scene.vision?.tracking?.ballTrackId && <span><b>Vision</b>{scene.vision.tracking.ballTrackId} · {scene.vision.tracking.nearestPlayerTrackId ?? "no player track"}</span>}
+                  {scene.vision?.tracking?.ballTrackId && (
+                    <span>
+                      <b>Vision</b>
+                      {scene.vision.tracking.ballTrackId} · {scene.vision.tracking.nearestPlayerTrackId ?? "no player track"}
+                      {formatTrackKitClusters(scene.vision.tracking.playerTracks) ? ` · ${formatTrackKitClusters(scene.vision.tracking.playerTracks)}` : ""}
+                    </span>
+                  )}
                 </>
               )}
             </div>
@@ -669,6 +684,7 @@ export function SignalEvidence({ asset }: { asset: AssetRecord }) {
                   {vision.fieldZone.zone !== "unknown" ? ` · ${vision.fieldZone.zone}` : ""}
                   {vision.fieldCalibration ? ` · field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method} ${Math.round(vision.fieldCalibration.zoneConfidence * 100)}%` : ""}
                   {vision.tracking?.ballTrackId ? ` · ${vision.tracking.ballTrackId}` : ""}
+                  {formatTrackKitClusters(vision.tracking?.playerTracks) ? ` · ${formatTrackKitClusters(vision.tracking?.playerTracks)}` : ""}
                   {vision.eventClassification && vision.eventClassification.label !== "unknown" ? ` · ${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%` : ""}
                 </span>
               );

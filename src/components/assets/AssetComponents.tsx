@@ -1884,6 +1884,7 @@ export function SceneDataSummary({ segment }: { segment: AssetRecord["timeline"]
           {vision.fieldZone.zone !== "unknown" ? ` · ${vision.fieldZone.zone}` : ""}
           {vision.fieldCalibration ? ` · field ${vision.fieldCalibration.status}/${vision.fieldCalibration.method}` : ""}
           {vision.tracking?.ballTrackId ? ` · ${vision.tracking.ballTrackId}` : ""}
+          {formatTrackKitClusters(vision.tracking?.playerTracks) ? ` · ${formatTrackKitClusters(vision.tracking?.playerTracks)}` : ""}
           {vision.eventClassification && vision.eventClassification.label !== "unknown" ? ` · ${vision.eventClassification.label} ${Math.round(vision.eventClassification.confidence * 100)}%` : ""}
         </span>
       )}
@@ -1907,6 +1908,16 @@ export function SceneDataSummary({ segment }: { segment: AssetRecord["timeline"]
       ))}
     </span>
   );
+}
+
+function formatTrackKitClusters(
+  tracks: NonNullable<NonNullable<NonNullable<AssetRecord["timeline"][number]["sceneData"]>["vision"]>["tracking"]>["playerTracks"] | undefined
+) {
+  const clusters = (tracks ?? [])
+    .filter((track) => track.teamCluster && track.teamCluster !== "unknown")
+    .slice(0, 4)
+    .map((track) => `${track.id}:${track.teamCluster}${track.appearance?.dominantHex ? ` ${track.appearance.dominantHex}` : ""}`);
+  return clusters.length > 0 ? `kits ${clusters.join(", ")}` : "";
 }
 
 function dedupeTextComparisons(comparisons: NonNullable<ReturnType<typeof getSearchSceneData>["text"]["comparisons"]>) {

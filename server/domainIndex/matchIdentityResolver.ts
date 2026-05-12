@@ -207,7 +207,7 @@ function resolveFootballIdentity(asset: AssetRecord, _index: IndexRecord, timeli
     limitations: [
       "Football match context is inferred from indexed text, OCR, VLM captions, and football registry activity; it is not an official broadcast synchronization feed.",
       "Football player identity remains candidate-level unless match context, clock, roster window, and track evidence all support the assignment.",
-      "Face, jersey OCR, team-kit classification, and ReID model outputs can be added as evidence sources without changing the sports base schema."
+      "Heuristic kit-color clusters can separate visible tracks, but face, jersey OCR, and stronger ReID outputs remain candidate evidence unless the surrounding context agrees."
     ],
     updatedAt: new Date().toISOString()
   };
@@ -521,7 +521,7 @@ function buildFootballPlayerIdentityCandidates(
       const evidence: IdentityEvidenceItem[] = [
         { source: source.source, value: matched.evidence[0] ?? matched.value.canonical, confidence: Math.max(source.confidence, matched.confidence) },
         ...(window ? [{ source: "lineup" as const, value: `${window.canonicalName} active roster window`, confidence: 0.72 }] : []),
-        ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }] : [])
+        ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }, ...visualTrackEvidence(segment, trackId)] : [])
       ];
       candidates.push({
         trackId,
@@ -545,7 +545,7 @@ function buildFootballPlayerIdentityCandidates(
       const evidence: IdentityEvidenceItem[] = [
         { source: "jersey_ocr", value: `Jersey number ${jerseyNumber}`, confidence: 0.64 },
         { source: "lineup", value: `${window.canonicalName} active roster window`, confidence: 0.72 },
-        ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }] : [])
+        ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }, ...visualTrackEvidence(segment, trackId)] : [])
       ];
       candidates.push({
         trackId,
@@ -880,7 +880,7 @@ function buildAmericanFootballPlayerIdentityCandidates(
     const evidence: IdentityEvidenceItem[] = [
       { source: participant.source === "helmet_assignment" ? "helmet_assignment" : participant.source === "tracking" ? "mot" : "play_metadata", value: `${participant.role} ${name ?? participant.playerId ?? "unknown"}`, confidence: participant.confidence },
       ...(window ? [{ source: "play_metadata" as const, value: `${window.canonicalName} play participant window`, confidence: 0.76 }] : []),
-      ...(participantTrack ? [{ source: "mot" as const, value: `Track ${participantTrack}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.55 }] : [])
+      ...(participantTrack ? [{ source: "mot" as const, value: `Track ${participantTrack}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.55 }, ...visualTrackEvidence(segment, participantTrack)] : [])
     ];
     const strongText = Boolean(name && playerNameScore(text, name) > 0);
     candidates.push({
@@ -917,7 +917,7 @@ function buildAmericanFootballPlayerIdentityCandidates(
         evidence: [
           { source: source.source, value: matched.evidence[0] ?? matched.value.canonical, confidence: Math.max(source.confidence, matched.confidence) },
           ...(window ? [{ source: "play_metadata" as const, value: `${window.canonicalName} play participant window`, confidence: 0.76 }] : []),
-          ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }] : [])
+          ...(trackId ? [{ source: "mot" as const, value: `Nearest player track ${trackId}`, confidence: segment.sceneData?.vision?.tracking?.continuity ?? 0.5 }, ...visualTrackEvidence(segment, trackId)] : [])
         ]
       });
     }
@@ -1213,6 +1213,27 @@ function assetMetadataText(asset: AssetRecord) {
 
 function nearestTrackId(segment: TimelineSegment) {
   return segment.sceneData?.vision?.tracking?.nearestPlayerTrackId ?? null;
+}
+
+function visualTrackEvidence(segment: TimelineSegment, trackId: string): IdentityEvidenceItem[] {
+  const track = segment.sceneData?.vision?.tracking?.playerTracks?.find((item) => item.id === trackId);
+  if (!track) return [];
+  const evidence: IdentityEvidenceItem[] = [];
+  if (track.teamCluster && track.teamCluster !== "unknown") {
+    evidence.push({
+      source: "reid",
+      value: `Kit cluster ${track.teamCluster}${track.appearance?.dominantHex ? ` (${track.appearance.dominantHex})` : ""}`,
+      confidence: Math.max(0.34, Math.min(0.72, track.teamConfidence ?? 0.42))
+    });
+  }
+  if (track.appearance?.dominantHex) {
+    evidence.push({
+      source: "reid",
+      value: `Upper-body kit color ${track.appearance.dominantHex}`,
+      confidence: Math.max(0.28, Math.min(0.58, (track.teamConfidence ?? 0.4) - 0.08))
+    });
+  }
+  return evidence;
 }
 
 function footballTeamTerms(team: string | null) {

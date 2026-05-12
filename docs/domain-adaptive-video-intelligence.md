@@ -1,6 +1,6 @@
 # Domain-Adaptive Video Intelligence Platform
 
-Last checked against code: 2026-05-08.
+Last checked against code: 2026-05-11.
 
 ## Context
 
@@ -153,7 +153,7 @@ The ask workflow first builds a temporary structured knowledge plan, resolves th
 
 ## Remaining Gaps
 
-- Stable player identity still needs stronger jersey/helmet assignment, ReID, and contact/track models. Current identity output is candidate-first unless domain context, clock, participant/roster evidence, and track evidence agree.
+- Stable player identity still needs stronger jersey/helmet assignment, ReID, and contact/track models. Current tracking can add heuristic kit-color clusters for visible player separation, but identity output remains candidate-first unless domain context, clock, participant/roster evidence, and track evidence agree.
 - Field zone and pocket state remain heuristic until sport-specific calibration/tracking is added.
 - Multi-camera game synchronization is not implemented.
 - Large-scale ingestion already has Redis/BullMQ dispatch and persisted job/ask records, but multi-region scheduling, autoscaling, and cross-cluster queue ownership are not implemented.

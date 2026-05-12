@@ -363,6 +363,10 @@ export type VisionEvidence = {
       confidence: number;
       firstSeen: number | null;
       lastSeen: number | null;
+      appearance?: VisionTrackAppearance;
+      teamCluster?: VisionTrackTeamCluster;
+      teamConfidence?: number;
+      teamEvidence?: string[];
     }>;
     ballTracks?: Array<{
       id: string;
@@ -437,6 +441,17 @@ export type VisionEvidence = {
   limitations: string[];
 };
 
+export type VisionTrackTeamCluster = "team-1" | "team-2" | "unknown";
+
+export type VisionTrackAppearance = {
+  dominantHex: string;
+  hue: number;
+  saturation: number;
+  brightness: number;
+  samplePixels: number;
+  region: "upper_body" | "full_box";
+};
+
 export type VisionBoundingBox = {
   label: "person" | "sports_ball" | "unknown";
   trackId?: string | null;
@@ -446,6 +461,7 @@ export type VisionBoundingBox = {
   width: number;
   height: number;
   source: string;
+  appearance?: VisionTrackAppearance;
 };
 
 export type TimelineSegment = {
@@ -1019,6 +1035,9 @@ export type TrackingRecord = {
   normalizedDistance: number | null;
   player: string | null;
   event: string | null;
+  teamCluster?: VisionTrackTeamCluster;
+  teamConfidence?: number;
+  appearance?: VisionTrackAppearance;
   evidence: string[];
   createdAt: string;
   updatedAt: string;

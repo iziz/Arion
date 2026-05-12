@@ -1,6 +1,6 @@
 # Sports Domain Indexing
 
-Last checked against code: 2026-05-08.
+Last checked against code: 2026-05-11.
 
 This document summarizes the current sports-domain indexing work: American-football knowledge ingestion, template-driven action spotting, sports identity resolution, UI exposure, and operational commands.
 
@@ -84,6 +84,7 @@ Identity status remains conservative:
 
 - `confirmed` requires confirmed match context, strong ASR/OCR/VLM text evidence, active roster window, track evidence, and clock evidence.
 - jersey OCR is candidate evidence unless roster and track evidence also support the same player.
+- Tracking can now attach heuristic upper-body kit-color clusters (`team-1`, `team-2`, or `unknown`) to player tracks. These clusters separate visible players inside a match screen but are not mapped to home/away teams without additional scoreboard, roster, or manual evidence.
 
 ## Participant-Aware Query Planning
 
@@ -216,6 +217,7 @@ To populate the new sports identity output or participant role event fields for 
 ## Current Limitations
 
 - Football player identity is still evidence-gated and candidate-first unless match context, clock, roster window, and track evidence agree.
+- Kit-color clustering helps separate tracked players by visible uniform appearance, but it is heuristic and does not by itself prove player identity or team identity.
 - Football passer/receiver identity depends on structured domain event evidence from action spots, VLM refinement, and segment-local OCR/ASR/subtitle text. Generic text, asset metadata, title aliases, or asset-level scope alone do not prove that a named player is the passer.
 - American-football helmet assignment and contact detection are represented in the schema, but external detector integration is still model-dependent.
 - nflverse is NFL-scoped; college or generic American-football footage can receive action labels but must not receive nflverse game/play alignment from weak evidence.

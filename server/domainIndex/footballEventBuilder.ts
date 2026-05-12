@@ -161,7 +161,7 @@ export function buildFootballEvent(asset: AssetRecord, segment: TimelineSegment,
       limitations: [
         "Vision evidence estimates pitch/player/ball cues from detector boxes and fallback heuristics.",
         visual?.tracking?.version === "tracking_v2"
-          ? "Tracking v2 uses video-level tracker IDs but still lacks team assignment and jersey identity."
+          ? "Tracking v2 uses video-level tracker IDs and heuristic kit-color team clusters; jersey identity is still not calibrated."
           : "Tracking v0 links boxes by nearest centers; it is not stable player identity re-id.",
         "Player identity v0 is text-derived from title/ASR/OCR/metadata, not visual face or jersey recognition.",
         visual?.fieldCalibration?.status === "calibrated"

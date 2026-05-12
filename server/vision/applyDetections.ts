@@ -53,7 +53,7 @@ export function applyVisionDetections(timeline: TimelineSegment[], result: Detec
       eventCandidates: mergeEventCandidates(sceneData.vision.eventCandidates, frame, detectedZone.zone),
       limitations: [
         `Object boxes come from ${detectorName(frame.provider)} detector output.`,
-        "Player identity, team assignment, and calibrated pitch coordinates still require tracker/re-id/homography stages."
+        "Player identity, team-kit clustering, and calibrated pitch coordinates still require tracker/re-id/homography stages."
       ]
     };
     return {
