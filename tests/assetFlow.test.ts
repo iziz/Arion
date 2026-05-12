@@ -148,7 +148,25 @@ test("all workflow nodes expose concise search-focused descriptions", () => {
   assert.match(descriptions.get("asr") ?? "", /timed text segments/);
   assert.match(descriptions.get("ocr") ?? "", /frame text/);
   assert.match(descriptions.get("timeline") ?? "", /indexed moments/);
+  assert.match(descriptions.get("matchProfile") ?? "", /unknown match recording/);
   assert.match(descriptions.get("vector") ?? "", /vector store/);
+});
+
+test("raw match profile step surfaces stored readiness metadata", () => {
+  const asset = {
+    ...baseAsset(),
+    status: "indexed",
+    progress: 100,
+    rawMatchProfile: rawMatchProfile()
+  } satisfies AssetRecord;
+
+  const step = getAssetFlow(asset, baseIndex(), null).find((item) => item.id === "matchProfile");
+
+  assert.equal(step?.state, "done");
+  assert.match(step?.detail ?? "", /partial/);
+  assert.match(step?.detail ?? "", /source unknown/);
+  assert.equal(step?.trace, "raw-match-profile:raw-match-video-profile-v1:partial");
+  assert.equal(step?.retryStage, "tracker");
 });
 
 test("active indexing stage invalidates only dependency-linked stored outputs", () => {
@@ -353,6 +371,80 @@ function runtimeStage(stage: string, message: string, progress: number): NonNull
     startedAt: "2026-05-04T18:00:00.000Z",
     updatedAt: "2026-05-04T18:01:00.000Z",
     completedAt: null
+  };
+}
+
+function rawMatchProfile(): NonNullable<AssetRecord["rawMatchProfile"]> {
+  return {
+    generatedBy: "raw-match-video-profile-v1",
+    status: "partial",
+    sourceContext: {
+      status: "unknown",
+      matchContextIds: [],
+      teams: [],
+      competitions: [],
+      evidence: []
+    },
+    technical: {
+      duration: 60,
+      fps: 30,
+      resolution: "1920x1080",
+      videoCodec: "h264",
+      audioCodec: "aac",
+      qualityFlags: []
+    },
+    observed: {
+      pitchVisible: true,
+      pitchConfidence: 0.82,
+      scoreboardTexts: ["12:34 HOME 1-0 AWAY"],
+      clockCandidates: [],
+      teamKitClusters: [
+        {
+          cluster: "team-1",
+          trackCount: 4,
+          segmentCount: 2,
+          confidence: 0.76,
+          colors: ["#d91e2b"],
+          trust: "detected",
+          evidence: ["upper-body kit color #d91e2b"]
+        }
+      ]
+    },
+    trackingReadiness: {
+      playerCoverage: 0.5,
+      ballCoverage: 0.2,
+      averageTrackCoverage: 0.42,
+      idSwitches: 1,
+      usableForEvents: true,
+      usableForIdentity: true,
+      limitations: []
+    },
+    identityReadiness: {
+      jerseyOcrUsable: true,
+      faceUsable: false,
+      rosterRequired: true,
+      candidateCount: 1,
+      confirmedAssignmentCount: 0,
+      evidence: ["1 player track has crop jersey OCR candidates."],
+      limitations: ["Match/team/player context is not confirmed; player names must remain candidate evidence."]
+    },
+    eventReadiness: {
+      candidateCount: 2,
+      domainEventCount: 1,
+      eventTypes: [{ type: "pass_receive", count: 1, confidence: 0.66, trust: "candidate" }],
+      limitations: []
+    },
+    trustSummary: {
+      observed: 0,
+      detected: 1,
+      aligned: 0,
+      candidate: 1,
+      inferred: 0,
+      heuristic: 0,
+      unavailable: 0
+    },
+    limitations: ["Raw match video mode: competition, teams, players, and clock stay unconfirmed until external context or review evidence agrees."],
+    updatedAt: "2026-05-13T00:00:00.000Z"
   };
 }
 

@@ -29,15 +29,28 @@ test("input source and probe metadata render distinct result panels", async () =
   assert.doesNotMatch(probeResult, /Object key/);
 });
 
-test("detector and tracker are presented as domain evidence", async () => {
+test("detector, tracker, and raw match profile are presented as domain evidence", async () => {
   const component = await readFile(path.resolve("src", "components", "assets", "AssetComponents.tsx"), "utf8");
   const sceneGroup = groupBlock(component, "3. Scene and vision evidence");
   const domainGroup = groupBlock(component, "4. Domain evidence");
 
   assert.doesNotMatch(sceneGroup, /step\.id === "detector"/);
   assert.doesNotMatch(sceneGroup, /step\.id === "tracker"/);
+  assert.doesNotMatch(sceneGroup, /step\.id === "matchProfile"/);
   assert.match(domainGroup, /step\.id === "detector"/);
   assert.match(domainGroup, /step\.id === "tracker"/);
+  assert.match(domainGroup, /step\.id === "matchProfile"/);
+});
+
+test("raw match profile renders a distinct workflow result panel", async () => {
+  const component = await readFile(path.resolve("src", "components", "assets", "AssetComponents.tsx"), "utf8");
+  const resultRouting = functionBlock(component, "function WorkflowResultContent");
+  const rawMatchResult = functionBlock(component, "function RawMatchProfileResult");
+
+  assert.match(resultRouting, /stepId === "matchProfile"\) return <RawMatchProfileResult/);
+  assert.match(rawMatchResult, /Source context/);
+  assert.match(rawMatchResult, /Identity readiness/);
+  assert.match(rawMatchResult, /Event readiness/);
 });
 
 function groupBlock(source: string, label: string) {

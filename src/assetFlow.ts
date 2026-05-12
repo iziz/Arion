@@ -52,6 +52,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmJobProgress = getVideoVlmJobProgress(job);
   const videoVlmJobFailed = Boolean(videoVlmJobProgress?.failed && videoVlmJobProgress.failed > 0 && videoVlmJobProgress.described === 0);
   const domainVlmSummary = getDomainVlmSummary(asset);
+  const rawMatchProfile = asset.rawMatchProfile;
   const summaryTrace = findTrace(traces, "summary:extractive-v1");
   const summarizedSegmentCount = asset.timeline.filter((segment) => Boolean(segment.summary?.trim())).length;
   const hasExtractiveSummaries = Boolean(asset.summary.trim() && summarizedSegmentCount > 0);
@@ -119,6 +120,7 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
   const videoVlmPassCompleted = assetIndexingInProgress && activeJobProgress >= 78;
   const detectorPassCompleted = assetIndexingInProgress && activeJobProgress >= 80;
   const trackerPassCompleted = assetIndexingInProgress && activeJobProgress >= 81;
+  const rawMatchProfilePassCompleted = assetIndexingInProgress && activeJobProgress >= 81;
   const knowledgeActionPassCompleted = assetIndexingInProgress && activeJobProgress >= 82;
   const summaryPassCompleted = assetIndexingInProgress && activeJobProgress >= 84;
   const textEmbeddingPassCompleted = assetIndexingInProgress && activeJobProgress >= 88;
@@ -557,6 +559,33 @@ export function getAssetFlow(asset: AssetRecord, index: IndexRecord | null, job:
       trace: compactModelTrace(trackerTrace ?? trackerUnavailableTrace)
     },
     {
+      id: "matchProfile",
+      label: "Raw match profile",
+      detail: rawMatchProfile
+        ? formatRawMatchProfileFlowDetail(rawMatchProfile)
+        : activeJobStage === "vision-tracking"
+          ? "Profiling raw match evidence from tracker output"
+          : activeJobStage === "domain-index"
+            ? "Updating raw match profile with event and identity readiness"
+            : activeJobStage === "finalize"
+              ? "Saving raw match profile metadata"
+              : rawMatchProfilePassCompleted
+                ? waitingForIndexedAssetSave("Raw match profile")
+                : isIndexed
+                  ? skipped("indexing finished without stored raw match profile metadata")
+                  : "Waiting for tracking and domain evidence",
+      state: rawMatchProfile
+        ? "done"
+        : activeJobStage === "vision-tracking" || activeJobStage === "domain-index" || activeJobStage === "finalize"
+          ? "active"
+          : rawMatchProfilePassCompleted || hasActiveJob
+            ? "waiting"
+            : isIndexed
+              ? "skipped"
+              : "waiting",
+      trace: rawMatchProfile ? `raw-match-profile:${rawMatchProfile.generatedBy}:${rawMatchProfile.status}` : undefined
+    },
+    {
       id: "knowledgeAction",
       label: "Knowledge action spotting",
       detail: knowledgeActionTrace
@@ -772,6 +801,7 @@ function getCurrentWorkflowActiveDetail(stepId: string, job: JobRecord, fallback
     keyframes: "Generating segment thumbnails",
     detector: "Running configured object detector",
     tracker: "Running configured tracker",
+    matchProfile: "Summarizing source context and evidence readiness",
     knowledgeAction: "Running configured action spotter",
     domain: "Building related knowledge event layer",
     domainVlm: `Related knowledge VLM refinement running · ${job.progress}%`,
@@ -810,6 +840,13 @@ function getVideoVlmSummary(asset: AssetRecord) {
   const attempted = counts.described + counts.invalid + counts.failed;
   if (attempted === 0) return "";
   return `VLM ${counts.described}/${attempted} described${counts.invalid ? `, ${counts.invalid} invalid` : ""}${counts.failed ? `, ${counts.failed} failed` : ""}`;
+}
+
+function formatRawMatchProfileFlowDetail(profile: NonNullable<AssetRecord["rawMatchProfile"]>) {
+  const playerCoverage = Math.round(profile.trackingReadiness.playerCoverage * 100);
+  const ballCoverage = Math.round(profile.trackingReadiness.ballCoverage * 100);
+  const eventTypes = profile.eventReadiness.eventTypes.length;
+  return `${profile.status} · source ${profile.sourceContext.status} · players ${playerCoverage}% · ball ${ballCoverage}% · ${eventTypes} event types`;
 }
 
 function getVideoVlmJobProgress(job: JobRecord | null) {
@@ -976,6 +1013,7 @@ function getFlowStepProgress(step: Omit<FlowStep, "description" | "progress" | "
     videoVlm: [76, 78],
     detector: [78, 80],
     tracker: [80, 81],
+    matchProfile: [80, 84],
     knowledgeAction: [80, 82],
     domain: [81, 84],
     domainVlm: [82, 84],

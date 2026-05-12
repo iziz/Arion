@@ -823,6 +823,26 @@ export type AssetDomainVlmSummary = {
   attempted: number;
 };
 
+export type AssetRawMatchProfileSummary = Pick<
+  RawMatchVideoProfile,
+  | "status"
+  | "sourceContext"
+  | "technical"
+  | "trackingReadiness"
+  | "identityReadiness"
+  | "eventReadiness"
+  | "trustSummary"
+  | "limitations"
+  | "updatedAt"
+> & {
+  observed: Pick<RawMatchVideoProfile["observed"], "pitchVisible" | "pitchConfidence"> & {
+    scoreboardTextCount: number;
+    clockCandidateCount: number;
+    teamKitClusterCount: number;
+    topTeamKitClusters: RawMatchVideoProfile["observed"]["teamKitClusters"];
+  };
+};
+
 export type AssetSummaryRecord = Pick<
   AssetRecord,
   | "id"
@@ -848,6 +868,7 @@ export type AssetSummaryRecord = Pick<
   keyframeCount: number;
   domainEventCount: number;
   domainVlm: AssetDomainVlmSummary;
+  rawMatchProfile?: AssetRawMatchProfileSummary;
 };
 
 export type SearchResultSegment = Omit<TimelineSegment, "embedding"> & {

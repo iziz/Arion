@@ -34,10 +34,33 @@ export function summarizeAssetRecord(asset: AssetRecord): AssetSummaryRecord {
     timelineCount: asset.timeline.length,
     keyframeCount: asset.keyframes.length,
     domainEventCount: asset.timeline.reduce((count, segment) => count + (segment.domain?.events.length ?? 0), 0),
-    domainVlm
+    domainVlm,
+    rawMatchProfile: asset.rawMatchProfile ? summarizeRawMatchProfile(asset.rawMatchProfile) : undefined
   };
 }
 
 export function summarizeAssetRecords(assets: AssetRecord[]): AssetSummaryRecord[] {
   return assets.map(summarizeAssetRecord);
+}
+
+function summarizeRawMatchProfile(profile: NonNullable<AssetRecord["rawMatchProfile"]>): AssetSummaryRecord["rawMatchProfile"] {
+  return {
+    status: profile.status,
+    sourceContext: profile.sourceContext,
+    technical: profile.technical,
+    observed: {
+      pitchVisible: profile.observed.pitchVisible,
+      pitchConfidence: profile.observed.pitchConfidence,
+      scoreboardTextCount: profile.observed.scoreboardTexts.length,
+      clockCandidateCount: profile.observed.clockCandidates.length,
+      teamKitClusterCount: profile.observed.teamKitClusters.length,
+      topTeamKitClusters: profile.observed.teamKitClusters.slice(0, 4)
+    },
+    trackingReadiness: profile.trackingReadiness,
+    identityReadiness: profile.identityReadiness,
+    eventReadiness: profile.eventReadiness,
+    trustSummary: profile.trustSummary,
+    limitations: profile.limitations,
+    updatedAt: profile.updatedAt
+  };
 }

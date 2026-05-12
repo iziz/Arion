@@ -19,6 +19,7 @@ export type WorkflowEvidence =
   | "knowledge-action"
   | "domain"
   | "domain-vlm"
+  | "raw-match-profile"
   | "summary"
   | "text-embedding"
   | "visual-embedding"
@@ -205,6 +206,18 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
     searchImpact: "Search impact: motion evidence",
     skippedSearchImpact: "Search impact: tracker not used"
   },
+  matchProfile: {
+    id: "matchProfile",
+    description: "Summarizes what can and cannot be known from an unknown match recording using technical, visual, tracking, identity, and event evidence.",
+    retryStage: "tracker",
+    produces: ["raw-match-profile"],
+    dependsOn: ["source", "probe", "timeline", "vision-detector", "vision-tracker", "domain"],
+    stageAliases: ["vision-tracking", "domain-index", "finalize"],
+    runtimeStages: [],
+    logTokens: ["raw match profile", "rawMatchProfile", "match profile"],
+    searchImpact: "Search impact: evidence readiness",
+    skippedSearchImpact: "Search impact: raw match profile unavailable"
+  },
   knowledgeAction: {
     id: "knowledgeAction",
     description: "Runs the selected related knowledge template generator or external action adapter before domain events are built.",
@@ -294,7 +307,7 @@ const workflowNodeDefinitions: Record<string, WorkflowNodeDefinition> = {
     description: "Marks the asset available for retrieval, asking, and focused analysis.",
     retryStage: "ready",
     produces: ["ready"],
-    dependsOn: ["vector"],
+    dependsOn: ["vector", "raw-match-profile"],
     stageAliases: ["complete", "finalize"],
     runtimeStages: [],
     logTokens: ["complete", "finalize", "saving"],
@@ -389,8 +402,8 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
   },
   "vision-tracking": {
     stage: "vision-tracking",
-    activeNodeIds: ["tracker"],
-    produces: ["vision-tracker"],
+    activeNodeIds: ["tracker", "matchProfile"],
+    produces: ["vision-tracker", "raw-match-profile"],
     waitingLabel: "vision tracking to finish"
   },
   "knowledge-action": {
@@ -407,8 +420,8 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
   },
   "domain-index": {
     stage: "domain-index",
-    activeNodeIds: ["domain"],
-    produces: ["domain"],
+    activeNodeIds: ["domain", "matchProfile"],
+    produces: ["domain", "raw-match-profile"],
     waitingLabel: "domain event indexing to finish"
   },
   "domain-vlm": {
@@ -455,8 +468,8 @@ const workflowStageDefinitions: Record<string, WorkflowStageDefinition> = {
   },
   finalize: {
     stage: "finalize",
-    activeNodeIds: ["vector", "ready"],
-    produces: ["ready"],
+    activeNodeIds: ["matchProfile", "vector", "ready"],
+    produces: ["raw-match-profile", "ready"],
     waitingLabel: "indexed asset save to finish"
   },
   complete: {

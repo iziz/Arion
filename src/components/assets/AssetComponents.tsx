@@ -336,8 +336,8 @@ export function AssetFlow({
     },
     {
       label: "4. Domain evidence",
-      detail: "Apply detector, tracker, template action generation, related knowledge event construction, and optional event-level VLM refinement.",
-      steps: flow.filter((step) => step.id === "detector" || step.id === "tracker" || step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
+      detail: "Apply detector, tracker, raw match profiling, template action generation, related knowledge event construction, and optional event-level VLM refinement.",
+      steps: flow.filter((step) => step.id === "detector" || step.id === "tracker" || step.id === "matchProfile" || step.id === "knowledgeAction" || step.id === "domain" || step.id === "domainVlm")
     },
     {
       label: "5. Vector index",
@@ -736,6 +736,7 @@ function WorkflowResultContent({
   if (stepId === "videoVlm") return <VideoVlmResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "scene" || stepId === "timeline") return <TimelineResult asset={asset} step={step} onOpenMoment={onOpenMoment} />;
   if (stepId === "detector" || stepId === "tracker" || stepId === "knowledgeAction") return <ModelTraceResult asset={asset} index={index} step={step} />;
+  if (stepId === "matchProfile") return <RawMatchProfileResult asset={asset} step={step} />;
   if (stepId === "domain" || stepId === "domainVlm") return <DomainResult asset={asset} step={step} onOpenMoment={onOpenMoment} onReviewIdentity={onReviewIdentity} />;
   if (stepId === "summary" || stepId === "textEmbedding" || stepId === "visualEmbedding" || stepId === "vector" || stepId === "ready") return <VectorResult asset={asset} step={step} />;
   return <EmptyState text="No stored result details are available for this workflow step." />;
@@ -1517,6 +1518,145 @@ function VisionWorkflowInspect({ stepId, visionSegments }: { stepId: string; vis
 function averageNumber(values: number[]) {
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function RawMatchProfileResult({ asset, step }: { asset: AssetRecord; step: FlowStep }) {
+  const profile = asset.rawMatchProfile;
+  if (!profile) {
+    return (
+      <WorkflowNodeDetails
+        produced={[
+          { label: "Profile", value: qualityLabelForStep(step), tone: step.state === "error" ? "bad" : step.state === "skipped" ? "warning" : "neutral" },
+          { label: "Source context", value: "unknown", tone: "neutral" },
+          { label: "Tracking readiness", value: "pending", tone: "neutral" }
+        ]}
+        usedBy={["workflow review", "identity review", "event confidence calibration", "raw recording QA"]}
+        quality={[
+          { label: "Metadata", value: "not stored", tone: step.state === "skipped" ? "warning" : "neutral" },
+          { label: "Search impact", value: "profile unavailable", tone: "neutral" }
+        ]}
+        inspect={<EmptyState text="No raw match profile metadata is stored for this asset." />}
+        rawDetails={rawStepDetails(step)}
+      />
+    );
+  }
+
+  const trustItems = Object.entries(profile.trustSummary)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const teamClusters = profile.observed.teamKitClusters.slice(0, 6);
+  const eventTypes = profile.eventReadiness.eventTypes.slice(0, 8);
+  const limitations = profile.limitations.slice(0, 8);
+
+  return (
+    <WorkflowNodeDetails
+      produced={[
+        { label: "Profile", value: profile.status, tone: profile.status === "ready" ? "good" : profile.status === "partial" ? "warning" : "neutral" },
+        { label: "Source context", value: profile.sourceContext.status, tone: profile.sourceContext.status === "confirmed" ? "good" : profile.sourceContext.status === "partial" ? "warning" : "neutral" },
+        { label: "Pitch", value: profile.observed.pitchVisible ? `${formatPercent(profile.observed.pitchConfidence)} visible` : "not confirmed", tone: profile.observed.pitchVisible ? "good" : "warning" },
+        { label: "Team clusters", value: profile.observed.teamKitClusters.length.toString(), tone: profile.observed.teamKitClusters.length > 0 ? "good" : "neutral" },
+        { label: "Clock candidates", value: profile.observed.clockCandidates.length.toString(), tone: profile.observed.clockCandidates.length > 0 ? "good" : "neutral" },
+        { label: "Event types", value: profile.eventReadiness.eventTypes.length.toString(), tone: profile.eventReadiness.eventTypes.length > 0 ? "good" : "neutral" }
+      ]}
+      usedBy={["workflow review", "identity review", "event confidence calibration", "raw recording QA"]}
+      quality={[
+        { label: "Player coverage", value: formatPercent(profile.trackingReadiness.playerCoverage), tone: readinessTone(profile.trackingReadiness.playerCoverage, 0.18) },
+        { label: "Ball coverage", value: formatPercent(profile.trackingReadiness.ballCoverage), tone: readinessTone(profile.trackingReadiness.ballCoverage, 0.12) },
+        { label: "Track coverage", value: formatPercent(profile.trackingReadiness.averageTrackCoverage), tone: readinessTone(profile.trackingReadiness.averageTrackCoverage, 0.12) },
+        { label: "Event readiness", value: profile.trackingReadiness.usableForEvents ? "usable" : "limited", tone: profile.trackingReadiness.usableForEvents ? "good" : "warning" },
+        { label: "Identity readiness", value: profile.trackingReadiness.usableForIdentity ? "usable" : "candidate-only", tone: profile.trackingReadiness.usableForIdentity ? "good" : "warning" },
+        { label: "Roster required", value: profile.identityReadiness.rosterRequired ? "yes" : "no", tone: profile.identityReadiness.rosterRequired ? "warning" : "good" }
+      ]}
+      inspect={
+        <div className="workflow-result-stack">
+          <div className="workflow-usage-grid">
+            <VisualUsageCard
+              title="Technical"
+              value={profile.technical.resolution ?? "Unknown"}
+              detail={`${profile.technical.fps ? `${Math.round(profile.technical.fps)}fps` : "fps unknown"} · ${profile.technical.videoCodec ?? "video codec unknown"}`}
+            />
+            <VisualUsageCard
+              title="Source"
+              value={summarizeSourceContext(profile)}
+              detail={profile.sourceContext.evidence.slice(0, 3).join(" · ") || "No confirmed external context evidence"}
+            />
+            <VisualUsageCard
+              title="Identity"
+              value={`${profile.identityReadiness.candidateCount} candidates`}
+              detail={[
+                profile.identityReadiness.jerseyOcrUsable ? "jersey OCR usable" : "no jersey OCR",
+                profile.identityReadiness.faceUsable ? "face candidates usable" : "no face candidates",
+                `${profile.identityReadiness.confirmedAssignmentCount} confirmed`
+              ].join(" · ")}
+            />
+            <VisualUsageCard
+              title="Events"
+              value={`${profile.eventReadiness.candidateCount} candidates`}
+              detail={`${profile.eventReadiness.domainEventCount} domain events · ${profile.eventReadiness.eventTypes.length} event types`}
+            />
+          </div>
+          <div className="workflow-technical-strip" aria-label="Raw match profile readiness">
+            <span><b>Players</b>{formatPercent(profile.trackingReadiness.playerCoverage)}</span>
+            <span><b>Ball</b>{formatPercent(profile.trackingReadiness.ballCoverage)}</span>
+            <span><b>Track avg</b>{formatPercent(profile.trackingReadiness.averageTrackCoverage)}</span>
+            <span><b>ID switches</b>{profile.trackingReadiness.idSwitches}</span>
+            <span><b>Trust</b>{trustItems.map(([tier, count]) => `${tier} ${count}`).join(" · ") || "none"}</span>
+          </div>
+          <div className="domain-event-list">
+            {teamClusters.map((cluster) => (
+              <article key={cluster.cluster} className="domain-event-row">
+                <div>
+                  <strong>{cluster.cluster}</strong>
+                  <span>{cluster.trackCount} tracks · {cluster.segmentCount} segments · {formatPercent(cluster.confidence)}</span>
+                </div>
+                <span>{cluster.colors.join(" · ") || "No kit color samples"}{cluster.evidence.length ? ` · ${cluster.evidence.slice(0, 3).join(" · ")}` : ""}</span>
+              </article>
+            ))}
+            {eventTypes.map((event) => (
+              <article key={event.type} className="domain-event-row">
+                <div>
+                  <strong>{event.type}</strong>
+                  <span>{event.count} candidates · {formatPercent(event.confidence)} · {event.trust}</span>
+                </div>
+              </article>
+            ))}
+            {limitations.map((limitation) => (
+              <article key={limitation} className="domain-event-row">
+                <div>
+                  <strong>Limitation</strong>
+                  <span>{limitation}</span>
+                </div>
+              </article>
+            ))}
+            {teamClusters.length + eventTypes.length + limitations.length === 0 && <span className="empty-inline">No raw match profile details are stored.</span>}
+          </div>
+        </div>
+      }
+      rawDetails={rawStepDetails(step, [
+        `raw-match-profile:${profile.generatedBy}:${profile.status}`,
+        `source-context:${profile.sourceContext.status}`,
+        profile.technical.qualityFlags.length ? `quality-flags:${profile.technical.qualityFlags.join(",")}` : "",
+        `updated:${profile.updatedAt}`
+      ])}
+    />
+  );
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function readinessTone(value: number, threshold: number): NodeMetricTone {
+  if (value >= threshold) return "good";
+  if (value > 0) return "warning";
+  return "neutral";
+}
+
+function summarizeSourceContext(profile: NonNullable<AssetRecord["rawMatchProfile"]>) {
+  if (profile.sourceContext.teams.length > 0) return profile.sourceContext.teams.slice(0, 2).join(" vs ");
+  if (profile.sourceContext.competitions.length > 0) return profile.sourceContext.competitions[0] ?? "competition candidate";
+  if (profile.sourceContext.matchContextIds.length > 0) return `${profile.sourceContext.matchContextIds.length} context candidates`;
+  return profile.sourceContext.status;
 }
 
 function DomainResult({
