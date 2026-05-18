@@ -231,6 +231,20 @@ export async function traceAsync<T>(name: string, fields: Record<string, unknown
   );
 }
 
+export function genAiAttributes(
+  system: string,
+  operationName: string,
+  model: string | null | undefined,
+  fields: Record<string, unknown> = {}
+) {
+  return sanitizeAttributes({
+    "gen_ai.system": system,
+    "gen_ai.operation.name": operationName,
+    ...(model ? { "gen_ai.request.model": model } : {}),
+    ...fields
+  });
+}
+
 export function logJson(level: JsonLogLevel, event: string, message: string, fields: Record<string, unknown> = {}) {
   const current = getContext();
   const entry: JsonLogEntry = {

@@ -1,7 +1,7 @@
 import { getPool, getVectorExtensionInstallError, isVectorExtensionAvailable } from "./connection";
 import { seedDefaults } from "./defaults";
 import { getMetrics } from "./repository";
-import { ensurePostgresStore, getVectorColumnType } from "./schema";
+import { ensurePostgresStore, getVectorColumnType, isPgvectorVersionSupported, minimumPgvectorVersion } from "./schema";
 import { getExpectedEmbeddingDimensions, getExpectedVisualEmbeddingDimensions } from "./vectorUtils";
 
 export async function resetPostgresStore() {
@@ -37,12 +37,16 @@ export async function getPostgresStatus() {
   ]);
   const issues = getOperationalIssues(vectorTables);
   const pgvector = (extension.rows[0]?.extversion as string | undefined) ?? null;
+  if (!isPgvectorVersionSupported(pgvector)) {
+    issues.unshift(`pgvector ${pgvector ?? "missing"} is below the required ${minimumPgvectorVersion}.`);
+  }
   return {
     enabled: true,
     ready: issues.length === 0,
     operationalState: issues.length === 0 ? "ready" : "degraded",
     postgres: version.rows[0]?.version as string,
     pgvector,
+    minimumPgvectorVersion,
     pgvectorRequired: true,
     pgvectorInstallError: getVectorExtensionInstallError(),
     vectorSearchMode: "pgvector",
@@ -61,23 +65,25 @@ async function getVectorTableStatuses() {
   const expectedText = `vector(${getExpectedEmbeddingDimensions()})`;
   const expectedVisual = `vector(${getExpectedVisualEmbeddingDimensions()})`;
   return Promise.all([
-    getVectorTableStatus("app_vectors", expectedText, "app_vectors_embedding_idx"),
-    getVectorTableStatus("app_knowledge_vectors", expectedText, "app_knowledge_vectors_embedding_idx"),
+    getVectorTableStatus("app_vectors", expectedText, "app_vectors_embedding_idx", "app_vectors_search_tsv_idx"),
+    getVectorTableStatus("app_knowledge_vectors", expectedText, "app_knowledge_vectors_embedding_idx", "app_knowledge_vectors_search_tsv_idx"),
     getVectorTableStatus("app_visual_vectors", expectedVisual, "app_visual_vectors_embedding_idx")
   ]);
 }
 
-async function getVectorTableStatus(table: string, expectedColumnType: string, indexName: string) {
+async function getVectorTableStatus(table: string, expectedColumnType: string, indexName: string, lexicalIndexName?: string) {
   const db = getPool();
-  const [columnType, hnswIndex, counts] = await Promise.all([
+  const [columnType, hnswIndex, lexicalIndex, counts] = await Promise.all([
     getVectorColumnType(db, table, "embedding"),
     hasIndex(indexName),
+    lexicalIndexName ? hasIndex(lexicalIndexName) : Promise.resolve(null),
     getVectorCounts(table)
   ]);
   const tableIssues: string[] = [];
   if (isVectorExtensionAvailable()) {
     if (columnType !== expectedColumnType) tableIssues.push(`${table}.embedding is ${columnType ?? "missing"}, expected ${expectedColumnType}.`);
     if (!hnswIndex) tableIssues.push(`${indexName} is missing; pgvector search works but may scan more rows.`);
+    if (lexicalIndexName && !lexicalIndex) tableIssues.push(`${lexicalIndexName} is missing; hybrid lexical search works but may scan more rows.`);
     if (counts.jsonRows > 0 && counts.pgvectorRows === 0) tableIssues.push(`${table} has JSON embeddings but no populated pgvector rows; rebuild vectors for indexed search.`);
   }
   return {
@@ -86,6 +92,7 @@ async function getVectorTableStatus(table: string, expectedColumnType: string, i
     columnType,
     expectedColumnType,
     hnswIndex,
+    lexicalIndex,
     totalRows: counts.totalRows,
     jsonRows: counts.jsonRows,
     pgvectorRows: counts.pgvectorRows,

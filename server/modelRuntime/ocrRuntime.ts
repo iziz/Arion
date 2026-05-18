@@ -12,6 +12,7 @@ import { toPublicMediaPath } from "./mediaPath";
 
 const execFileAsync = promisify(execFile);
 const paddleOcrScript = path.resolve("scripts", "paddle_ocr_extract.py");
+const paddleOcrVlScript = path.resolve("scripts", "paddleocr_vl_extract.py");
 
 export type PaddleResult = {
   available: boolean;
@@ -64,7 +65,12 @@ export async function runPaddleOcr(
     );
     const available = results.filter((result) => result.available);
     if (available.length === 0) return results[0] ?? unavailablePaddleResult("PaddleOCR returned no result");
-    return selectBestPaddleOcrResult(available, languages);
+    const selected = selectBestPaddleOcrResult(available, languages);
+    if (!isPaddleOcrVlEnabled()) return selected;
+    const layout = await runPaddleOcrVlLanguage(framesDir, selected.language ?? languages[0] ?? "en", mediaRoot, fullFrameIntervalSeconds, reportStage);
+    if (layout.available) return mergePaddleResults(selected, layout);
+    if (isPaddleOcrVlRequired()) return layout;
+    return selected;
   } catch (error) {
     return {
       available: false,
@@ -191,6 +197,73 @@ async function runPaddleOcrLanguageDirect(
   return parsePythonJson<PaddleResult>(stdout);
 }
 
+async function runPaddleOcrVlLanguage(
+  framesDir: string,
+  language: string,
+  mediaRoot: string,
+  sampleIntervalSeconds: number,
+  reportStage?: RuntimeStageReporter
+): Promise<PaddleResult> {
+  await reportStage?.({ stage: "ocr", status: "running", message: "Running PaddleOCR-VL layout OCR pass", progress: 13, log: false });
+  try {
+    const parsed = isPythonRuntimeServiceMode("ocr")
+      ? await callPythonRuntimeService<PaddleResult>(
+          "ocr",
+          "/v1/paddleocr-vl",
+          {
+            framesDir,
+            language,
+            model: process.env.PADDLEOCR_VL_MODEL || "PaddleOCR-VL-0.9B",
+            maxFrames: positiveInteger(process.env.PADDLEOCR_VL_MAX_FRAMES, 24)
+          },
+          {
+            metricKey: "model.ocr.paddle_vl.service",
+            onProgress: (event) => reportPythonProgressEvent("ocr", reportStage, event)
+          }
+        )
+      : await runPaddleOcrVlLanguageDirect(framesDir, language);
+    return postprocessPaddleResult({
+      available: Boolean(parsed.available),
+      provider: parsed.provider || "paddleocr-vl",
+      language,
+      tokens: Array.isArray(parsed.tokens) ? parsed.tokens : [],
+      confidence: parsed.confidence ?? 0,
+      frames: normalizeOcrFrames(parsed.frameResults, mediaRoot, sampleIntervalSeconds),
+      error: parsed.error
+    });
+  } catch (error) {
+    return {
+      available: false,
+      provider: "paddleocr-vl",
+      language,
+      tokens: [],
+      confidence: 0,
+      frames: [],
+      error: error instanceof Error ? error.message : "PaddleOCR-VL execution failed"
+    };
+  }
+}
+
+async function runPaddleOcrVlLanguageDirect(framesDir: string, language: string) {
+  const { stdout } = await runPythonScriptOnExit(
+    [
+      paddleOcrVlScript,
+      framesDir,
+      "--lang",
+      language,
+      "--model",
+      process.env.PADDLEOCR_VL_MODEL || "PaddleOCR-VL-0.9B",
+      "--max-frames",
+      String(positiveInteger(process.env.PADDLEOCR_VL_MAX_FRAMES, 24))
+    ],
+    {
+      maxBuffer: 1024 * 1024 * 4,
+      env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True" }
+    }
+  );
+  return parsePythonJson<PaddleResult>(stdout);
+}
+
 function unavailablePaddleResult(error: string, language = "unknown"): PaddleResult {
   return {
     available: false,
@@ -246,6 +319,16 @@ function postprocessPaddleResult(result: PaddleResult): PaddleResult {
     tokens,
     confidence: tokens.length > 0 ? confidenceFromFrames(frames, result.confidence) : 0
   };
+}
+
+function mergePaddleResults(base: PaddleResult, layout: PaddleResult): PaddleResult {
+  return postprocessPaddleResult({
+    ...base,
+    provider: `${base.provider}+${layout.provider}`,
+    tokens: uniqueStrings([...base.tokens, ...layout.tokens]),
+    confidence: Math.max(base.confidence, layout.confidence),
+    frames: [...base.frames, ...layout.frames]
+  });
 }
 
 function confidenceFromFrames(frames: OcrFrameResult[], fallback: number) {
@@ -353,6 +436,14 @@ function positiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.floor(parsed);
+}
+
+function isPaddleOcrVlEnabled() {
+  return ["1", "true", "yes", "on"].includes((process.env.PADDLEOCR_VL_ENABLED || "").trim().toLowerCase());
+}
+
+function isPaddleOcrVlRequired() {
+  return ["1", "true", "yes", "on"].includes((process.env.PADDLEOCR_VL_REQUIRED || "").trim().toLowerCase());
 }
 
 function normalizeOcrFrames(value: unknown, mediaRoot: string, sampleIntervalSeconds = 10): OcrFrameResult[] {

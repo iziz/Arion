@@ -105,6 +105,22 @@ async def paddleocr(request: Request) -> JSONResponse:
     return await run_script_response(request, args, body)
 
 
+@app.post("/v1/paddleocr-vl")
+async def paddleocr_vl(request: Request) -> JSONResponse:
+    body = await request.json()
+    args = [
+        "paddleocr_vl_extract.py",
+        require_string(body, "framesDir"),
+        "--lang",
+        str(body.get("language") or os.environ.get("PADDLEOCR_LANG") or "en"),
+        "--model",
+        str(body.get("model") or os.environ.get("PADDLEOCR_VL_MODEL") or "PaddleOCR-VL-0.9B"),
+        "--max-frames",
+        str(body.get("maxFrames") or os.environ.get("PADDLEOCR_VL_MAX_FRAMES") or 24),
+    ]
+    return await run_script_response(request, args, body)
+
+
 @app.post("/v1/embed-text")
 async def embed_text(request: Request) -> JSONResponse:
     body = await request.json()
@@ -112,10 +128,12 @@ async def embed_text(request: Request) -> JSONResponse:
     if kind not in {"query", "passage"}:
         raise HTTPException(status_code=400, detail="kind must be query or passage")
     model_name = str(body.get("model") or os.environ.get("EMBEDDING_MODEL") or "intfloat/multilingual-e5-base")
+    query_prefix = str(body.get("queryPrefix") if body.get("queryPrefix") is not None else os.environ.get("EMBEDDING_QUERY_PREFIX", "query: "))
+    passage_prefix = str(body.get("passagePrefix") if body.get("passagePrefix") is not None else os.environ.get("EMBEDDING_PASSAGE_PREFIX", "passage: "))
     texts = body.get("texts") or []
     if not isinstance(texts, list):
         raise HTTPException(status_code=400, detail="texts must be a list")
-    return await run_cached_response(request, lambda: embed_text_cached(model_name, kind, texts))
+    return await run_cached_response(request, lambda: embed_text_cached(model_name, kind, texts, query_prefix, passage_prefix))
 
 
 @app.post("/v1/embed-visual")
@@ -270,10 +288,10 @@ async def run_cached_response(request: Request, task: Callable[[], Any]) -> JSON
     )
 
 
-async def embed_text_cached(model_name: str, kind: str, texts: list[Any]) -> dict[str, Any]:
+async def embed_text_cached(model_name: str, kind: str, texts: list[Any], query_prefix: str, passage_prefix: str) -> dict[str, Any]:
     try:
         model, lock = await get_text_embedding_model(model_name)
-        return await asyncio.to_thread(encode_text_embeddings, model, lock, model_name, kind, texts)
+        return await asyncio.to_thread(encode_text_embeddings, model, lock, model_name, kind, texts, query_prefix, passage_prefix)
     except Exception as error:
         return {
             "available": False,
@@ -305,8 +323,16 @@ def load_text_embedding_model(model_name: str) -> Any:
         return SentenceTransformer(model_name)
 
 
-def encode_text_embeddings(model: Any, lock: threading.RLock, model_name: str, kind: str, texts: list[Any]) -> dict[str, Any]:
-    prefix = "query: " if kind == "query" else "passage: "
+def encode_text_embeddings(
+    model: Any,
+    lock: threading.RLock,
+    model_name: str,
+    kind: str,
+    texts: list[Any],
+    query_prefix: str,
+    passage_prefix: str,
+) -> dict[str, Any]:
+    prefix = query_prefix if kind == "query" else passage_prefix
     prepared = [prefix + str(text).replace("\n", " ").strip() for text in texts]
     with sync_lock(lock):
         embeddings = model.encode(prepared, normalize_embeddings=True, show_progress_bar=False)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen2.5-VL worker for sports video segment structuring."""
+"""Qwen VL worker for sports video segment structuring and query planning."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ REQUESTED_BACKEND = os.environ.get("QWEN_VLM_BACKEND", "auto").strip().lower()
 DEFAULT_BACKEND = "mlx" if platform.system() == "Darwin" and find_spec("mlx_vlm") else "transformers"
 BACKEND = DEFAULT_BACKEND if REQUESTED_BACKEND in ("", "auto") else REQUESTED_BACKEND
 DEFAULT_MODEL = os.environ.get("QWEN_VLM_MODEL", DEFAULT_MLX_MODEL if BACKEND == "mlx" else DEFAULT_TRANSFORMERS_MODEL)
+REQUESTED_MODEL_FAMILY = os.environ.get("QWEN_VLM_FAMILY", "auto").strip().lower()
 DEFAULT_DEVICE_MAP = "mps" if platform.system() == "Darwin" else "auto"
 DEVICE_MAP = os.environ.get("QWEN_VLM_DEVICE_MAP", DEFAULT_DEVICE_MAP)
 TORCH_DTYPE = os.environ.get("QWEN_VLM_TORCH_DTYPE", "float32" if DEVICE_MAP == "cpu" else "auto")
@@ -30,6 +31,20 @@ MAX_NEW_TOKENS = int(os.environ.get("QWEN_VLM_MAX_NEW_TOKENS", "384"))
 QUERY_PLAN_MAX_NEW_TOKENS = int(os.environ.get("QWEN_VLM_QUERY_MAX_NEW_TOKENS", "768"))
 MODEL_LOAD_LOCK = threading.Lock()
 MODEL_GENERATION_LOCK = threading.Lock()
+
+
+def _infer_model_family(model_name: str) -> str:
+    normalized = model_name.lower()
+    if "qwen3" in normalized:
+        return "qwen3-vl"
+    return "qwen2.5-vl"
+
+
+MODEL_FAMILY = REQUESTED_MODEL_FAMILY if REQUESTED_MODEL_FAMILY not in ("", "auto") else _infer_model_family(DEFAULT_MODEL)
+
+
+def _provider_name() -> str:
+    return f"{MODEL_FAMILY}:{BACKEND}"
 
 
 class StructureRequest(BaseModel):
@@ -68,7 +83,8 @@ def health() -> dict[str, Any]:
     backend_error = _backend_error()
     return {
         "ok": backend_error is None,
-        "backend": f"qwen2.5-vl:{BACKEND}",
+        "backend": _provider_name(),
+        "family": MODEL_FAMILY,
         "model": DEFAULT_MODEL,
         "loaded": _model_loaded(),
         "error": backend_error,
@@ -127,6 +143,8 @@ def _load_model_once():
 
 
 def _backend_error() -> str | None:
+    if MODEL_FAMILY not in ("qwen2.5-vl", "qwen3-vl"):
+        return f"Unsupported QWEN_VLM_FAMILY: {MODEL_FAMILY}"
     if BACKEND == "mlx" and not find_spec("mlx_vlm"):
         return "QWEN_VLM_BACKEND=mlx requires mlx-vlm in this Python environment."
     if BACKEND == "transformers" and not find_spec("transformers"):
@@ -138,13 +156,14 @@ def _backend_error() -> str | None:
 
 def _load_transformers_model_once():
     import torch
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    from transformers import AutoProcessor
 
+    model_class = _transformers_model_class()
     dtype = _torch_dtype(torch)
     if DEVICE_MAP == "mps":
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(DEFAULT_MODEL, torch_dtype=dtype).to("mps")
+        model = model_class.from_pretrained(DEFAULT_MODEL, torch_dtype=dtype).to("mps")
     else:
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model = model_class.from_pretrained(
             DEFAULT_MODEL,
             torch_dtype=dtype,
             device_map=DEVICE_MAP,
@@ -152,6 +171,18 @@ def _load_transformers_model_once():
     processor = AutoProcessor.from_pretrained(DEFAULT_MODEL)
     globals()["_cached_model"] = model
     return model, processor
+
+
+def _transformers_model_class():
+    if MODEL_FAMILY == "qwen3-vl":
+        try:
+            from transformers import Qwen3VLForConditionalGeneration
+        except ImportError as error:
+            raise RuntimeError("Qwen3-VL requires a transformers release with Qwen3VLForConditionalGeneration.") from error
+        return Qwen3VLForConditionalGeneration
+    from transformers import Qwen2_5_VLForConditionalGeneration
+
+    return Qwen2_5_VLForConditionalGeneration
 
 
 def _load_mlx_model_once():
@@ -207,6 +238,8 @@ def _generate_text_with_transformers(messages: list[dict[str, Any]], max_tokens:
         return_tensors="pt",
     )
     inputs = inputs.to(model.device)
+    if hasattr(inputs, "pop"):
+        inputs.pop("token_type_ids", None)
     generated_ids = model.generate(**inputs, max_new_tokens=max_tokens)
     generated_ids_trimmed = [
         output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
@@ -456,7 +489,7 @@ def _normalize_video_response(parsed: dict[str, Any], raw: str) -> dict[str, Any
     description = str(parsed.get("description") or "").strip()
     caption = str(parsed.get("caption") or "").strip() or description or scene_type
     return {
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "caption": caption,
         "description": description,
@@ -473,7 +506,7 @@ def _normalize_video_response(parsed: dict[str, Any], raw: str) -> dict[str, Any
 
 def _normalize_query_plan_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
     return {
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "route": _optional_text(parsed.get("route")),
         "responseMode": _optional_text(parsed.get("responseMode")),
@@ -579,7 +612,7 @@ def _normalize_response(parsed: dict[str, Any], raw: str) -> dict[str, Any]:
         labels = [key for key, value in labels.items() if value]
     return {
         "domain": "sports.football",
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "caption": str(parsed.get("caption") or "").strip(),
         "eventType": str(parsed.get("eventType") or "scene").strip(),
@@ -609,7 +642,7 @@ def _normalize_american_football_response(parsed: dict[str, Any], raw: str) -> d
     decision = american.get("decision") if isinstance(american.get("decision"), dict) else {}
     return {
         "domain": "sports.american_football",
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "caption": str(parsed.get("caption") or "").strip(),
         "eventType": str(parsed.get("eventType") or "scene").strip(),
@@ -690,7 +723,7 @@ def _confidence(value: Any) -> float:
 
 def _empty_response(reason: str, raw: str = "") -> dict[str, Any]:
     return {
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "caption": "",
         "eventType": "scene",
@@ -712,7 +745,7 @@ def _empty_response(reason: str, raw: str = "") -> dict[str, Any]:
 
 def _empty_video_response(reason: str, raw: str = "") -> dict[str, Any]:
     return {
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "caption": "",
         "description": "",
@@ -729,7 +762,7 @@ def _empty_video_response(reason: str, raw: str = "") -> dict[str, Any]:
 
 def _empty_query_plan_response(reason: str, raw: str = "") -> dict[str, Any]:
     return {
-        "provider": f"qwen2.5-vl:{BACKEND}",
+        "provider": _provider_name(),
         "model": DEFAULT_MODEL,
         "error": reason,
         "rawResponse": raw[:2000] if raw else "",

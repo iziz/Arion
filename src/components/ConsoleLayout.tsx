@@ -422,8 +422,8 @@ function buildAssetTechStackTags(
     },
     {
       category: "VLM model",
-      label: videoVlm?.model ?? capabilities?.runtimeTopology?.vlm?.model ?? "qwen2.5-vl-local-worker",
-      tooltip: `Qwen2.5-VL worker for segment captions, structured visual-language analysis, query planning, and related knowledge refinement. Policy ${capabilityModeText(policy, "videoVlmAnalysis")}, service ${vlmConfigured ? "enabled" : "not configured"}, availability ${availabilityText(modelFlags.qwenVlm)}.`,
+      label: videoVlm?.model ?? capabilities?.runtimeTopology?.vlm?.model ?? "qwen-vl-local-worker",
+      tooltip: `Qwen VL worker for segment captions, structured visual-language analysis, query planning, and related knowledge refinement. Policy ${capabilityModeText(policy, "videoVlmAnalysis")}, service ${vlmConfigured ? "enabled" : "not configured"}, availability ${availabilityText(modelFlags.qwenVlm)}.`,
       kind: "model",
       disabled: policy?.videoVlmAnalysis === "disabled" || vlmConfigured === false
     },

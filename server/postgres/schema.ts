@@ -12,6 +12,8 @@ import {
 import { seedDefaults } from "./defaults";
 import { getExpectedEmbeddingDimensions, getExpectedVisualEmbeddingDimensions } from "./vectorUtils";
 
+export const minimumPgvectorVersion = process.env.POSTGRES_MIN_PGVECTOR_VERSION || "0.8.2";
+
 export async function ensurePostgresStore() {
   if (!isPostgresEnabled()) {
     throw new Error("DATABASE_URL is required. Runtime persistence requires PostgreSQL.");
@@ -31,6 +33,7 @@ export async function ensurePostgresStore() {
     const requirement = isPgvectorRequired() ? "POSTGRES_REQUIRE_PGVECTOR is enabled" : "pgvector is required";
     throw new Error(`${requirement}, but the pgvector extension is not available.`);
   }
+  await ensurePgvectorVersion(db);
 
   await db.query(`
     create table if not exists app_indexes (
@@ -185,6 +188,7 @@ export async function ensurePostgresStore() {
     create index if not exists app_tracking_records_segment_id_idx on app_tracking_records(segment_id);
     create index if not exists app_tracking_records_track_id_idx on app_tracking_records(track_id);
   `);
+  await ensureLexicalVectorIndexes(db);
 
   if (vectorExtensionAvailable) {
     const dimension = getExpectedEmbeddingDimensions();
@@ -224,6 +228,7 @@ export async function ensurePostgresStore() {
   await recordMigration("006_ask_operations", "Configure persistent ask operation state");
   await recordMigration("007_operational_indexes", "Configure operational indexes for worker and polling queries");
   await recordMigration("008_queue_outbox", "Configure transactional queue outbox for Redis dispatch");
+  await recordMigration("009_vector_hybrid_search", "Configure pgvector minimum version and lexical vector-search indexes");
   setPostgresInitialized(true);
   return true;
 }
@@ -253,9 +258,62 @@ async function recordMigration(version: string, description: string) {
 }
 
 async function createVectorIndex(db: Pool, indexName: string, tableName: string) {
-  await db.query(`create index if not exists ${indexName} on ${tableName} using hnsw (embedding vector_cosine_ops)`).catch((error) => {
+  await db.query(`create index if not exists ${indexName} on ${tableName} using hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`).catch((error) => {
     const message = error instanceof Error ? error.message : `Failed to create ${indexName}`;
     logJson("warn", "postgres.pgvector.index_unavailable", message, { indexName, tableName });
     if (isPgvectorRequired()) throw error;
   });
+}
+
+async function ensurePgvectorVersion(db: Pool) {
+  const result = await db.query("select extversion from pg_extension where extname = 'vector'");
+  const version = result.rows[0]?.extversion as string | undefined;
+  if (!version) return;
+  if (compareVersion(version, minimumPgvectorVersion) >= 0) return;
+  throw new Error(`pgvector ${version} is installed, but Arion requires pgvector ${minimumPgvectorVersion} or newer for the configured vector search profile.`);
+}
+
+async function ensureLexicalVectorIndexes(db: Pool) {
+  await db.query(`
+    alter table app_vectors
+      add column if not exists search_tsv tsvector generated always as (
+        to_tsvector('simple', coalesce(text, '') || ' ' || array_to_string(tags, ' '))
+      ) stored;
+    create index if not exists app_vectors_search_tsv_idx on app_vectors using gin(search_tsv);
+    alter table app_knowledge_vectors
+      add column if not exists search_tsv tsvector generated always as (
+        to_tsvector(
+          'simple',
+          coalesce(entity_name, '') || ' ' ||
+          coalesce(competition, '') || ' ' ||
+          coalesce(season, '') || ' ' ||
+          coalesce(team, '') || ' ' ||
+          coalesce(text, '') || ' ' ||
+          coalesce(source_text, '')
+        )
+      ) stored;
+    create index if not exists app_knowledge_vectors_search_tsv_idx on app_knowledge_vectors using gin(search_tsv);
+  `);
+}
+
+export function isPgvectorVersionSupported(version: string | null | undefined) {
+  return Boolean(version && compareVersion(version, minimumPgvectorVersion) >= 0);
+}
+
+function compareVersion(left: string, right: string) {
+  const a = versionParts(left);
+  const b = versionParts(right);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function versionParts(value: string) {
+  return value
+    .split(/[.-]/)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
 }

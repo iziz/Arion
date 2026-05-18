@@ -53,7 +53,7 @@ const deleteOrphanMedia = args.has("--delete-orphan-media");
 const copyAppData = args.has("--copy-app-data");
 const archiveLegacyStores = args.has("--archive-legacy-stores");
 const dockerAppDataVolume = process.env.DOCKER_APP_DATA_VOLUME || "arion_app-data";
-const dockerCopyImage = process.env.DOCKER_COPY_IMAGE || "redis:7.4-alpine";
+const dockerCopyImage = process.env.DOCKER_COPY_IMAGE || "redis:8-alpine";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is required. Run with ARION_DOCKER_INFRA=true or set DATABASE_URL explicitly.");

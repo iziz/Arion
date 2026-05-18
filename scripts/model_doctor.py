@@ -40,6 +40,15 @@ def has_json(directory):
         return False
 
 
+def paddleocr_vl_available():
+    try:
+        import paddleocr
+
+        return hasattr(paddleocr, "PaddleOCRVL")
+    except Exception:
+        return False
+
+
 whisper_cpp_bin = executable(os.environ.get("WHISPER_CPP_BIN")) or default_whisper_cpp_bin()
 whisper_cpp_model = os.environ.get("WHISPER_CPP_MODEL")
 american_football_spots_dir = (
@@ -62,6 +71,7 @@ result = {
     "pyannote_audio": present("pyannote.audio"),
     "torchaudio": present("torchaudio"),
     "paddleocr": present("paddleocr"),
+    "paddleocr_vl": paddleocr_vl_available(),
     "paddle": present("paddle"),
     "scenedetect": present("scenedetect"),
     "ultralytics": present("ultralytics"),

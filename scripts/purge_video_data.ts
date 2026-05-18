@@ -8,7 +8,7 @@ import { getPool } from "../server/postgres/connection";
 
 const dataDir = path.resolve(".data");
 const dockerAppDataVolume = process.env.DOCKER_APP_DATA_VOLUME || "arion_app-data";
-const dockerCopyImage = process.env.DOCKER_COPY_IMAGE || "redis:7.4-alpine";
+const dockerCopyImage = process.env.DOCKER_COPY_IMAGE || "redis:8-alpine";
 
 await ensurePostgresStore();
 

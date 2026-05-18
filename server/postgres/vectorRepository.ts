@@ -6,6 +6,7 @@ import { ensurePostgresStore } from "./schema";
 import {
   isPgVectorCompatible,
   isVisualPgVectorCompatible,
+  type VectorRow,
   vectorLiteral,
   vectorRecordText,
   vectorRowToResult,
@@ -90,12 +91,22 @@ export async function rebuildVisualVectorStore(records: VisualVectorRecord[]) {
   }
 }
 
-export async function searchVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
+export async function searchVectors(indexId: string | undefined, queryVector: number[], limit = 25, queryText = "") {
   await ensurePostgresStore();
   if (!isPgVectorCompatible(queryVector)) {
     throw new Error(`Query embedding is incompatible with configured pgvector dimensions: ${queryVector.length}.`);
   }
-  const pgvectorRows = await getPool().query(
+  const boundedLimit = positiveLimit(limit);
+  const lexicalQuery = prepareLexicalQuery(queryText);
+  const candidateLimit = lexicalQuery ? Math.max(boundedLimit * 6, 80) : boundedLimit;
+  const pgvectorRows = await searchVectorRows(indexId, queryVector, candidateLimit);
+  if (!lexicalQuery) return pgvectorRows.map(vectorRowToResult).slice(0, boundedLimit);
+  const lexicalRows = await searchLexicalVectorRows(indexId, lexicalQuery, candidateLimit);
+  return mergeHybridVectorHits(pgvectorRows, lexicalRows, boundedLimit);
+}
+
+async function searchVectorRows(indexId: string | undefined, queryVector: number[], limit: number) {
+  const result = await getPool().query<VectorRow>(
     `select *, 1 - (embedding <=> $1::vector) as score
      from app_vectors
      where embedding is not null
@@ -104,7 +115,67 @@ export async function searchVectors(indexId: string | undefined, queryVector: nu
      limit $3`,
     [vectorLiteral(queryVector), indexId ?? null, limit]
   );
-  return pgvectorRows.rows.map(vectorRowToResult);
+  return result.rows;
+}
+
+async function searchLexicalVectorRows(indexId: string | undefined, queryText: string, limit: number) {
+  const result = await getPool().query<VectorRow>(
+    `select *, ts_rank_cd(search_tsv, websearch_to_tsquery('simple', $1)) as lexical_score
+     from app_vectors
+     where embedding is not null
+       and ($2::text is null or index_id = $2)
+       and search_tsv @@ websearch_to_tsquery('simple', $1)
+     order by lexical_score desc
+     limit $3`,
+    [queryText, indexId ?? null, limit]
+  );
+  return result.rows;
+}
+
+function mergeHybridVectorHits(vectorRows: VectorRow[], lexicalRows: VectorRow[], limit: number) {
+  const byId = new Map<string, {
+    hit: ReturnType<typeof vectorRowToResult>;
+    vectorRank: number | null;
+    lexicalRank: number | null;
+    lexicalScore: number;
+  }>();
+
+  vectorRows.forEach((row, index) => {
+    const hit = vectorRowToResult(row);
+    byId.set(hit.id, {
+      hit,
+      vectorRank: index + 1,
+      lexicalRank: null,
+      lexicalScore: 0
+    });
+  });
+  lexicalRows.forEach((row, index) => {
+    const hit = byId.get(row.id)?.hit ?? vectorRowToResult({ ...row, score: 0 });
+    const entry = byId.get(row.id) ?? {
+      hit,
+      vectorRank: null,
+      lexicalRank: null,
+      lexicalScore: 0
+    };
+    entry.lexicalRank = index + 1;
+    entry.lexicalScore = Math.max(entry.lexicalScore, Number(row.lexical_score ?? 0));
+    byId.set(row.id, entry);
+  });
+
+  return Array.from(byId.values())
+    .map(({ hit, vectorRank, lexicalRank, lexicalScore }) => {
+      const vectorScore = Number(hit.score ?? 0);
+      const lexicalBoost = Math.min(1, Math.max(0, lexicalScore));
+      const reciprocalRank =
+        (vectorRank ? 1 / (60 + vectorRank) : 0) +
+        (lexicalRank ? 1 / (60 + lexicalRank) : 0);
+      return {
+        ...hit,
+        score: Number((vectorScore * 0.86 + lexicalBoost * 0.14 + reciprocalRank).toFixed(6))
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 export async function searchVisualVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
@@ -201,4 +272,15 @@ async function insertVisualVector(client: PoolClient, record: VisualVectorRecord
       vectorLiteral(record.vector)
     ]
   );
+}
+
+function positiveLimit(value: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return 25;
+  return Math.min(200, Math.floor(parsed));
+}
+
+function prepareLexicalQuery(value: string) {
+  const text = value.replace(/\s+/g, " ").trim().slice(0, 400);
+  return /[A-Za-z0-9가-힣\u3040-\u30ff\u3400-\u9fff]/.test(text) ? text : "";
 }

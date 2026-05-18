@@ -6,7 +6,7 @@ import { searchKnowledgeVectors } from "../../localKnowledgeVectorStore";
 import { embedVisualQuery } from "../../localVisualEmbeddingRuntime";
 import { searchVectors } from "../../localVectorStore";
 import { searchVisualVectors } from "../../localVisualVectorStore";
-import { traceAsync } from "../../observability";
+import { genAiAttributes, traceAsync } from "../../observability";
 import { resolveQueryRetrievalPlan } from "../../queryRetrievalPlan";
 import { knowledgeVectorHitToEvidence } from "../../knowledge/documents";
 import type { AssetRecord, DomainQueryPlan, IndexRecord, KnowledgeEvidence, KnowledgeSourceId, SearchResult, TimelineSegment } from "../../../shared/types";
@@ -114,11 +114,21 @@ export async function executeSearchPipeline({
     owner: "retrieval",
     input: expandedQuery
   }, async () => {
-    const queryVector = await traceAsync("search.embed_text_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedQueryText(expandedQuery), "search.embed_text_query");
+    const queryVector = await traceAsync(
+      "search.embed_text_query",
+      genAiAttributes("sentence-transformers", "embed_text_query", null, { indexId: options.indexId ?? domainGroup ?? "all" }),
+      () => embedQueryText(expandedQuery),
+      "search.embed_text_query"
+    );
     let visualQueryVector: number[] = [];
     let visualOutput = "visual=unavailable";
     try {
-      visualQueryVector = await traceAsync("search.embed_visual_query", { indexId: options.indexId ?? domainGroup ?? "all" }, () => embedVisualQuery(expandedVisualQuery), "search.embed_visual_query");
+      visualQueryVector = await traceAsync(
+        "search.embed_visual_query",
+        genAiAttributes("open_clip", "embed_visual_query", null, { indexId: options.indexId ?? domainGroup ?? "all" }),
+        () => embedVisualQuery(expandedVisualQuery),
+        "search.embed_visual_query"
+      );
       visualOutput = `visual=${visualQueryVector.length} dims`;
     } catch (error) {
       visualOutput = `visual=unavailable (${error instanceof Error ? error.message : "visual embedding failed"})`;
@@ -136,7 +146,12 @@ export async function executeSearchPipeline({
     input: `index=${options.indexId ?? domainGroup ?? "all"} · limit=${limit ?? 25}`
   }, async () => {
     const [vectorHits, visualHits] = await Promise.all([
-      traceAsync("search.vector_text", { indexId: options.indexId ?? "all" }, () => searchVectors(options.indexId, vectors.queryVector, Number(limit ?? 25)), "search.vector_text"),
+      traceAsync(
+        "search.vector_text",
+        { indexId: options.indexId ?? "all", searchMode: "hybrid" },
+        () => searchVectors(options.indexId, vectors.queryVector, Number(limit ?? 25), expandedQuery),
+        "search.vector_text"
+      ),
       vectors.visualQueryVector.length
         ? traceAsync(
             "search.vector_visual",

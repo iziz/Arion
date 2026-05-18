@@ -9,6 +9,8 @@ def main():
     parser = argparse.ArgumentParser(description="Embed text with a local sentence-transformers model.")
     parser.add_argument("--model", default="intfloat/multilingual-e5-base")
     parser.add_argument("--kind", choices=["query", "passage"], default="passage")
+    parser.add_argument("--query-prefix", default="query: ")
+    parser.add_argument("--passage-prefix", default="passage: ")
     args = parser.parse_args()
 
     try:
@@ -19,7 +21,7 @@ def main():
         if not isinstance(texts, list):
             raise ValueError("texts must be a list")
 
-        prefix = "query: " if args.kind == "query" else "passage: "
+        prefix = args.query_prefix if args.kind == "query" else args.passage_prefix
         prepared = [prefix + str(text).replace("\n", " ").strip() for text in texts]
         with contextlib.redirect_stdout(sys.stderr):
             model = SentenceTransformer(args.model)

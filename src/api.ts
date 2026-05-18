@@ -83,9 +83,9 @@ export type ModelCapabilitiesSnapshot = {
   configuredModels?: {
     asr?: { provider: string; model: string; backend: string; language: string };
     diarization?: { provider: string; model: string; language: string; tokenConfigured: boolean };
-    ocr?: { provider: string; language: string; workers: number };
-    textEmbedding?: { provider: string; model: string; dimensions: number };
-    visualEmbedding?: { provider: string; model: string; dimensions: number };
+    ocr?: { provider: string; language: string; workers: number; layoutBackend?: string; layoutModel?: string };
+    textEmbedding?: { provider: string; profile?: string; model: string; dimensions: number };
+    visualEmbedding?: { provider: string; profile?: string; model: string; dimensions: number };
     visionDetector?: { provider: string; backend: string; model: string; fallbackModel: string | null; confidence: string };
     visionTracker?: { provider: string; tracker: string; confidence: string; vidStride: string };
     videoVlm?: { provider: string; model: string; enabled: boolean };

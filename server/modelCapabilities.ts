@@ -1,8 +1,8 @@
 import path from "node:path";
 import type { CapabilityMode, CapabilityPolicy, IndexRecord } from "../shared/types";
 import { defaultCapabilityPolicy, normalizeCapabilityPolicy } from "./domainConfig";
-import { getEmbeddingModelName, getExpectedEmbeddingDimensions } from "./localEmbeddingRuntime";
-import { getExpectedVisualEmbeddingDimensions, getVisualEmbeddingModelName } from "./localVisualEmbeddingRuntime";
+import { getEmbeddingModelName, getEmbeddingProfileName, getExpectedEmbeddingDimensions } from "./localEmbeddingRuntime";
+import { getExpectedVisualEmbeddingDimensions, getVisualEmbeddingModelName, getVisualEmbeddingProfileName } from "./localVisualEmbeddingRuntime";
 import { parsePythonJson, runPythonScriptOnExit } from "./modelRuntime/pythonProcess";
 import { callPythonRuntimeService, getPythonRuntimeTopology, isPythonRuntimeServiceMode } from "./modelRuntime/pythonRuntimeService";
 import { getVlmWorkerTopology } from "./vlmWorkerClient";
@@ -97,15 +97,19 @@ export async function getRuntimeCapabilities() {
       ocr: {
         provider: "PaddleOCR",
         language: process.env.PADDLEOCR_LANG || "auto",
-        workers: parsePositiveInteger(process.env.PADDLEOCR_WORKERS, 2)
+        workers: parsePositiveInteger(process.env.PADDLEOCR_WORKERS, 2),
+        layoutBackend: isTruthy(process.env.PADDLEOCR_VL_ENABLED) ? "PaddleOCR-VL" : "disabled",
+        layoutModel: process.env.PADDLEOCR_VL_MODEL || "PaddleOCR-VL-0.9B"
       },
       textEmbedding: {
         provider: "SentenceTransformers",
+        profile: getEmbeddingProfileName(),
         model: getEmbeddingModelName(),
         dimensions: getExpectedEmbeddingDimensions()
       },
       visualEmbedding: {
         provider: "OpenCLIP",
+        profile: getVisualEmbeddingProfileName(),
         model: getVisualEmbeddingModelName(),
         dimensions: getExpectedVisualEmbeddingDimensions()
       },
@@ -141,7 +145,7 @@ export async function getRuntimeCapabilities() {
         }
       },
       videoVlm: {
-        provider: "Qwen2.5-VL worker",
+        provider: "Qwen VL worker",
         model: vlmTopology.model,
         enabled: vlmTopology.enabled
       },
@@ -156,6 +160,7 @@ export async function getRuntimeCapabilities() {
           whisper: Boolean(raw.whisper || raw.faster_whisper || whisperCppReady),
           whisperx: Boolean(raw.whisperx && raw.whisperx_diarize && raw.pyannote_audio),
           paddleocr: Boolean(raw.paddleocr && raw.paddle),
+          paddleocrVl: Boolean(raw.paddleocr_vl),
           scenedetect: Boolean(raw.scenedetect),
           ultralytics: Boolean(raw.ultralytics),
           rfdetr: Boolean(raw.rfdetr),
@@ -173,4 +178,8 @@ export async function getRuntimeCapabilities() {
 function parsePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function isTruthy(value: string | undefined) {
+  return ["1", "true", "yes", "on"].includes((value || "").trim().toLowerCase());
 }

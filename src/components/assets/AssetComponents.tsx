@@ -268,7 +268,7 @@ function buildAssetGroupMetaChips(
     {
       label: "VLM refinement",
       value: vlmSummary,
-      tooltip: `Related knowledge VLM refinement uses ${vlm?.model ?? modelCapabilities?.runtimeTopology?.vlm?.model ?? "qwen2.5-vl-local-worker"} when enabled. Policy ${policy?.domainVlmRefinement ?? "optional"}, service ${vlmConfigured ? "enabled" : "not configured"}, indexed assets ${indexedCount}/${assets.length}.`,
+      tooltip: `Related knowledge VLM refinement uses ${vlm?.model ?? modelCapabilities?.runtimeTopology?.vlm?.model ?? "qwen-vl-local-worker"} when enabled. Policy ${policy?.domainVlmRefinement ?? "optional"}, service ${vlmConfigured ? "enabled" : "not configured"}, indexed assets ${indexedCount}/${assets.length}.`,
       kind: "model",
       disabled: policy?.domainVlmRefinement === "disabled" || vlmConfigured === false
     }

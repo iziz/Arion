@@ -100,7 +100,7 @@ export function isVlmWorkerEnabled() {
 }
 
 export function getVlmWorkerModelName() {
-  return process.env.VLM_WORKER_MODEL?.trim() || "qwen2.5-vl-local-worker";
+  return process.env.VLM_WORKER_MODEL?.trim() || "qwen-vl-local-worker";
 }
 
 export function getVlmWorkerTopology() {
@@ -507,7 +507,7 @@ function markVideoVlmEvidence(
 ): TimelineSegment {
   if (!segment.sceneData) return segment;
   const evidence: VideoVlmEvidence = {
-    provider: response?.provider ?? "qwen2.5-vl",
+    provider: response?.provider ?? "qwen-vl",
     model: response?.model ?? modelName,
     status,
     attemptedAt: new Date().toISOString(),

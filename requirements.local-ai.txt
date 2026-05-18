@@ -16,7 +16,7 @@ sentence-transformers
 open_clip_torch
 torchvision
 torch
-transformers>=4.50.0
+transformers>=4.57.0
 accelerate
 qwen-vl-utils
 mlx-vlm; platform_system == "Darwin" and platform_machine == "arm64"

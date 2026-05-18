@@ -7,8 +7,9 @@ import { callPythonRuntimeService, isPythonRuntimeServiceMode } from "./modelRun
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const visualScript = path.resolve("scripts", "embed_visual.py");
-const visualModel = process.env.VISUAL_EMBEDDING_MODEL || "ViT-L-14";
-const visualPretrained = process.env.VISUAL_EMBEDDING_PRETRAINED || "datacomp_xl_s13b_b90k";
+const visualProfile = normalizeVisualEmbeddingProfile(process.env.VISUAL_EMBEDDING_PROFILE);
+const visualModel = process.env.VISUAL_EMBEDDING_MODEL || defaultVisualModel(visualProfile);
+const visualPretrained = process.env.VISUAL_EMBEDDING_PRETRAINED || defaultVisualPretrained(visualProfile);
 const cache = new Map<string, number[]>();
 
 export type VisualVectorRecord = {
@@ -39,6 +40,10 @@ type VisualResult = {
 
 export function getVisualEmbeddingModelName() {
   return `${visualModel}/${visualPretrained}`;
+}
+
+export function getVisualEmbeddingProfileName() {
+  return visualProfile;
 }
 
 export function getExpectedVisualEmbeddingDimensions() {
@@ -164,5 +169,18 @@ function normalizeVector(vector: number[], mode: VisualMode) {
 }
 
 function cacheKey(item: string, mode: VisualMode) {
-  return createHash("sha256").update(`${visualModel}:${visualPretrained}:${mode}:${item}`).digest("hex");
+  return createHash("sha256").update(`${visualProfile}:${visualModel}:${visualPretrained}:${mode}:${item}`).digest("hex");
+}
+
+function normalizeVisualEmbeddingProfile(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "open_clip" || normalized === "custom" ? normalized : "open_clip";
+}
+
+function defaultVisualModel(_profile: string) {
+  return "ViT-L-14";
+}
+
+function defaultVisualPretrained(_profile: string) {
+  return "datacomp_xl_s13b_b90k";
 }

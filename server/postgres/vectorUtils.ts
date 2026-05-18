@@ -15,6 +15,7 @@ export type VectorRow = {
   text: string;
   embedding_json: number[];
   score?: number;
+  lexical_score?: number;
 };
 
 export type VisualVectorRow = {
@@ -94,7 +95,7 @@ export function isVisualPgVectorCompatible(vector: number[]) {
 }
 
 export function getExpectedEmbeddingDimensions() {
-  return parsePositiveInteger(process.env.EMBEDDING_DIMENSIONS, 768);
+  return parsePositiveInteger(process.env.EMBEDDING_DIMENSIONS, defaultTextEmbeddingDimensions());
 }
 
 export function getExpectedVisualEmbeddingDimensions() {
@@ -112,4 +113,11 @@ export function cosineSimilarity(a: number[], b: number[]) {
 function parsePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function defaultTextEmbeddingDimensions() {
+  const profile = process.env.EMBEDDING_PROFILE?.trim().toLowerCase();
+  const model = process.env.EMBEDDING_MODEL?.trim().toLowerCase() ?? "";
+  if (profile === "bge-m3" || model.includes("bge-m3")) return 1024;
+  return 768;
 }

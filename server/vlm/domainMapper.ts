@@ -119,7 +119,7 @@ function buildVlmQuality(
   modelName: string
 ): DomainVlmQuality {
   return {
-    provider: response?.provider ?? "qwen2.5-vl",
+    provider: response?.provider ?? "qwen-vl",
     model: response?.model ?? modelName,
     status,
     attemptedAt: new Date().toISOString(),

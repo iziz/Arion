@@ -55,6 +55,8 @@
     "models:runtime:ai": "./.venv-ai/bin/python scripts/arion_model_runtime_service.py",
     "models:vlm": "python3 scripts/qwen_vlm_worker.py",
     "models:vlm:ai": "./.venv-ai/bin/python scripts/qwen_vlm_worker.py",
+    "eval:vlm": "python3 scripts/eval_vlm_worker.py",
+    "benchmark:detectors": "python3 scripts/benchmark_detectors.py",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node dist-server/index.js"
   },

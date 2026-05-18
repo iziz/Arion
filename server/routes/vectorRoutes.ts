@@ -10,8 +10,9 @@ import { rebuildVectorStores } from "../services/vectorMaintenance";
 export function registerVectorRoutes(app: Express) {
   app.get("/api/vector-search", async (req, res) => {
     const query = String(req.query.q ?? "");
-    const queryVector = await traceAsync("search.embed_text_query", {}, () => embedQueryText(expandDomainQuery(query).expandedText), "search.embed_text_query");
-    res.json(await searchVectors(req.query.indexId ? String(req.query.indexId) : undefined, queryVector, Number(req.query.limit ?? 25)));
+    const expandedQuery = expandDomainQuery(query).expandedText;
+    const queryVector = await traceAsync("search.embed_text_query", {}, () => embedQueryText(expandedQuery), "search.embed_text_query");
+    res.json(await searchVectors(req.query.indexId ? String(req.query.indexId) : undefined, queryVector, Number(req.query.limit ?? 25), expandedQuery));
   });
 
   app.get("/api/visual-search", async (req, res) => {

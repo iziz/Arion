@@ -139,6 +139,8 @@ async function callPythonRuntimeServiceOnce<T>(
       kind,
       endpoint,
       serviceUrl: getPythonRuntimeServiceUrl(kind),
+      model: typeof payload.model === "string" ? payload.model : null,
+      provider: typeof payload.provider === "string" ? payload.provider : null,
       durationMs: Number(durationMs.toFixed(2)),
       serviceDurationMs: envelope.durationMs ?? null,
       stderr: envelope.stderr ? envelope.stderr.slice(-600) : null
@@ -152,6 +154,8 @@ async function callPythonRuntimeServiceOnce<T>(
       kind,
       endpoint,
       serviceUrl: getPythonRuntimeServiceUrl(kind),
+      model: typeof payload.model === "string" ? payload.model : null,
+      provider: typeof payload.provider === "string" ? payload.provider : null,
       durationMs: Number(durationMs.toFixed(2))
     });
     throw error instanceof PythonRuntimeServiceError ? error : new PythonRuntimeServiceError(endpoint, message);

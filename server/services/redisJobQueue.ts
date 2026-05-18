@@ -1,6 +1,6 @@
 import { Queue, Worker, type JobsOptions, type Processor } from "bullmq";
 import IORedis from "ioredis";
-import { logJson } from "../observability";
+import { logJson, recordLatency } from "../observability";
 import { listJobs } from "../store";
 import type { JobRecord } from "../../shared/types";
 import { isSupportedAssetJob } from "./assetJobRunner";
@@ -44,7 +44,13 @@ export async function enqueueJobExecution(job: JobRecord, options: { recordFailu
         return { enqueued: true, reason: `Redis job already exists in ${state} state.` };
       }
     }
-    await queue.add("asset-job", { jobId: job.id }, { ...defaultJobOptions, jobId: job.id });
+    const redisJob = await queue.add("asset-job", { jobId: job.id }, { ...defaultJobOptions, jobId: job.id });
+    logJson("info", "jobs.redis.enqueued", "Asset job enqueued in Redis", {
+      jobId: job.id,
+      redisJobId: redisJob.id,
+      queue: assetJobQueueName,
+      type: job.type
+    });
     return { enqueued: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to enqueue Redis job";
@@ -74,13 +80,50 @@ export async function enqueueQueuedAssetJobs() {
 }
 
 export function createAssetJobWorker(processor: Processor<RedisAssetJobData, void, string>) {
-  return new Worker<RedisAssetJobData, void, string>(assetJobQueueName, processor, {
+  const worker = new Worker<RedisAssetJobData, void, string>(assetJobQueueName, processor, {
     connection: createRedisConnection("worker"),
     concurrency: jobWorkerConcurrency,
     lockDuration: jobWorkerLockDurationMs,
     stalledInterval: jobWorkerStalledIntervalMs,
     maxStalledCount: 3
   });
+  worker.on("active", (job) => {
+    const waitMs = Math.max(0, Date.now() - job.timestamp);
+    recordLatency("jobs.redis.wait", waitMs, "ok");
+    logJson("info", "jobs.redis.active", "Asset job started from Redis queue", {
+      jobId: job.data.jobId,
+      redisJobId: job.id,
+      queue: assetJobQueueName,
+      waitMs
+    });
+  });
+  worker.on("completed", (job) => {
+    const durationMs = Math.max(0, Date.now() - (job.processedOn ?? Date.now()));
+    recordLatency("jobs.redis.process", durationMs, "ok");
+    logJson("info", "jobs.redis.completed", "Asset job completed from Redis queue", {
+      jobId: job.data.jobId,
+      redisJobId: job.id,
+      queue: assetJobQueueName,
+      durationMs
+    });
+  });
+  worker.on("failed", (job, error) => {
+    const durationMs = job?.processedOn ? Math.max(0, Date.now() - job.processedOn) : 0;
+    recordLatency("jobs.redis.process", durationMs, "error", error.message);
+    logJson("error", "jobs.redis.failed", error.message, {
+      jobId: job?.data.jobId,
+      redisJobId: job?.id,
+      queue: assetJobQueueName,
+      durationMs
+    });
+  });
+  worker.on("stalled", (jobId) => {
+    logJson("warn", "jobs.redis.stalled", "Asset job stalled in Redis queue", {
+      redisJobId: jobId,
+      queue: assetJobQueueName
+    });
+  });
+  return worker;
 }
 
 export async function closeAssetJobQueue() {

@@ -247,8 +247,8 @@ Docker Compose is the standard infrastructure and operational packaging boundary
 
 | Service | Image/build | Runtime responsibility |
 | --- | --- | --- |
-| `postgres` | `pgvector/pgvector:pg17` | Durable application persistence and pgvector indexes. |
-| `redis` | `redis:7.4-alpine` | BullMQ execution queues for asset jobs and ask operations. |
+| `postgres` | `pgvector/pgvector:0.8.2-pg17` | Durable application persistence and pgvector indexes. |
+| `redis` | `redis:8-alpine` | BullMQ execution queues for asset jobs and ask operations. |
 | `api` | `Dockerfile.node` | Express API process, route handling, queue outbox writes, SSE fanout, and optional local `/media` serving. |
 | `asset-worker` | `Dockerfile.node` | BullMQ asset job worker and long-running indexing workflows. |
 | `ask-worker` | `Dockerfile.node` | BullMQ ask operation worker and query/search workflows. |
@@ -1265,15 +1265,16 @@ Earlier local JSON stores are no longer a runtime fallback. They are only read b
 - `app_knowledge_vectors.embedding` is created as `vector(EMBEDDING_DIMENSIONS)`.
 - `app_visual_vectors.embedding` is created as `vector(VISUAL_EMBEDDING_DIMENSIONS)`.
 - HNSW cosine indexes are attempted for those vector columns.
+- `app_vectors.search_tsv` and `app_knowledge_vectors.search_tsv` provide GIN-backed lexical candidates for hybrid retrieval.
 
-If `pgvector` is unavailable, schema initialization fails. If vector dimensions change, incompatible embeddings fail insertion/search readiness and must be rebuilt with `npm run embeddings:rebuild` or `npm run indexes:rebuild`.
+If `pgvector` is unavailable or below `POSTGRES_MIN_PGVECTOR_VERSION`, schema initialization fails. If vector dimensions change, incompatible embeddings fail insertion/search readiness and must be rebuilt with `npm run embeddings:rebuild` or `npm run indexes:rebuild`.
 
 `GET /api/db/status` reports:
 
 - Postgres readiness and degraded state.
-- pgvector extension version or install error.
+- pgvector extension version, minimum required version, or install error.
 - active vector search mode: `pgvector`.
-- vector column type, expected type, HNSW index presence, and row counts for each vector table.
+- vector column type, expected type, HNSW/lexical index presence, and row counts for each vector table.
 - schema migration records and aggregate metrics.
 
 ### Vector Stores
@@ -1293,7 +1294,7 @@ Knowledge vectors:
 - Postgres table: `app_knowledge_vectors`
 - Built from related knowledge documents.
 
-Vector search uses cosine similarity through pgvector distance over compatible vector columns.
+Vector search uses cosine similarity through pgvector distance over compatible vector columns and merges DB lexical candidates with reciprocal-rank/score blending when query text is available.
 
 ### Tracking Store
 

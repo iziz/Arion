@@ -8,7 +8,8 @@ import { videoVlmSearchText } from "./videoVlmText";
 
 const pythonBin = process.env.LOCAL_AI_PYTHON || "python3";
 const embedScript = path.resolve("scripts", "embed_text.py");
-const embeddingModel = process.env.EMBEDDING_MODEL || "intfloat/multilingual-e5-base";
+const embeddingProfile = normalizeEmbeddingProfile(process.env.EMBEDDING_PROFILE, process.env.EMBEDDING_MODEL);
+const embeddingModel = process.env.EMBEDDING_MODEL || defaultEmbeddingModel(embeddingProfile);
 const embeddingCache = new Map<string, number[]>();
 
 type EmbeddingKind = "query" | "passage";
@@ -27,8 +28,12 @@ export function getEmbeddingModelName() {
   return embeddingModel;
 }
 
+export function getEmbeddingProfileName() {
+  return embeddingProfile;
+}
+
 export function getExpectedEmbeddingDimensions() {
-  return Number(process.env.EMBEDDING_DIMENSIONS || 768);
+  return Number(process.env.EMBEDDING_DIMENSIONS || defaultEmbeddingDimensions(embeddingProfile));
 }
 
 export async function embedQueryText(text: string) {
@@ -93,7 +98,10 @@ async function runSentenceTransformers(texts: string[], kind: EmbeddingKind): Pr
         {
           texts,
           kind,
-          model: embeddingModel
+          model: embeddingModel,
+          profile: embeddingProfile,
+          queryPrefix: embeddingPrefix("query"),
+          passagePrefix: embeddingPrefix("passage")
         },
         {
           metricKey: `model.embedding.text.${kind}.service`
@@ -117,7 +125,17 @@ async function runSentenceTransformers(texts: string[], kind: EmbeddingKind): Pr
 
 async function runPythonEmbeddingProcess(texts: string[], kind: EmbeddingKind) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(pythonBin, [embedScript, "--model", embeddingModel, "--kind", kind], {
+    const child = spawn(pythonBin, [
+      embedScript,
+      "--model",
+      embeddingModel,
+      "--kind",
+      kind,
+      "--query-prefix",
+      embeddingPrefix("query"),
+      "--passage-prefix",
+      embeddingPrefix("passage")
+    ], {
       stdio: ["pipe", "pipe", "pipe"]
     });
     const stdout: Buffer[] = [];
@@ -151,9 +169,35 @@ function normalizeEmbedding(vector: number[], kind: EmbeddingKind) {
 }
 
 function cacheKey(text: string, kind: EmbeddingKind) {
-  return createHash("sha256").update(`${embeddingModel}:${kind}:${text}`).digest("hex");
+  return createHash("sha256").update(`${embeddingProfile}:${embeddingModel}:${getExpectedEmbeddingDimensions()}:${embeddingPrefix(kind)}:${kind}:${text}`).digest("hex");
 }
 
 function failMissingEmbedding(context: string): never {
   throw new Error(`Missing embedding vector for ${context}`);
+}
+
+function normalizeEmbeddingProfile(value: string | undefined, modelName: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "bge-m3" || normalized === "e5" || normalized === "custom") return normalized;
+  const model = modelName?.toLowerCase() ?? "";
+  if (model.includes("bge-m3")) return "bge-m3";
+  if (model.includes("e5")) return "e5";
+  return "e5";
+}
+
+function defaultEmbeddingModel(profile: string) {
+  if (profile === "bge-m3") return "BAAI/bge-m3";
+  return "intfloat/multilingual-e5-base";
+}
+
+function defaultEmbeddingDimensions(profile: string) {
+  if (profile === "bge-m3") return 1024;
+  return 768;
+}
+
+function embeddingPrefix(kind: EmbeddingKind) {
+  const envKey = kind === "query" ? "EMBEDDING_QUERY_PREFIX" : "EMBEDDING_PASSAGE_PREFIX";
+  if (typeof process.env[envKey] === "string") return process.env[envKey] ?? "";
+  if (embeddingProfile === "bge-m3") return "";
+  return kind === "query" ? "query: " : "passage: ";
 }

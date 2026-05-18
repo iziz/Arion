@@ -128,10 +128,11 @@ curl http://127.0.0.1:8791/health
 
 ## VLM Worker
 
-The VLM worker defaults to Qwen2.5-VL. On Apple Silicon with `mlx-vlm`, the local default can use the MLX 4-bit model from `.env.example`:
+The VLM worker is model-family aware. It defaults to Qwen2.5-VL, and `QWEN_VLM_FAMILY=auto` infers `qwen2.5-vl` or `qwen3-vl` from the configured model name. On Apple Silicon with `mlx-vlm`, the local default can use the MLX 4-bit model from `.env.example`:
 
 ```env
 QWEN_VLM_BACKEND=mlx
+QWEN_VLM_FAMILY=auto
 QWEN_VLM_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
 QWEN_VLM_MLX_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
 VLM_WORKER_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit
@@ -141,12 +142,19 @@ To test a larger MLX VLM, change those values before starting `npm run models:vl
 
 ```env
 QWEN_VLM_BACKEND=mlx
+QWEN_VLM_FAMILY=qwen3-vl
 QWEN_VLM_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
 QWEN_VLM_MLX_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
 VLM_WORKER_MODEL=mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit
 ```
 
-Use larger VLMs only when the machine has enough unified memory. The VLM affects video segment descriptions, domain refinement, and query planning fallback. For sports-domain assets, domain refinement can emit structured football passer/receiver roles, and query planning fallback follows the same participant-direction contract as the OpenAI planner. It does not replace detector/tracker evidence or visual embeddings.
+For the `transformers` backend, Qwen3-VL requires a recent `transformers` build; `requirements.local-ai.txt` pins `transformers>=4.57.0`. Use larger VLMs only when the machine has enough unified memory. The VLM affects video segment descriptions, domain refinement, and query planning fallback. For sports-domain assets, domain refinement can emit structured football passer/receiver roles, and query planning fallback follows the same participant-direction contract as the OpenAI planner. It does not replace detector/tracker evidence or visual embeddings.
+
+Run VLM fixtures against a live worker:
+
+```bash
+npm run eval:vlm -- --fixture path/to/vlm-fixture.json
+```
 
 ## Common Commands
 
@@ -160,6 +168,8 @@ Use larger VLMs only when the machine has enough unified memory. The VLM affects
 | Run tests | `npm test` |
 | Type-check and build | `npm run build` |
 | Run model diagnostics | `npm run models:doctor:ai` |
+| Evaluate VLM worker fixtures | `npm run eval:vlm -- --fixture path/to/vlm-fixture.json` |
+| Benchmark detector backends | `npm run benchmark:detectors -- --manifest path/to/detector-manifest.json` |
 | Rebuild embeddings | `npm run embeddings:rebuild` |
 | Rebuild indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` |
 | Run containerized app stack | `npm run docker:up` |
@@ -190,8 +200,8 @@ Compose services:
 
 | Service | Purpose |
 | --- | --- |
-| `postgres` | PostgreSQL 17 with pgvector |
-| `redis` | Redis queue backend |
+| `postgres` | PostgreSQL 17 with pgvector 0.8.2+ |
+| `redis` | Redis 8 queue backend |
 | `api` | Express API process |
 | `asset-worker` | Long-running asset indexing jobs |
 | `ask-worker` | Async ask/search operations |
@@ -362,6 +372,7 @@ Important environment variables:
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `POSTGRES_REQUIRE_PGVECTOR` | Requires pgvector availability when true |
+| `POSTGRES_MIN_PGVECTOR_VERSION` | Minimum pgvector extension version required at schema initialization |
 | `REDIS_URL` | Redis queue connection |
 | `MEDIA_SERVING_MODE` | `local-static` or `disabled` |
 | `UPLOAD_MAX_BYTES` | Maximum upload size |
@@ -377,6 +388,8 @@ Important environment variables:
 | `WHISPER_MODEL` | Local Whisper model name |
 | `WHISPER_BACKEND` | `auto`, `whispercpp`, `faster-whisper`, or `openai-whisper` |
 | `PADDLEOCR_LANG` | OCR language selection |
+| `PADDLEOCR_VL_ENABLED` | Enables the experimental PaddleOCR-VL layout OCR pass after standard frame OCR |
+| `PADDLEOCR_VL_REQUIRED` | Makes PaddleOCR-VL failure fail the OCR result instead of remaining optional |
 | `VISION_DETECTOR_BACKEND` | `auto`, `ultralytics`, or `rfdetr` |
 | `VISION_TRACKER` | Ultralytics tracker config |
 | `JERSEY_OCR_ENABLED` | Enables crop-based jersey number OCR inside the vision tracker; defaults to enabled with bounded sampling |
@@ -389,7 +402,9 @@ Important environment variables:
 | `FIELD_CALIBRATION_CONFIG` | Optional homography/team-attacking-direction JSON used for pitch-coordinate tracking |
 | `TRACKER_DIAGNOSTICS_FRAME_LIMIT` | Maximum sampled frame audit records retained per tracker run; defaults to `240` |
 | `TRACKER_DIAGNOSTICS_DECISION_LIMIT` | Maximum OCR/face decision audit records retained per tracker run; defaults to `160` |
-| `EMBEDDING_MODEL` | Text embedding model |
+| `EMBEDDING_PROFILE` | Text embedding profile, currently `e5`, `bge-m3`, or `custom` |
+| `EMBEDDING_MODEL` | Text embedding model; `bge-m3` profile defaults to `BAAI/bge-m3` and 1024 dimensions when unset |
+| `VISUAL_EMBEDDING_PROFILE` | Visual embedding profile, currently `open_clip` or `custom` |
 | `VISUAL_EMBEDDING_MODEL` | OpenCLIP visual embedding model |
 | `CAPABILITY_*` | Runtime capability policy: `disabled`, `optional`, or `required` |
 

@@ -1,6 +1,7 @@
 import type { DomainParticipantConstraint, DomainQueryFilterEvidence, DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { buildRetrievalPlan, sanitizeEvidenceTerms, sanitizeRequiredEvidence } from "./queryRetrievalPlan";
 import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayer } from "./knowledge/registry";
+import { genAiAttributes, traceAsync } from "./observability";
 import { planQueryWithVlmWorker } from "./vlmWorkerClient";
 
 type ModelQueryPlan = {
@@ -79,6 +80,110 @@ const fallbackCompetitionAliases: Record<string, string[]> = {
   Bundesliga: ["Bundesliga", "분데스리가"],
   NFL: ["NFL", "National Football League", "미식축구", "미국 football"]
 };
+const nullableString = { type: ["string", "null"] } as const;
+const nullablePlannerStringEnum = (values: string[]) => ({ type: ["string", "null"], enum: [...values, null] });
+const plannerStringArray = { type: "array", items: { type: "string" }, maxItems: 16 } as const;
+const openAiQueryPlannerSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "route",
+    "responseMode",
+    "relatedKnowledgeMode",
+    "questionType",
+    "metric",
+    "statMode",
+    "analysisSubject",
+    "competition",
+    "season",
+    "player",
+    "eventType",
+    "passType",
+    "fieldZone",
+    "role",
+    "participants",
+    "semanticQuery",
+    "retrieval",
+    "filterEvidence",
+    "confidence",
+    "warnings"
+  ],
+  properties: {
+    route: { type: "string", enum: Array.from(allowedRoutes) },
+    responseMode: { type: "string", enum: Array.from(allowedResponseModes) },
+    relatedKnowledgeMode: { type: "string", enum: Array.from(allowedRelatedKnowledgeModes) },
+    questionType: nullablePlannerStringEnum(Array.from(allowedQuestionTypes)),
+    metric: nullablePlannerStringEnum(Array.from(allowedMetrics)),
+    statMode: nullablePlannerStringEnum(Array.from(allowedStatModes)),
+    analysisSubject: nullableString,
+    competition: nullableString,
+    season: nullableString,
+    player: nullableString,
+    eventType: nullablePlannerStringEnum(Array.from(allowedEventTypes)),
+    passType: nullablePlannerStringEnum(Array.from(allowedPassTypes)),
+    fieldZone: nullablePlannerStringEnum(Array.from(allowedFieldZones)),
+    role: nullablePlannerStringEnum(Array.from(allowedRoles)),
+    participants: {
+      type: "array",
+      maxItems: 4,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["entity", "relation", "role", "eventType", "evidence"],
+        properties: {
+          entity: { type: "string" },
+          relation: { type: "string", enum: Array.from(allowedParticipantRelations) },
+          role: nullablePlannerStringEnum(Array.from(allowedRoles)),
+          eventType: nullablePlannerStringEnum(Array.from(allowedEventTypes)),
+          evidence: { type: "array", items: { type: "string" }, maxItems: 4 }
+        }
+      }
+    },
+    semanticQuery: nullableString,
+    retrieval: {
+      type: "object",
+      additionalProperties: false,
+      required: ["textQuery", "visualQuery", "evidenceTerms", "requiredEvidence"],
+      properties: {
+        textQuery: nullableString,
+        visualQuery: nullableString,
+        evidenceTerms: plannerStringArray,
+        requiredEvidence: {
+          type: "array",
+          maxItems: 4,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "terms", "match"],
+            properties: {
+              kind: { type: "string", enum: ["visible_text", "spoken_text"] },
+              terms: { type: "array", items: { type: "string" }, maxItems: 8 },
+              match: { type: "string", enum: ["all", "any"] }
+            }
+          }
+        }
+      }
+    },
+    filterEvidence: {
+      type: "object",
+      additionalProperties: false,
+      required: ["competition", "season", "player", "eventType", "passType", "fieldZone", "role", "statMode", "analysisSubject"],
+      properties: {
+        competition: plannerStringArray,
+        season: plannerStringArray,
+        player: plannerStringArray,
+        eventType: plannerStringArray,
+        passType: plannerStringArray,
+        fieldZone: plannerStringArray,
+        role: plannerStringArray,
+        statMode: plannerStringArray,
+        analysisSubject: plannerStringArray
+      }
+    },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    warnings: { type: "array", items: { type: "string" }, maxItems: 8 }
+  }
+} as const;
 
 export async function planDomainQueryWithLlm(query: string, explicitFilters: DomainSearchFilters = {}): Promise<DomainQueryPlan> {
   const base = buildNeutralQueryPlan(query, explicitFilters);
@@ -134,22 +239,30 @@ function getOpenAiPlannerDisabledReason(query: string) {
 async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFilters): Promise<ModelQueryPlan> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(process.env.OPENAI_QUERY_TIMEOUT_MS ?? 6000));
+  const model = getOpenAiModel();
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: getOpenAiModel(),
-        input: [
-          {
-            role: "system",
-            content:
-              [
-                "You are a query router for a video intelligence platform with optional related knowledge attached to the selected asset group. Return only JSON.",
+    return await traceAsync(
+      "planner.openai.responses",
+      genAiAttributes("openai", "query_plan", model, {
+        "planner.explicit_filters": Object.keys(compactFilters(explicitFilters)).join(","),
+        "planner.query_length": query.length
+      }),
+      async () => {
+        const response = await fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model,
+            input: [
+              {
+                role: "system",
+                content:
+                  [
+                    "You are a query router for a video intelligence platform with optional related knowledge attached to the selected asset group. Return only JSON matching the provided schema exactly.",
                 "Choose route only by evidence source: asset_evidence for indexed video evidence, knowledge_seeded_asset_evidence when selected related knowledge must first resolve a ranking/stat subject and then indexed video evidence should retrieve moments for that subject, knowledge_evidence for a direct answer from selected related knowledge, asset_catalog for asset/group lookup, unsupported when neither indexed assets nor selected related knowledge can answer. Do not encode domain names such as sports in route.",
                 "Choose responseMode by answer shape: moment_retrieval for finding scenes/clips, grounded_answer for answering a question from retrieved video evidence, summary for summaries, analysis for pattern/comparison reasoning, structured_answer for structured related-knowledge facts, asset_lookup for catalog queries.",
                 "Questions asking what appears in the selected video, what a person/object looks like, what someone is wearing, or asking describe/explain/what/which/how about visible video content are asset_evidence + grounded_answer + none. Low confidence or incomplete evidence is not unsupported; retrieval should run and the answer can report evidence gaps.",
@@ -161,19 +274,19 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 "Return filterEvidence for every inferred structured filter or analysis/stat subject. Each key must contain the exact short phrase or planner rationale that justifies the value. ExplicitFilters supplied by the caller do not need filterEvidence.",
                 "Always build retrieval fields for the search engine. For non-English queries, retrieval.evidenceTerms must include both original-language literal evidence terms and English aliases. Evidence terms are concrete observable concepts only, never command words such as find, show, search, scene, video, clip, appears, or shown.",
                 "Use retrieval.requiredEvidence for hard constraints that must be present in a specific evidence source. For visible text/OCR/subtitle/logo text requests, set requiredEvidence to [{kind:'visible_text', terms:['literal text'], match:'all'}]. For spoken dialogue requests such as says/speaks/said/uttered or Korean 말하는/라고 말, set requiredEvidence to [{kind:'spoken_text', terms:['literal phrase','direct translation alias'], match:'any'}]. If the user quotes a phrase or uses X라고 말, preserve the literal phrase and do not broaden it to same-language paraphrases. Use broader polite/casual/stem variants only when the user asks for a concept such as thank-you expressions rather than an exact utterance. Source labels such as OCR, subtitle, caption, logo, speech, ASR, transcript, or visible text are evidence channels, not required literal terms."
-              ].join(" ")
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              currentDate: currentPlannerDate(),
-              defaultFootballSeasonRule: defaultFootballSeasonRule(),
-              allowed: allowedPlannerValues(),
-              knownCompetitions: getKnowledgeSnapshot().competitions.map((competition) => competition.value),
-              knownPlayers: knownPlayersForPrompt(),
-              explicitFilters,
-              query,
-              outputShape: {
+                  ].join(" ")
+              },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  currentDate: currentPlannerDate(),
+                  defaultFootballSeasonRule: defaultFootballSeasonRule(),
+                  allowed: allowedPlannerValues(),
+                  knownCompetitions: getKnowledgeSnapshot().competitions.map((competition) => competition.value),
+                  knownPlayers: knownPlayersForPrompt(),
+                  explicitFilters,
+                  query,
+                  outputShape: {
                 route: "asset_evidence | knowledge_seeded_asset_evidence | knowledge_evidence | asset_catalog | unsupported",
                 responseMode: "moment_retrieval | grounded_answer | summary | analysis | structured_answer | asset_lookup",
                 relatedKnowledgeMode: "none | grounding | direct_answer",
@@ -225,21 +338,27 @@ async function requestOpenAiPlan(query: string, explicitFilters: DomainSearchFil
                 confidence: "0..1",
                 warnings: ["short caveats"]
               }
-            })
-          }
-        ],
-        text: {
-          format: {
-            type: "json_object"
-          }
-        },
-        temperature: 0.1,
-        max_output_tokens: 900
-      })
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(typeof body?.error?.message === "string" ? body.error.message : `OpenAI HTTP ${response.status}`);
-    return parseOpenAiJson(extractResponseText(body));
+                })
+              }
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "arion_query_plan",
+                strict: true,
+                schema: openAiQueryPlannerSchema
+              }
+            },
+            temperature: 0.1,
+            max_output_tokens: 900
+          })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(typeof body?.error?.message === "string" ? body.error.message : `OpenAI HTTP ${response.status}`);
+        return parseOpenAiJson(extractResponseText(body));
+      },
+      "planner.openai.responses"
+    );
   } finally {
     clearTimeout(timeout);
   }

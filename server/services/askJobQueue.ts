@@ -1,6 +1,6 @@
 import { Queue, Worker, type JobsOptions, type Processor } from "bullmq";
 import IORedis from "ioredis";
-import { logJson } from "../observability";
+import { logJson, recordLatency } from "../observability";
 import { getAskOperationEntry, listAskOperations, updateAskOperation } from "../workflows/ask/operationStore";
 
 export type RedisAskOperationData = {
@@ -23,7 +23,12 @@ let queue: Queue<RedisAskOperationData> | null = null;
 
 export async function enqueueAskOperationExecution(operationId: string, options: { recordFailure?: boolean } = {}) {
   try {
-    await getAskOperationQueue().add("ask-operation", { operationId }, { ...defaultJobOptions, jobId: operationId });
+    const redisJob = await getAskOperationQueue().add("ask-operation", { operationId }, { ...defaultJobOptions, jobId: operationId });
+    logJson("info", "ask.redis.enqueued", "Ask operation enqueued in Redis", {
+      operationId,
+      redisJobId: redisJob.id,
+      queue: askOperationQueueName
+    });
     return { enqueued: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to enqueue ask operation";
@@ -82,10 +87,47 @@ export async function resetRunningAskOperations() {
 }
 
 export function createAskOperationWorker(processor: Processor<RedisAskOperationData, void, string>) {
-  return new Worker<RedisAskOperationData, void, string>(askOperationQueueName, processor, {
+  const worker = new Worker<RedisAskOperationData, void, string>(askOperationQueueName, processor, {
     connection: createRedisConnection("worker"),
     concurrency: askWorkerConcurrency
   });
+  worker.on("active", (job) => {
+    const waitMs = Math.max(0, Date.now() - job.timestamp);
+    recordLatency("ask.redis.wait", waitMs, "ok");
+    logJson("info", "ask.redis.active", "Ask operation started from Redis queue", {
+      operationId: job.data.operationId,
+      redisJobId: job.id,
+      queue: askOperationQueueName,
+      waitMs
+    });
+  });
+  worker.on("completed", (job) => {
+    const durationMs = Math.max(0, Date.now() - (job.processedOn ?? Date.now()));
+    recordLatency("ask.redis.process", durationMs, "ok");
+    logJson("info", "ask.redis.completed", "Ask operation completed from Redis queue", {
+      operationId: job.data.operationId,
+      redisJobId: job.id,
+      queue: askOperationQueueName,
+      durationMs
+    });
+  });
+  worker.on("failed", (job, error) => {
+    const durationMs = job?.processedOn ? Math.max(0, Date.now() - job.processedOn) : 0;
+    recordLatency("ask.redis.process", durationMs, "error", error.message);
+    logJson("error", "ask.redis.failed", error.message, {
+      operationId: job?.data.operationId,
+      redisJobId: job?.id,
+      queue: askOperationQueueName,
+      durationMs
+    });
+  });
+  worker.on("stalled", (jobId) => {
+    logJson("warn", "ask.redis.stalled", "Ask operation stalled in Redis queue", {
+      redisJobId: jobId,
+      queue: askOperationQueueName
+    });
+  });
+  return worker;
 }
 
 export async function closeAskOperationQueue() {

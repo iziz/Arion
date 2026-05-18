@@ -335,6 +335,38 @@ test("OpenAI generic route can override related-knowledge false positives", asyn
   assert.deepEqual(plan.retrieval?.evidenceTerms, ["business objective"]);
 });
 
+test("OpenAI planner requests strict structured output schema", async () => {
+  let requestBody: Record<string, unknown> | null = null;
+  await withMockedOpenAiPlanner(
+    {
+      route: "asset_evidence",
+      responseMode: "moment_retrieval",
+      relatedKnowledgeMode: "none",
+      semanticQuery: "schema probe",
+      retrieval: {
+        textQuery: "schema probe",
+        visualQuery: "schema probe",
+        evidenceTerms: []
+      },
+      confidence: 0.8,
+      warnings: []
+    },
+    () => planDomainQueryWithLlm("schema probe query 5d19ef"),
+    (body) => {
+      requestBody = body;
+    }
+  );
+
+  assert.ok(requestBody);
+  const text = (requestBody as Record<string, unknown>).text as { format?: { type?: string; name?: string; strict?: boolean; schema?: { additionalProperties?: boolean; required?: string[] } } } | undefined;
+  assert.equal(text?.format?.type, "json_schema");
+  assert.equal(text?.format?.name, "arion_query_plan");
+  assert.equal(text?.format?.strict, true);
+  assert.equal(text?.format?.schema?.additionalProperties, false);
+  assert.ok(text?.format?.schema?.required?.includes("retrieval"));
+  assert.ok(text?.format?.schema?.required?.includes("filterEvidence"));
+});
+
 test("OpenAI visible text plans carry literal OCR constraints separately from source labels", async () => {
   const plan = await withMockedOpenAiPlanner(
     {
@@ -2168,17 +2200,23 @@ function knowledgeIndexRecord(): IndexRecord {
   };
 }
 
-async function withMockedOpenAiPlanner<T>(plannerResponse: Record<string, unknown>, action: () => Promise<T>) {
+async function withMockedOpenAiPlanner<T>(
+  plannerResponse: Record<string, unknown>,
+  action: () => Promise<T>,
+  inspectRequest?: (body: Record<string, unknown>) => void
+) {
   const originalApiKey = process.env.OPENAI_API_KEY;
   const originalVlmWorkerUrl = process.env.VLM_WORKER_URL;
   const originalFetch = globalThis.fetch;
   process.env.OPENAI_API_KEY = "test-key";
   delete process.env.VLM_WORKER_URL;
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ output_text: JSON.stringify(plannerResponse) }), {
+  globalThis.fetch = (async (_input, init) => {
+    if (inspectRequest && init?.body) inspectRequest(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ output_text: JSON.stringify(plannerResponse) }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
   try {
     return await action();
   } finally {

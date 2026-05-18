@@ -6,9 +6,9 @@ export async function upsertAssetVectors(indexId: string, assetId: string, segme
   return pgStore.upsertAssetVectors(indexId, assetId, segments);
 }
 
-export async function searchVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
+export async function searchVectors(indexId: string | undefined, queryVector: number[], limit = 25, queryText = "") {
   assertPostgresRuntime();
-  return pgStore.searchVectors(indexId, queryVector, limit);
+  return pgStore.searchVectors(indexId, queryVector, limit, queryText);
 }
 
 export async function rebuildVectorStore(assets: Array<{ indexId: string; id: string; timeline: TimelineSegment[] }>) {

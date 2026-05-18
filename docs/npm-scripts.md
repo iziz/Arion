@@ -145,5 +145,7 @@ Without `--all`, `indexes:rebuild` reindexes only assets that are already indexe
 | `npm run models:runtime:ai` | `./.venv-ai/bin/python scripts/arion_model_runtime_service.py` | Starts the FastAPI model runtime service with `.venv-ai`. |
 | `npm run models:vlm` | `python3 scripts/qwen_vlm_worker.py` | Starts the VLM worker with the system Python. |
 | `npm run models:vlm:ai` | `./.venv-ai/bin/python scripts/qwen_vlm_worker.py` | Starts the VLM worker with `.venv-ai`. |
+| `npm run eval:vlm -- --fixture path/to/vlm-fixture.json` | `python3 scripts/eval_vlm_worker.py` | Runs VLM worker fixture checks against `VLM_WORKER_URL`. |
+| `npm run benchmark:detectors -- --manifest path/to/detector-manifest.json` | `python3 scripts/benchmark_detectors.py` | Benchmarks Ultralytics and RF-DETR detector backends on sampled frames. |
 
 Use the `:ai` variants when local AI dependencies were installed into `.venv-ai`, which is the recommended local setup.
