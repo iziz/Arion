@@ -337,12 +337,22 @@ function valueMatchesFilter(candidate: string, expected: string) {
 }
 
 function hasAppearanceEvidence(asset: AssetRecord, segment: TimelineSegment) {
-  if (asset.externalMetadata?.rurugrab?.performers.length) return true;
-  if (segment.tags.some((tag) => /performer|actor|actress|person|face|metadata:rurugrab/i.test(tag))) return true;
+  if (isMetadataOnlyCatalogAsset(asset) || segment.tags.includes("metadata:catalog-only")) return false;
   const scene = segment.sceneData;
-  if (scene?.vision?.tracking?.playerTracks?.length) return true;
+  const hasLocalVisualContext =
+    segment.modalities.includes("visual") ||
+    segment.sources.includes("visual") ||
+    Boolean(segment.thumbnailPath || scene?.image.thumbnailPath || scene?.image.framePath || asset.keyframes.length > 0);
+  if (!hasLocalVisualContext) return false;
+  if (segment.tags.some((tag) => /performer|actor|actress|person|face/i.test(tag))) return true;
+  if (scene?.vision?.tracking?.playerTracks?.some((track) => track.label === "person")) return true;
   if ((scene?.vision?.objects.players.countEstimate ?? 0) > 0) return true;
-  return [...(scene?.image.labels ?? []), ...(scene?.vlm?.objects ?? []), ...(scene?.vlm?.actions ?? [])].some((label) => /person|face|human|portrait/i.test(label));
+  if (scene?.vision?.objects.players.boxes?.some((box) => box.label === "person")) return true;
+  return [...(scene?.image.labels ?? []), ...(scene?.vlm?.objects ?? []), ...(scene?.vlm?.actions ?? []), ...(scene?.vlm?.labels ?? [])].some((label) => /person|face|human|portrait/i.test(label));
+}
+
+function isMetadataOnlyCatalogAsset(asset: AssetRecord) {
+  return asset.importSource?.metadataOnly === true || asset.mimeType === "application/x-rurugrab-catalog" || asset.tags.includes("metadata:rurugrab:catalog-only");
 }
 
 function segmentDomainFilterText(asset: AssetRecord, segment: TimelineSegment) {

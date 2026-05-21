@@ -75,6 +75,39 @@ test("adult.jp_search scene and performer constraints rank matching moments", ()
   assert.ok(results[0]?.matchReasons.some((reason) => reason.label === "Scene"));
 });
 
+test("adult.jp_search appearance constraints require indexed visual evidence", () => {
+  const metadataOnly = {
+    ...metadataOnlyAssetFixture("asset-metadata-only"),
+    externalMetadata: { rurugrab: metadataFixture() },
+    tags: ["metadata:rurugrab:catalog-only", "Example Performer"],
+    timeline: [segmentFixture({ id: "catalog-only", tags: ["metadata:rurugrab", "metadata:catalog-only", "Example Performer"] })]
+  };
+  const visualIndexed = {
+    ...assetFixture("asset-visual"),
+    status: "indexed" as const,
+    externalMetadata: { rurugrab: metadataFixture() },
+    tags: ["ABCD-123", "Example Performer"],
+    timeline: [
+      segmentFixture({
+        id: "visual-person",
+        tags: ["person", "close-up", "Example Performer"],
+        modalities: ["visual", "metadata"],
+        sources: ["visual", "metadata"]
+      })
+    ]
+  };
+  const plan = planDomainQuery("Example Performer 출연 얼굴 유사한 작품 찾아줘");
+
+  const results = searchAssets([metadataOnly, visualIndexed], [indexFixture()], plan.originalQuery, {
+    queryPlan: plan,
+    domainFilters: plan.domainFilters
+  });
+
+  assert.equal(plan.domainFilters.appearance, "similar_person");
+  assert.deepEqual(results.map((result) => result.asset.id), ["asset-visual"]);
+  assert.ok(results[0]?.verification.some((check) => check.constraint === "appearance" && check.status === "soft_pass"));
+});
+
 test("search evaluation harness reports top-k hit quality for adult catalog queries", () => {
   const assets = [
     {
@@ -177,6 +210,27 @@ function assetFixture(id = "asset-1"): AssetRecord {
     error: null,
     createdAt: "2026-05-21T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z"
+  };
+}
+
+function metadataOnlyAssetFixture(id = "asset-1"): AssetRecord {
+  return {
+    ...assetFixture(id),
+    title: "ABCD-123",
+    originalName: "ABCD-123",
+    storedName: "rurugrab-catalog/AV4096-01/ABCD-123.mp4",
+    mimeType: "application/x-rurugrab-catalog",
+    status: "indexed",
+    tags: ["metadata:rurugrab:catalog-only"],
+    importSource: {
+      type: "rurugrab-catalog",
+      path: "G:\\Studio\\ABCD-123.mp4",
+      originalPath: "G:\\Studio\\ABCD-123.mp4",
+      mappedPath: null,
+      catalogName: "AV4096-01.AV",
+      metadataOnly: true,
+      importedAt: "2026-05-21T00:00:00.000Z"
+    }
   };
 }
 
