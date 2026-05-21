@@ -85,7 +85,7 @@ export async function previewRurugrabCatalog(options: RurugrabCatalogLoadOptions
   const files = await loadRurugrabCatalogFiles(options);
   const preview: RurugrabCatalogPreviewItem[] = [];
   for (const file of files) {
-    const probe = assetMetadataProbe(file);
+    const probe = rurugrabCatalogMetadataProbe(file);
     preview.push({
       ...file,
       candidates: extractRurugrabMediaKeyCandidatesForAsset(probe).map((candidate) => ({
@@ -136,18 +136,18 @@ export async function importRurugrabCatalog(options: RurugrabCatalogImportOption
 export async function importRurugrabCatalogMetadataOnly(options: RurugrabCatalogImportOptions, files?: RurugrabCatalogFile[]) {
   const catalogFiles = files ?? (await loadRurugrabCatalogFiles({ ...options, onlyAccessible: false }));
   const existingAssets = await listAssets(options.indexId);
-  const existingSourcePaths = new Set(existingAssets.map((asset) => asset.importSource?.path).filter(Boolean) as string[]);
-  const existingMediaKeys = new Set(
-    existingAssets
-      .flatMap((asset) => [asset.externalMetadata?.rurugrab?.mediaKeyNorm, asset.externalMetadata?.rurugrab?.mediaDisplayKey])
-      .filter(Boolean)
-      .map((value) => String(value).toLowerCase())
-  );
+  const existingAssetBySourcePath = new Map<string, AssetRecord>();
+  const existingAssetByMediaKey = new Map<string, AssetRecord>();
+  for (const asset of existingAssets) {
+    if (asset.importSource?.path) existingAssetBySourcePath.set(asset.importSource.path, asset);
+    addRurugrabMediaKeys(existingAssetByMediaKey, asset);
+  }
   const result = {
     rootPath: catalogRootLabel(options),
     indexId: options.indexId,
     scanned: catalogFiles.length,
     imported: 0,
+    refreshed: 0,
     skipped: 0,
     jobs: [] as JobRecord[],
     assets: [] as AssetRecord[],
@@ -162,31 +162,37 @@ export async function importRurugrabCatalogMetadataOnly(options: RurugrabCatalog
   };
 
   for (const file of catalogFiles) {
-    if (existingSourcePaths.has(file.originalPath)) {
-      result.skipped += 1;
-      result.skippedFiles.push({ path: file.originalPath, reason: "catalog path already imported" });
-      options.onProgress?.({ phase: "skip", path: file.originalPath, message: "catalog path already imported" });
-      continue;
-    }
+    const existingAsset = existingAssetBySourcePath.get(file.originalPath);
     options.onProgress?.({ phase: "import", path: file.originalPath, message: "Resolving Rurugrab metadata." });
     const now = new Date().toISOString();
-    const metadata = await lookupRurugrabMetadataForAsset(assetMetadataProbe(file), now);
+    const metadata = await lookupRurugrabMetadataForAsset(rurugrabCatalogMetadataProbe(file), now);
     const mediaKey = metadata?.mediaKeyNorm ?? metadata?.mediaDisplayKey ?? null;
-    if (mediaKey && existingMediaKeys.has(mediaKey.toLowerCase())) {
+    const existingByMediaKey = mediaKey ? existingAssetByMediaKey.get(mediaKey.toLowerCase()) : null;
+    if (existingByMediaKey && existingByMediaKey.id !== existingAsset?.id) {
       result.skipped += 1;
       result.skippedFiles.push({ path: file.originalPath, reason: `catalog metadata already imported: ${mediaKey}` });
       options.onProgress?.({ phase: "skip", path: file.originalPath, message: `catalog metadata already imported: ${mediaKey}` });
       continue;
     }
-    const asset = buildMetadataOnlyAsset(file, options.indexId, metadata, now);
+    if (existingAsset && !isRefreshableMetadataOnlyCatalogAsset(existingAsset)) {
+      result.skipped += 1;
+      result.skippedFiles.push({ path: file.originalPath, reason: "catalog path already imported by a non metadata-only asset" });
+      options.onProgress?.({ phase: "skip", path: file.originalPath, message: "catalog path already imported by a non metadata-only asset" });
+      continue;
+    }
+    const asset = buildMetadataOnlyAsset(file, options.indexId, metadata, now, existingAsset);
     await saveAsset(asset);
-    result.imported += 1;
+    if (existingAsset) {
+      result.refreshed += 1;
+    } else {
+      result.imported += 1;
+    }
     result.assets.push(asset);
-    existingSourcePaths.add(file.originalPath);
-    if (mediaKey) existingMediaKeys.add(mediaKey.toLowerCase());
+    existingAssetBySourcePath.set(file.originalPath, asset);
+    replaceRurugrabMediaKeys(existingAssetByMediaKey, asset);
   }
 
-  options.onProgress?.({ phase: "done", message: `Imported ${result.imported} metadata-only catalog records and skipped ${result.skipped}.` });
+  options.onProgress?.({ phase: "done", message: `Imported ${result.imported} metadata-only catalog records, refreshed ${result.refreshed}, and skipped ${result.skipped}.` });
   return result;
 }
 
@@ -270,19 +276,19 @@ function catalogRootLabel(options: RurugrabCatalogLoadOptions) {
   return `rurugrab-catalog${catalog}`;
 }
 
-function assetMetadataProbe(file: LocalLibraryMediaFile) {
+export function rurugrabCatalogMetadataProbe(file: LocalLibraryMediaFile) {
   return {
     title: file.title,
     description: "",
     originalName: file.originalName,
-    storedName: file.path,
+    storedName: file.originalName,
     summary: "",
     tags: []
   };
 }
 
-function buildMetadataOnlyAsset(file: RurugrabCatalogFile, indexId: string, metadata: ExternalMediaMetadata | null, now: string): AssetRecord {
-  const assetId = randomUUID();
+function buildMetadataOnlyAsset(file: RurugrabCatalogFile, indexId: string, metadata: ExternalMediaMetadata | null, now: string, existingAsset?: AssetRecord): AssetRecord {
+  const assetId = existingAsset?.id ?? randomUUID();
   const metadataText = metadata ? externalMetadataSearchText({ externalMetadata: { rurugrab: metadata } }) : "";
   const title = metadata?.title || metadata?.mediaDisplayKey || file.title;
   const summary = [
@@ -294,7 +300,7 @@ function buildMetadataOnlyAsset(file: RurugrabCatalogFile, indexId: string, meta
     metadata?.genres.length ? `Genres: ${metadata.genres.slice(0, 12).join(", ")}.` : "",
     "Source video is not imported yet; mount the catalog path and reimport or reindex for scene and appearance search."
   ].filter(Boolean).join(" ");
-  const tags = metadata ? externalMetadataTags(metadata) : extractRurugrabMediaKeyCandidatesForAsset(assetMetadataProbe(file)).map((candidate) => candidate.mediaDisplayKey);
+  const tags = metadata ? externalMetadataTags(metadata) : extractRurugrabMediaKeyCandidatesForAsset(rurugrabCatalogMetadataProbe(file)).map((candidate) => candidate.mediaDisplayKey);
   const segment = metadataOnlySegment(assetId, title, summary, metadataText, tags);
   return {
     id: assetId,
@@ -322,7 +328,7 @@ function buildMetadataOnlyAsset(file: RurugrabCatalogFile, indexId: string, meta
       mappedPath: file.accessible ? file.path : null,
       catalogName: file.catalogName,
       metadataOnly: true,
-      importedAt: now
+      importedAt: existingAsset?.importSource?.importedAt ?? now
     },
     technicalMetadata: {
       storageProvider: "local-s3",
@@ -345,7 +351,7 @@ function buildMetadataOnlyAsset(file: RurugrabCatalogFile, indexId: string, meta
       ]
     },
     error: null,
-    createdAt: now,
+    createdAt: existingAsset?.createdAt ?? now,
     updatedAt: now
   };
 }
@@ -376,6 +382,29 @@ function emptyIntelligence(): LocalIntelligence {
     visual: { available: false, labels: ["metadata-only"], dominantColor: "#000000", brightness: 0, motionScore: 0, error: null },
     modelTrace: []
   };
+}
+
+function isRefreshableMetadataOnlyCatalogAsset(asset: AssetRecord) {
+  return asset.importSource?.type === "rurugrab-catalog" && asset.importSource.metadataOnly === true;
+}
+
+function addRurugrabMediaKeys(assetByMediaKey: Map<string, AssetRecord>, asset: AssetRecord) {
+  for (const key of rurugrabMediaKeys(asset)) {
+    assetByMediaKey.set(key, asset);
+  }
+}
+
+function replaceRurugrabMediaKeys(assetByMediaKey: Map<string, AssetRecord>, asset: AssetRecord) {
+  for (const [key, existingAsset] of assetByMediaKey) {
+    if (existingAsset.id === asset.id) assetByMediaKey.delete(key);
+  }
+  addRurugrabMediaKeys(assetByMediaKey, asset);
+}
+
+function rurugrabMediaKeys(asset: AssetRecord) {
+  return [asset.externalMetadata?.rurugrab?.mediaKeyNorm, asset.externalMetadata?.rurugrab?.mediaDisplayKey]
+    .filter(Boolean)
+    .map((key) => String(key).toLowerCase());
 }
 
 function uniqueClean(values: Array<string | null | undefined>) {
