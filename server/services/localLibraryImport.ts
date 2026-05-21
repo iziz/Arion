@@ -32,6 +32,10 @@ export type LocalLibraryImportOptions = {
   onProgress?: (event: LocalLibraryImportProgress) => void;
 };
 
+export type LocalLibraryImportFilesOptions = Omit<LocalLibraryImportOptions, "limit"> & {
+  files: LocalLibraryMediaFile[];
+};
+
 export type LocalLibraryImportProgress = {
   phase: "scan" | "preview" | "import" | "skip" | "done";
   path?: string;
@@ -107,11 +111,22 @@ export async function previewLocalLibrary(rootPath: string, limit = 100): Promis
 }
 
 export async function importLocalLibrary(options: LocalLibraryImportOptions): Promise<LocalLibraryImportResult> {
+  const files = await scanLocalLibrary(options.rootPath, options.limit ?? Number.POSITIVE_INFINITY);
+  options.onProgress?.({ phase: "scan", message: `Scanned ${files.length} media files.` });
+  return importLocalMediaFiles({
+    rootPath: options.rootPath,
+    indexId: options.indexId,
+    files,
+    queueJobs: options.queueJobs,
+    onProgress: options.onProgress
+  });
+}
+
+export async function importLocalMediaFiles(options: LocalLibraryImportFilesOptions): Promise<LocalLibraryImportResult> {
   const index = await getIndex(options.indexId);
   if (!index) throw new Error(`Index not found: ${options.indexId}`);
   const queueJobs = options.queueJobs !== false;
-  const files = await scanLocalLibrary(options.rootPath, options.limit ?? Number.POSITIVE_INFINITY);
-  options.onProgress?.({ phase: "scan", message: `Scanned ${files.length} media files.` });
+  const files = options.files;
   const existingAssets = await listAssets(index.id);
   const existingSourcePaths = new Set(existingAssets.map((asset) => asset.importSource?.path).filter(Boolean) as string[]);
   const existingNameAndSize = new Set(existingAssets.map((asset) => `${asset.originalName}:${asset.size}`));

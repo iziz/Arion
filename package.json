@@ -47,6 +47,8 @@
     "knowledge:vectors:rebuild": "tsx scripts/rebuild_knowledge_vectors.ts",
     "library:preview": "tsx scripts/import_local_library.ts --preview",
     "library:import": "npm run dev:infra && ARION_DOCKER_INFRA=true tsx scripts/import_local_library.ts",
+    "rurugrab:catalog:preview": "tsx scripts/import_rurugrab_catalog.ts --preview",
+    "rurugrab:catalog:import": "npm run dev:infra && ARION_DOCKER_INFRA=true tsx scripts/import_rurugrab_catalog.ts",
     "embeddings:rebuild": "tsx scripts/rebuild_embeddings.ts",
     "indexes:rebuild": "tsx scripts/rebuild_all_indexes.ts",
     "domain:vlm:refine": "tsx scripts/refine_vlm_domain.ts",
