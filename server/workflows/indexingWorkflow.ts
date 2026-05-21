@@ -9,6 +9,7 @@ import { assertCapabilityAvailable, isCapabilityEnabled, isCapabilityRequired, r
 import { applyEventClassification } from "../eventClassifier";
 import { putUploadedObject } from "../localObjectStorage";
 import { upsertAssetVectors } from "../localVectorStore";
+import { upsertAssetAppearanceVectors } from "../localAppearanceVectorStore";
 import { upsertAssetVisualVectors } from "../localVisualVectorStore";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../visionDetectionRuntime";
 import { detectSceneBoundaries } from "../sceneDetection";
@@ -17,6 +18,7 @@ import { upsertAssetTracking } from "../trackingStore";
 import { analyzeTimelineWithVlm, getVlmWorkerModelName, isVlmWorkerEnabled, refineRelatedKnowledgeTimelineWithVlm } from "../vlmWorkerClient";
 import { logJson, traceAsync } from "../observability";
 import { buildRawMatchVideoProfile } from "../rawMatchProfile";
+import { deriveAppearanceVectors } from "../appearanceSimilarity";
 import { normalizeUploadedText } from "../textEncoding";
 import { getAsset, getIndex, getJob, saveAsset, saveIndex, saveVideo } from "../store";
 import { createQueuedAssetJob, updateAsset, updateJob } from "../services/jobState";
@@ -189,6 +191,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       await updateAsset(assetId, { status: "scanning", progress: 60, intelligence });
       await updateJob(jobId, { stage: "scan", progress: 60 }, "Local ASR, OCR, and visual scan complete");
       await emitForAsset("asset.indexing.progress", "Local model runtime complete", assetId, jobId, { progress: 60 });
+      await enrichAssetMetadataForIndexing(assetId);
       await sleep(250);
     });
 
@@ -557,6 +560,14 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         { jobId, assetId, vectors: visualStage.visualVectors.length },
         () => upsertAssetVisualVectors(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, visualStage.visualVectors),
         "stage.vector_upsert.visual"
+      );
+      const latest = await requireAsset(assetId);
+      const appearanceVectors = deriveAppearanceVectors({ ...latest, timeline }, visualStage.visualVectors);
+      await traceAsync(
+        "stage.vector_upsert.appearance",
+        { jobId, assetId, vectors: appearanceVectors.length },
+        () => upsertAssetAppearanceVectors(timelineStage.embeddingIndex.id, timelineStage.refreshed.id, appearanceVectors),
+        "stage.vector_upsert.appearance"
       );
     });
 

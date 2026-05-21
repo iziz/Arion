@@ -11,7 +11,7 @@ import type {
   StructuredKnowledgeAnswer
 } from "../../shared/types";
 import { formatKnowledgeSourceLabel } from "../../shared/knowledgeSources";
-import { api } from "../api";
+import { api, getFailureMessage, readJson } from "../api";
 import type { SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import { buildConsoleUrl } from "../navigation";
 import {
@@ -208,6 +208,86 @@ export function useSearchController({
     }
   }
 
+  async function runImageSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const file = formData.get("image");
+    if (!(file instanceof File) || file.size === 0) {
+      setMessage("Choose an image first.");
+      return;
+    }
+    const mode = formData.get("mode") === "scene" ? "scene" : "appearance";
+    const submittedQuery = mode === "scene" ? "Image scene similarity search" : "Image appearance similarity candidate search";
+    const turnId = `image-${Date.now()}-${searchConversation.length}`;
+    const searchScope = resolveSearchScope(searchScopeMode, searchIndexId, searchAssetId, assets);
+    const params = new URLSearchParams({ limit: "25", q: submittedQuery });
+    if (searchScope.indexId) params.set("indexId", searchScope.indexId);
+    if (searchScope.assetId) params.set("assetId", searchScope.assetId);
+    formData.set("q", submittedQuery);
+    setSearching(true);
+    setMessage("");
+    setKnowledgeAnswer(null);
+    setAskResponse(null);
+    setQueryPlan(null);
+    setOrchestrationPlan(null);
+    setSearchResults([]);
+    upsertSearchTurn({
+      id: turnId,
+      query: submittedQuery,
+      answerContent: null,
+      route: "moment_retrieval",
+      knowledgeAnswer: null,
+      results: [],
+      plan: null,
+      operation: null,
+      orchestrationPlan: null
+    });
+    try {
+      const endpoint = mode === "scene" ? "/api/visual-search/image" : "/api/appearance-search/image";
+      const results = await readJson<SearchResult[]>(
+        await fetch(`${endpoint}?${params.toString()}`, {
+          method: "POST",
+          body: formData
+        })
+      );
+      setSearchResults(results);
+      upsertSearchTurn({
+        id: turnId,
+        query: submittedQuery,
+        answerContent: plainClientAnswerContent(
+          mode === "scene"
+            ? `Found ${results.length} scene-similar assets from local keyframe vectors.`
+            : `Found ${results.length} appearance-similar candidate assets from local visual vectors. Results are visual candidates, not identity confirmation.`
+        ),
+        route: results.length > 0 ? "moment_retrieval" : "empty",
+        knowledgeAnswer: null,
+        results,
+        plan: null,
+        operation: null,
+        orchestrationPlan: null
+      });
+      form.reset();
+    } catch (error) {
+      const errorMessage = getFailureMessage(error);
+      setSearchResults([]);
+      upsertSearchTurn({
+        id: turnId,
+        query: submittedQuery,
+        answerContent: plainClientAnswerContent(errorMessage),
+        route: "error",
+        knowledgeAnswer: null,
+        results: [],
+        plan: null,
+        operation: null,
+        orchestrationPlan: null
+      });
+      setMessage(errorMessage);
+    } finally {
+      setSearching(false);
+    }
+  }
+
   async function waitForAskOperation(operationId: string, onResponse?: (response: AskResponse) => void) {
     return new Promise<AskResponse>((resolve, reject) => {
       let settled = false;
@@ -342,6 +422,7 @@ export function useSearchController({
     filteredSearchResults,
     searching,
     runSearch,
+    runImageSearch,
     clearSearchHistory,
     buildAssetMomentUrl
   };

@@ -32,6 +32,23 @@ export type VisualVectorRow = {
   score?: number;
 };
 
+export type AppearanceVectorRow = {
+  id: string;
+  index_id: string;
+  asset_id: string;
+  segment_id: string;
+  keyframe_id: string;
+  keyframe_path: string;
+  start_seconds: number;
+  end_seconds: number;
+  subject_label: string;
+  source: string;
+  metadata_tags: string[];
+  model: string;
+  embedding_json: number[];
+  score?: number;
+};
+
 export function vectorRowToResult(row: VectorRow) {
   return {
     id: row.id,
@@ -59,6 +76,25 @@ export function visualVectorRowToResult(row: VisualVectorRow) {
     keyframePath: row.keyframe_path,
     start: Number(row.start_seconds),
     end: Number(row.end_seconds),
+    model: row.model,
+    vector: row.embedding_json ?? [],
+    score: Number(row.score ?? 0)
+  };
+}
+
+export function appearanceVectorRowToResult(row: AppearanceVectorRow) {
+  return {
+    id: row.id,
+    indexId: row.index_id,
+    assetId: row.asset_id,
+    segmentId: row.segment_id,
+    keyframeId: row.keyframe_id,
+    keyframePath: row.keyframe_path,
+    start: Number(row.start_seconds),
+    end: Number(row.end_seconds),
+    subjectLabel: row.subject_label,
+    source: row.source,
+    metadataTags: row.metadata_tags ?? [],
     model: row.model,
     vector: row.embedding_json ?? [],
     score: Number(row.score ?? 0)

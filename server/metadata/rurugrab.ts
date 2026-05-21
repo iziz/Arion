@@ -34,13 +34,25 @@ const commonFalsePrefixes = new Set(["VIDEO", "MOVIE", "SCENE", "CLIP", "FINAL",
 export function extractRurugrabMediaKeyCandidates(input: string) {
   const normalized = input.normalize("NFKC").toUpperCase();
   const candidates = new Map<string, MediaKeyCandidate>();
-  for (const match of normalized.matchAll(/(?:^|[^A-Z0-9])([A-Z]{2,10})[-_\s]?(\d{2,6})(?=$|[^A-Z0-9])/g)) {
+  for (const match of normalized.matchAll(/(?:^|[^A-Z0-9])([A-Z0-9]{2,12})[-_\s]?(\d{2,6})(?=$|[^A-Z0-9])/g)) {
     const prefix = match[1];
     const digits = match[2];
-    if (!prefix || !digits || commonFalsePrefixes.has(prefix)) continue;
+    if (!prefix || !digits || !/[A-Z]/.test(prefix) || commonFalsePrefixes.has(prefix)) continue;
     for (const digitValue of digitVariants(digits)) {
       addMediaKeyCandidate(candidates, prefix, digitValue, match[0].trim(), match[0].includes("-") ? 0.96 : 0.88);
     }
+  }
+  for (const match of normalized.matchAll(/(?:^|[^A-Z0-9])([A-Z]{2,12})[-_\s]?(\d{6})[-_\s](\d{3})(?=$|[^A-Z0-9])/g)) {
+    const prefix = match[1];
+    const first = match[2];
+    const second = match[3];
+    if (!prefix || !first || !second || commonFalsePrefixes.has(prefix)) continue;
+    addCandidate(candidates, {
+      mediaKeyNorm: `${prefix}${first}${second}`,
+      mediaDisplayKey: `${prefix}-${first}-${second}`,
+      evidence: match[0].trim(),
+      confidence: 0.94
+    });
   }
   for (const match of normalized.matchAll(/(?:^|[^A-Z0-9])(FC2)[-_\s]?(?:PPV[-_\s]?)?(\d{5,8})(?=$|[^A-Z0-9])/g)) {
     const prefix = match[1];
@@ -61,12 +73,36 @@ export function extractRurugrabMediaKeyCandidates(input: string) {
     .slice(0, 12);
 }
 
-export function extractRurugrabMediaKeyCandidatesForAsset(asset: Pick<AssetRecord, "title" | "description" | "originalName" | "tags">) {
-  return extractRurugrabMediaKeyCandidates([asset.title, asset.description, asset.originalName, ...asset.tags].join(" "));
+export function extractRurugrabMediaKeyCandidatesForAsset(
+  asset: Pick<AssetRecord, "title" | "description" | "originalName" | "tags"> &
+    Partial<Pick<AssetRecord, "storedName" | "summary" | "timeline" | "intelligence">>
+) {
+  return extractRurugrabMediaKeyCandidates(
+    [
+      asset.title,
+      asset.description,
+      asset.originalName,
+      asset.storedName,
+      asset.summary,
+      ...asset.tags,
+      ...(asset.intelligence?.ocr.tokens ?? []),
+      ...(asset.timeline ?? []).flatMap((segment) => [
+        segment.label,
+        segment.summary ?? "",
+        segment.transcript,
+        ...segment.tags,
+        ...(segment.sceneData?.text.screenText ?? []),
+        ...(segment.sceneData?.text.overlays ?? []),
+        ...(segment.sceneData?.text.watermarks ?? []),
+        ...(segment.sceneData?.vlm?.visibleText ?? [])
+      ])
+    ].join(" ")
+  );
 }
 
 export async function lookupRurugrabMetadataForAsset(
-  asset: Pick<AssetRecord, "title" | "description" | "originalName" | "tags">,
+  asset: Pick<AssetRecord, "title" | "description" | "originalName" | "tags"> &
+    Partial<Pick<AssetRecord, "storedName" | "summary" | "timeline" | "intelligence">>,
   now = new Date().toISOString()
 ): Promise<ExternalMediaMetadata | null> {
   const candidates = extractRurugrabMediaKeyCandidatesForAsset(asset);

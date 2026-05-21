@@ -136,6 +136,21 @@ export async function ensurePostgresStore() {
       model text not null,
       embedding_json jsonb not null
     );
+    create table if not exists app_appearance_vectors (
+      id text primary key,
+      index_id text not null,
+      asset_id text not null,
+      segment_id text not null,
+      keyframe_id text not null,
+      keyframe_path text not null,
+      start_seconds double precision not null,
+      end_seconds double precision not null,
+      subject_label text not null,
+      source text not null,
+      metadata_tags text[] not null default '{}',
+      model text not null,
+      embedding_json jsonb not null
+    );
     create table if not exists app_knowledge_vectors (
       id text primary key,
       domain_group text not null,
@@ -182,6 +197,8 @@ export async function ensurePostgresStore() {
     create index if not exists app_vectors_asset_id_idx on app_vectors(asset_id);
     create index if not exists app_visual_vectors_index_id_idx on app_visual_vectors(index_id);
     create index if not exists app_visual_vectors_asset_id_idx on app_visual_vectors(asset_id);
+    create index if not exists app_appearance_vectors_index_id_idx on app_appearance_vectors(index_id);
+    create index if not exists app_appearance_vectors_asset_id_idx on app_appearance_vectors(asset_id);
     create index if not exists app_knowledge_vectors_domain_group_idx on app_knowledge_vectors(domain_group);
     create index if not exists app_knowledge_vectors_entity_name_idx on app_knowledge_vectors(entity_name);
     create index if not exists app_tracking_records_asset_id_idx on app_tracking_records(asset_id);
@@ -214,6 +231,13 @@ export async function ensurePostgresStore() {
     }
     await db.query(`alter table app_visual_vectors add column if not exists embedding vector(${visualDimension})`);
     await createVectorIndex(db, "app_visual_vectors_embedding_idx", "app_visual_vectors");
+    const currentAppearanceType = await getVectorColumnType(db, "app_appearance_vectors", "embedding");
+    if (currentAppearanceType && currentAppearanceType !== `vector(${visualDimension})`) {
+      await db.query("drop index if exists app_appearance_vectors_embedding_idx");
+      await db.query("alter table app_appearance_vectors drop column embedding");
+    }
+    await db.query(`alter table app_appearance_vectors add column if not exists embedding vector(${visualDimension})`);
+    await createVectorIndex(db, "app_appearance_vectors_embedding_idx", "app_appearance_vectors");
   }
 
   await seedDefaults();
@@ -229,6 +253,7 @@ export async function ensurePostgresStore() {
   await recordMigration("007_operational_indexes", "Configure operational indexes for worker and polling queries");
   await recordMigration("008_queue_outbox", "Configure transactional queue outbox for Redis dispatch");
   await recordMigration("009_vector_hybrid_search", "Configure pgvector minimum version and lexical vector-search indexes");
+  await recordMigration("010_appearance_vectors", `Configure appearance similarity vector table with ${getExpectedVisualEmbeddingDimensions()} dimensions`);
   setPostgresInitialized(true);
   return true;
 }

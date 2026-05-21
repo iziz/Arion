@@ -26,6 +26,7 @@ export type DeleteCascadeSummary = {
     billing: number;
     textVectors: number;
     visualVectors: number;
+    appearanceVectors: number;
     trackingRecords: number;
   };
 };
@@ -103,6 +104,7 @@ export async function deleteAssetCascade(assetId: string): Promise<DeleteCascade
     const deleted = {
       textVectors: rowCount(await client.query("delete from app_vectors where asset_id = $1", [assetId])),
       visualVectors: rowCount(await client.query("delete from app_visual_vectors where asset_id = $1", [assetId])),
+      appearanceVectors: rowCount(await client.query("delete from app_appearance_vectors where asset_id = $1", [assetId])),
       trackingRecords: rowCount(await client.query("delete from app_tracking_records where asset_id = $1", [assetId])),
       queueOutbox: rowCount(
         await client.query(
@@ -170,6 +172,9 @@ export async function deleteIndexCascade(indexId: string): Promise<DeleteCascade
       ),
       visualVectors: rowCount(
         await client.query("delete from app_visual_vectors where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
+      ),
+      appearanceVectors: rowCount(
+        await client.query("delete from app_appearance_vectors where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
       ),
       trackingRecords: rowCount(
         await client.query("delete from app_tracking_records where index_id = $1 or asset_id = any($2::text[])", [indexId, assetIds])
@@ -327,7 +332,7 @@ export async function getMetrics(): Promise<MetricsSummary> {
       (select count(*)::int from app_jobs where status = 'failed') as failed_jobs,
       coalesce((select sum((data->>'duration')::double precision) from app_assets where data->>'duration' is not null), 0) as total_duration,
       coalesce((select sum(jsonb_array_length(coalesce(data->'timeline', '[]'::jsonb))) from app_assets), 0)::int as segments,
-      ((select count(*)::int from app_vectors) + (select count(*)::int from app_visual_vectors)) as vectors,
+      ((select count(*)::int from app_vectors) + (select count(*)::int from app_visual_vectors) + (select count(*)::int from app_appearance_vectors)) as vectors,
       (select count(*)::int from app_webhooks where active = true) as webhooks,
       coalesce((select sum(units) from app_billing), 0)::int as billing_units
   `);

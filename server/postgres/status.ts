@@ -10,6 +10,7 @@ export async function resetPostgresStore() {
     truncate
       app_vectors,
       app_visual_vectors,
+      app_appearance_vectors,
       app_tracking_records,
       app_ask_operations,
       app_billing,
@@ -67,7 +68,8 @@ async function getVectorTableStatuses() {
   return Promise.all([
     getVectorTableStatus("app_vectors", expectedText, "app_vectors_embedding_idx", "app_vectors_search_tsv_idx"),
     getVectorTableStatus("app_knowledge_vectors", expectedText, "app_knowledge_vectors_embedding_idx", "app_knowledge_vectors_search_tsv_idx"),
-    getVectorTableStatus("app_visual_vectors", expectedVisual, "app_visual_vectors_embedding_idx")
+    getVectorTableStatus("app_visual_vectors", expectedVisual, "app_visual_vectors_embedding_idx"),
+    getVectorTableStatus("app_appearance_vectors", expectedVisual, "app_appearance_vectors_embedding_idx")
   ]);
 }
 

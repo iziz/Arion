@@ -3,6 +3,7 @@ import test from "node:test";
 import { externalMetadataToSearchText } from "../shared/externalMetadata";
 import type { AssetRecord, ExternalMediaMetadata, IndexRecord, TimelineSegment } from "../shared/types";
 import { searchAssets } from "../server/intelligence";
+import { deriveAppearanceVectors } from "../server/appearanceSimilarity";
 import { extractRurugrabMediaKeyCandidates, mergeRurugrabMetadataIntoAsset } from "../server/metadata/rurugrab";
 
 test("Rurugrab product-code extraction handles display and provider filename variants", () => {
@@ -11,6 +12,15 @@ test("Rurugrab product-code extraction handles display and provider filename var
 
   assert.ok(keys.includes("KNMB085"));
   assert.equal(candidates.find((candidate) => candidate.mediaKeyNorm === "KNMB085")?.mediaDisplayKey, "KNMB-085");
+});
+
+test("Rurugrab product-code extraction handles numeric-prefix and dated catalog variants", () => {
+  const candidates = extractRurugrabMediaKeyCandidates("1pondo-012345_001 carib-071214-001 FC2-PPV-1234567");
+  const displays = candidates.map((candidate) => candidate.mediaDisplayKey);
+
+  assert.ok(displays.includes("1PONDO-012345"));
+  assert.ok(displays.includes("CARIB-071214-001"));
+  assert.ok(displays.includes("FC2-PPV-1234567"));
 });
 
 test("Rurugrab metadata merge adds searchable catalog tags and trace", () => {
@@ -38,6 +48,57 @@ test("Indexed catalog metadata tags can retrieve a matching work even when momen
 
   assert.deepEqual(results.map((result) => result.asset.id), ["asset-1"]);
   assert.deepEqual(results[0]?.segments.map((segment) => segment.id), ["generic-moment"]);
+});
+
+test("Catalog scene tags rank the specific work over a generic metadata-only asset", () => {
+  const matching = {
+    ...assetFixture("asset-matching"),
+    status: "indexed" as const,
+    externalMetadata: { rurugrab: metadataFixture() },
+    timeline: [segmentFixture({ id: "scene-tagged", transcript: "quiet indoor moment", tags: ["metadata", "close-up", "Example Performer"] })]
+  };
+  const generic = {
+    ...assetFixture("asset-generic"),
+    status: "indexed" as const,
+    title: "Generic title",
+    originalName: "generic.mp4",
+    timeline: [segmentFixture({ id: "generic", transcript: "quiet indoor moment", tags: ["metadata"] })]
+  };
+
+  const results = searchAssets([generic, matching], [indexFixture()], "Example Performer close-up 장면 찾아줘", {
+    queryVector: [0, 1]
+  });
+
+  assert.deepEqual(results.map((result) => result.asset.id), ["asset-matching"]);
+});
+
+test("Appearance vectors are derived as candidate-only keyframe contexts from catalog metadata", () => {
+  const asset = {
+    ...assetFixture(),
+    status: "indexed" as const,
+    externalMetadata: { rurugrab: metadataFixture() },
+    tags: ["ABCD-123", "Example Performer"],
+    timeline: [segmentFixture({ id: "appearance-segment", tags: ["metadata:rurugrab", "Example Performer"] })]
+  };
+
+  const records = deriveAppearanceVectors(asset, [
+    {
+      id: "asset-1:keyframe-1",
+      indexId: "index-1",
+      assetId: "asset-1",
+      segmentId: "appearance-segment",
+      keyframeId: "keyframe-1",
+      keyframePath: "generated/keyframe.jpg",
+      start: 0,
+      end: 30,
+      vector: [0, 1],
+      model: "fixture"
+    }
+  ]);
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.subjectLabel, "Example Performer");
+  assert.ok(records[0]?.metadataTags.includes("Example Performer"));
 });
 
 function metadataFixture(): ExternalMediaMetadata {
@@ -72,9 +133,9 @@ function metadataFixture(): ExternalMediaMetadata {
   return metadata;
 }
 
-function assetFixture(): AssetRecord {
+function assetFixture(id = "asset-1"): AssetRecord {
   return {
-    id: "asset-1",
+    id,
     indexId: "index-1",
     title: "ABCD-123",
     description: "",

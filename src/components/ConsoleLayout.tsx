@@ -96,6 +96,7 @@ export type ConsoleLayoutProps = {
   setQuery: Dispatch<SetStateAction<string>>;
   searching: boolean;
   runSearch: (event: FormEvent) => Promise<void>;
+  runImageSearch: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   clearSearchHistory: () => void;
   searchScopeMode: SearchScopeMode;
   setSearchScopeMode: (mode: SearchScopeMode) => void;
@@ -646,6 +647,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
     setQuery,
     searching,
     runSearch,
+    runImageSearch,
     clearSearchHistory,
     searchScopeMode,
     setSearchScopeMode,
@@ -1104,6 +1106,17 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                 </div>
               )}
             </div>
+            <form onSubmit={runImageSearch} className="image-search-form" aria-label="Image similarity search">
+              <input name="image" type="file" accept="image/*" disabled={searching} />
+              <select name="mode" defaultValue="appearance" disabled={searching} aria-label="Image search mode">
+                <option value="appearance">Appearance candidates</option>
+                <option value="scene">Scene similarity</option>
+              </select>
+              <button type="submit" disabled={searching} aria-label="Search by image">
+                <Search size={15} />
+                <span>Image</span>
+              </button>
+            </form>
             <form onSubmit={runSearch} className="search-row search-form ask-form chat-composer">
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask for stats, moments, clips, or patterns" />
               <button type="submit" disabled={searching} aria-label={searching ? "Searching" : "Ask"}>

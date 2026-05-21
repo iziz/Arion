@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import type { TimelineSegment } from "../../shared/types";
+import type { AppearanceVectorRecord } from "../appearanceSimilarity";
 import type { VisualVectorRecord } from "../localVisualEmbeddingRuntime";
 import { getPool } from "./connection";
 import { ensurePostgresStore } from "./schema";
@@ -8,6 +9,7 @@ import {
   isVisualPgVectorCompatible,
   type VectorRow,
   vectorLiteral,
+  appearanceVectorRowToResult,
   vectorRecordText,
   vectorRowToResult,
   visualVectorRowToResult
@@ -72,6 +74,25 @@ export async function upsertAssetVisualVectors(_indexId: string, assetId: string
   }
 }
 
+export async function upsertAssetAppearanceVectors(_indexId: string, assetId: string, records: AppearanceVectorRecord[]) {
+  await ensurePostgresStore();
+  validateAppearanceRecords(records);
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    await client.query("delete from app_appearance_vectors where asset_id = $1", [assetId]);
+    for (const record of records) {
+      await insertAppearanceVector(client, record);
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function rebuildVisualVectorStore(records: VisualVectorRecord[]) {
   await ensurePostgresStore();
   validateVisualRecords(records);
@@ -81,6 +102,25 @@ export async function rebuildVisualVectorStore(records: VisualVectorRecord[]) {
     await client.query("truncate app_visual_vectors");
     for (const record of records) {
       await insertVisualVector(client, record);
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function rebuildAppearanceVectorStore(records: AppearanceVectorRecord[]) {
+  await ensurePostgresStore();
+  validateAppearanceRecords(records);
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    await client.query("truncate app_appearance_vectors");
+    for (const record of records) {
+      await insertAppearanceVector(client, record);
     }
     await client.query("commit");
   } catch (error) {
@@ -201,13 +241,38 @@ export async function searchVisualVectors(indexId: string | undefined, queryVect
   return pgvectorRows.rows.map(visualVectorRowToResult);
 }
 
+export async function searchAppearanceVectors(indexId: string | undefined, queryVector: number[], limit = 25) {
+  await ensurePostgresStore();
+  if (!isVisualPgVectorCompatible(queryVector)) {
+    throw new Error(`Appearance query embedding is incompatible with configured pgvector dimensions: ${queryVector.length}.`);
+  }
+  const pgvectorRows = await getPool().query(
+    `select v.*, 1 - (v.embedding <=> $1::vector) as score
+     from app_appearance_vectors v
+     join app_assets a on a.id = v.asset_id
+     where v.embedding is not null
+       and ($2::text is null or v.index_id = $2)
+       and ${assetComplianceSearchableSql}
+     order by v.embedding <=> $1::vector
+     limit $3`,
+    [vectorLiteral(queryVector), indexId ?? null, positiveLimit(limit)]
+  );
+  return pgvectorRows.rows.map(appearanceVectorRowToResult);
+}
+
 const assetComplianceSearchableSql = "((a.data #>> '{compliance,status}') is null or (a.data #>> '{compliance,status}') in ('not_applicable', 'metadata_complete'))";
 
 export async function getVectorCount() {
   await ensurePostgresStore();
   const result = await getPool().query(
-    "select ((select count(*)::int from app_vectors) + (select count(*)::int from app_visual_vectors)) as count"
+    "select ((select count(*)::int from app_vectors) + (select count(*)::int from app_visual_vectors) + (select count(*)::int from app_appearance_vectors)) as count"
   );
+  return result.rows[0].count as number;
+}
+
+export async function getAppearanceVectorCount() {
+  await ensurePostgresStore();
+  const result = await getPool().query("select count(*)::int as count from app_appearance_vectors");
   return result.rows[0].count as number;
 }
 
@@ -260,6 +325,14 @@ function validateVisualRecords(records: VisualVectorRecord[]) {
   }
 }
 
+function validateAppearanceRecords(records: AppearanceVectorRecord[]) {
+  for (const record of records) {
+    if (!isVisualPgVectorCompatible(record.vector)) {
+      throw new Error(`Appearance embedding for ${record.id} is incompatible with pgvector dimension ${record.vector.length}. Rebuild visual embeddings with the configured model.`);
+    }
+  }
+}
+
 async function insertVisualVector(client: PoolClient, record: VisualVectorRecord) {
   await client.query(
     `insert into app_visual_vectors(
@@ -275,6 +348,31 @@ async function insertVisualVector(client: PoolClient, record: VisualVectorRecord
       record.keyframePath,
       record.start,
       record.end,
+      record.model,
+      JSON.stringify(record.vector),
+      vectorLiteral(record.vector)
+    ]
+  );
+}
+
+async function insertAppearanceVector(client: PoolClient, record: AppearanceVectorRecord) {
+  await client.query(
+    `insert into app_appearance_vectors(
+      id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, subject_label, source, metadata_tags, model, embedding_json, embedding
+    )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::vector)`,
+    [
+      record.id,
+      record.indexId,
+      record.assetId,
+      record.segmentId,
+      record.keyframeId,
+      record.keyframePath,
+      record.start,
+      record.end,
+      record.subjectLabel,
+      record.source,
+      record.metadataTags,
       record.model,
       JSON.stringify(record.vector),
       vectorLiteral(record.vector)

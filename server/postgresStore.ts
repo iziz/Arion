@@ -45,11 +45,15 @@ export {
 } from "./postgres/knowledgeVectorRepository";
 export {
   getVectorCount,
+  getAppearanceVectorCount,
   getVisualVectorCount,
+  rebuildAppearanceVectorStore,
   rebuildVectorStore,
   rebuildVisualVectorStore,
+  searchAppearanceVectors,
   searchVectors,
   searchVisualVectors,
+  upsertAssetAppearanceVectors,
   upsertAssetVectors,
   upsertAssetVisualVectors
 } from "./postgres/vectorRepository";

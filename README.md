@@ -356,6 +356,8 @@ Supported sports knowledge and template sources include:
 
 For owned catalog search, Arion can enrich uploaded assets from the local Rurugrab metadata SQLite database at `/Users/ishtar/.rurugrab/localdb.metadata.sqlite3` or `RURUGRAB_METADATA_DB_PATH`. Product-code matches add title, studio, label, series, performer, genre, cover, preview, and provider-count metadata to `asset.externalMetadata.rurugrab`, then copy compact catalog tags into timeline segments for title, performer, and scene retrieval.
 
+Image search supports two local-library modes: scene similarity searches keyframe visual vectors, while appearance candidate search uses a separate `app_appearance_vectors` table derived from keyframe/person-context evidence. Appearance results are candidate matches only and do not confirm a person's identity.
+
 Useful commands:
 
 ```bash

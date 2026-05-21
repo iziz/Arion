@@ -1,9 +1,11 @@
 import { withSceneData } from "../intelligence";
+import { deriveAppearanceVectors } from "../appearanceSimilarity";
 import { generateKeyframes } from "../keyframes";
 import { embedTimelineSegments, getEmbeddingModelName } from "../localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../localVisualEmbeddingRuntime";
 import { getObjectPath } from "../localObjectStorage";
 import { rebuildVectorStore } from "../localVectorStore";
+import { rebuildAppearanceVectorStore } from "../localAppearanceVectorStore";
 import { rebuildVisualVectorStore } from "../localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../store";
 import { recordEvent } from "./events";
@@ -24,6 +26,7 @@ export async function rebuildVectorStores() {
   const indexed = assets.filter((asset) => asset.status === "indexed");
   const refreshed = [];
   const visualRecords = [];
+  const appearanceRecords = [];
   for (const asset of indexed) {
     const index = indexes.find((item) => item.id === asset.indexId);
     if (!index) continue;
@@ -87,11 +90,13 @@ export async function rebuildVectorStores() {
     await saveAsset(next);
     refreshed.push(next);
     visualRecords.push(...records);
+    appearanceRecords.push(...deriveAppearanceVectors(next, records));
   }
   await rebuildVectorStore(refreshed);
   await rebuildVisualVectorStore(visualRecords);
+  await rebuildAppearanceVectorStore(appearanceRecords);
   await recordEvent("system.info", "Vector store rebuilt", {
-    payload: { assets: refreshed.length, model: getEmbeddingModelName(), visualModel: getVisualEmbeddingModelName() }
+    payload: { assets: refreshed.length, model: getEmbeddingModelName(), visualModel: getVisualEmbeddingModelName(), appearanceVectors: appearanceRecords.length }
   });
-  return { ok: true, assets: refreshed.length, model: getEmbeddingModelName(), visualModel: getVisualEmbeddingModelName() };
+  return { ok: true, assets: refreshed.length, model: getEmbeddingModelName(), visualModel: getVisualEmbeddingModelName(), appearanceVectors: appearanceRecords.length };
 }

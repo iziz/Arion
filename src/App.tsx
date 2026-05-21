@@ -88,6 +88,7 @@ export default function App() {
     filteredSearchResults,
     searching,
     runSearch,
+    runImageSearch,
     clearSearchHistory,
     buildAssetMomentUrl
   } = useSearchController({ indexes, assets, selectedIndexId, selectedAssetId, setMessage });
@@ -507,6 +508,7 @@ export default function App() {
       setQuery={setQuery}
       searching={searching}
       runSearch={runSearch}
+      runImageSearch={runImageSearch}
       clearSearchHistory={clearSearchHistory}
       searchScopeMode={searchScopeMode}
       setSearchScopeMode={setSearchScopeMode}
