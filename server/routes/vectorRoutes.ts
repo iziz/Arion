@@ -97,7 +97,11 @@ export function registerVectorRoutes(app: Express, upload: UploadMiddleware) {
           visualHitsBySegment
         }).map((result) => ({
           ...result,
-          explain: [...result.explain, "appearance similarity search uses local visual candidates, not identity confirmation"]
+          explain: [
+            ...result.explain,
+            "appearance similarity search uses local visual clusters as candidates, not identity confirmation",
+            ...appearanceClusterExplain(hits, result.asset.id)
+          ]
         }))
       );
     } catch (error) {
@@ -110,4 +114,21 @@ export function registerVectorRoutes(app: Express, upload: UploadMiddleware) {
   app.post("/api/vector-store/rebuild", async (_req, res) => {
     res.json(await rebuildVectorStores());
   });
+}
+
+function appearanceClusterExplain(
+  hits: Array<{ assetId: string; clusterId?: string; clusterSize?: number; subjectLabel?: string; score?: number }>,
+  assetId: string
+) {
+  const seen = new Set<string>();
+  return hits
+    .filter((hit) => hit.assetId === assetId)
+    .filter((hit) => {
+      const key = hit.clusterId ?? "";
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 3)
+    .map((hit) => `appearance cluster=${hit.subjectLabel ?? "candidate"} size=${hit.clusterSize ?? 1} score=${Math.round((hit.score ?? 0) * 100)}%`);
 }

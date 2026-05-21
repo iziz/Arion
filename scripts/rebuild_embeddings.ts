@@ -1,11 +1,13 @@
 import "../server/env";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
+import { deriveAppearanceVectors } from "../server/appearanceSimilarity";
 import { withSceneData } from "../server/intelligence";
 import { embedTimelineSegments, getEmbeddingModelName } from "../server/localEmbeddingRuntime";
 import { embedKeyframes, getVisualEmbeddingModelName } from "../server/localVisualEmbeddingRuntime";
 import { generateKeyframes } from "../server/keyframes";
 import { getObjectPath } from "../server/localObjectStorage";
 import { upsertAssetVectors } from "../server/localVectorStore";
+import { upsertAssetAppearanceVectors } from "../server/localAppearanceVectorStore";
 import { upsertAssetVisualVectors } from "../server/localVisualVectorStore";
 import { listAssets, listIndexes, saveAsset, saveIndex } from "../server/store";
 import { applyVisionDetections, applyVisionTracking, applyVisionTracks, detectTimelineObjects, detectTimelineTracks } from "../server/visionDetectionRuntime";
@@ -21,6 +23,7 @@ const indexedAssets = (await listAssets()).filter((asset) => asset.status === "i
 const indexes = await listIndexes();
 let segments = 0;
 let visualVectors = 0;
+let appearanceVectors = 0;
 let generatedKeyframes = 0;
 const startedAt = Date.now();
 
@@ -152,6 +155,9 @@ for (const [assetIndex, asset] of indexedAssets.entries()) {
   await saveAsset(nextAsset);
   await upsertAssetVectors(asset.indexId, asset.id, timeline);
   await upsertAssetVisualVectors(asset.indexId, asset.id, records);
+  const appearanceRecords = deriveAppearanceVectors(nextAsset, records);
+  appearanceVectors += appearanceRecords.length;
+  await upsertAssetAppearanceVectors(asset.indexId, asset.id, appearanceRecords);
   await upsertAssetTracking(nextAsset);
   console.error(`[rebuild] ${asset.id} saved in ${Math.round((Date.now() - assetStartedAt) / 1000)}s`);
 }
@@ -165,6 +171,7 @@ console.log(
       assets: indexedAssets.length,
       segments,
       visualVectors,
+      appearanceVectors,
       generatedKeyframes,
       durationSeconds: Math.round((Date.now() - startedAt) / 1000)
     },

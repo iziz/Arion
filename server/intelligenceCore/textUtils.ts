@@ -47,7 +47,7 @@ export function checksum(input: string) {
 export function extractKeywords(input: string) {
   return unique(
     normalizeSearchValue(input)
-      .replace(/[^a-z0-9가-힣\s-]/g, " ")
+      .replace(/[^a-z0-9가-힣ぁ-ゟ゠-ヿ一-龯々〆〤\s-]/g, " ")
       .split(/\s+/)
       .map((term) => term.trim().replace(/^-+|-+$/g, ""))
       .filter((term) => isSearchKeyword(term))
@@ -57,7 +57,7 @@ export function extractKeywords(input: string) {
 function isSearchKeyword(term: string) {
   if (!term) return false;
   if (stopWords.has(term)) return false;
-  if (/[가-힣]/.test(term)) return term.length >= 2;
+  if (/[가-힣ぁ-ゟ゠-ヿ一-龯々〆〤]/.test(term)) return term.length >= 2;
   return term.length > 2;
 }
 

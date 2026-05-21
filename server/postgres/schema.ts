@@ -145,6 +145,9 @@ export async function ensurePostgresStore() {
       keyframe_path text not null,
       start_seconds double precision not null,
       end_seconds double precision not null,
+      cluster_id text not null,
+      cluster_size integer not null default 1,
+      cluster_rank integer not null default 1,
       subject_label text not null,
       source text not null,
       metadata_tags text[] not null default '{}',
@@ -206,6 +209,7 @@ export async function ensurePostgresStore() {
     create index if not exists app_tracking_records_track_id_idx on app_tracking_records(track_id);
   `);
   await ensureLexicalVectorIndexes(db);
+  await ensureAppearanceClusterColumns(db);
 
   if (vectorExtensionAvailable) {
     const dimension = getExpectedEmbeddingDimensions();
@@ -254,8 +258,20 @@ export async function ensurePostgresStore() {
   await recordMigration("008_queue_outbox", "Configure transactional queue outbox for Redis dispatch");
   await recordMigration("009_vector_hybrid_search", "Configure pgvector minimum version and lexical vector-search indexes");
   await recordMigration("010_appearance_vectors", `Configure appearance similarity vector table with ${getExpectedVisualEmbeddingDimensions()} dimensions`);
+  await recordMigration("011_appearance_clusters", "Configure candidate appearance cluster metadata");
   setPostgresInitialized(true);
   return true;
+}
+
+async function ensureAppearanceClusterColumns(db: Pool) {
+  await db.query(`
+    alter table app_appearance_vectors add column if not exists cluster_id text;
+    alter table app_appearance_vectors add column if not exists cluster_size integer not null default 1;
+    alter table app_appearance_vectors add column if not exists cluster_rank integer not null default 1;
+    update app_appearance_vectors set cluster_id = id where cluster_id is null or cluster_id = '';
+    alter table app_appearance_vectors alter column cluster_id set not null;
+    create index if not exists app_appearance_vectors_cluster_id_idx on app_appearance_vectors(cluster_id);
+  `);
 }
 
 export async function getVectorColumnType(db: Pool, table: string, column: string) {

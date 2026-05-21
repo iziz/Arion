@@ -246,6 +246,8 @@ export async function searchAppearanceVectors(indexId: string | undefined, query
   if (!isVisualPgVectorCompatible(queryVector)) {
     throw new Error(`Appearance query embedding is incompatible with configured pgvector dimensions: ${queryVector.length}.`);
   }
+  const boundedLimit = positiveLimit(limit);
+  const candidateLimit = Math.max(boundedLimit * 6, 80);
   const pgvectorRows = await getPool().query(
     `select v.*, 1 - (v.embedding <=> $1::vector) as score
      from app_appearance_vectors v
@@ -255,9 +257,9 @@ export async function searchAppearanceVectors(indexId: string | undefined, query
        and ${assetComplianceSearchableSql}
      order by v.embedding <=> $1::vector
      limit $3`,
-    [vectorLiteral(queryVector), indexId ?? null, positiveLimit(limit)]
+    [vectorLiteral(queryVector), indexId ?? null, candidateLimit]
   );
-  return pgvectorRows.rows.map(appearanceVectorRowToResult);
+  return mergeAppearanceClusterHits(pgvectorRows.rows, boundedLimit);
 }
 
 const assetComplianceSearchableSql = "((a.data #>> '{compliance,status}') is null or (a.data #>> '{compliance,status}') in ('not_applicable', 'metadata_complete'))";
@@ -358,9 +360,9 @@ async function insertVisualVector(client: PoolClient, record: VisualVectorRecord
 async function insertAppearanceVector(client: PoolClient, record: AppearanceVectorRecord) {
   await client.query(
     `insert into app_appearance_vectors(
-      id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, subject_label, source, metadata_tags, model, embedding_json, embedding
+      id, index_id, asset_id, segment_id, keyframe_id, keyframe_path, start_seconds, end_seconds, cluster_id, cluster_size, cluster_rank, subject_label, source, metadata_tags, model, embedding_json, embedding
     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::vector)`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::vector)`,
     [
       record.id,
       record.indexId,
@@ -370,6 +372,9 @@ async function insertAppearanceVector(client: PoolClient, record: AppearanceVect
       record.keyframePath,
       record.start,
       record.end,
+      record.clusterId,
+      record.clusterSize,
+      record.clusterRank,
       record.subjectLabel,
       record.source,
       record.metadataTags,
@@ -378,6 +383,35 @@ async function insertAppearanceVector(client: PoolClient, record: AppearanceVect
       vectorLiteral(record.vector)
     ]
   );
+}
+
+function mergeAppearanceClusterHits(rows: Array<Parameters<typeof appearanceVectorRowToResult>[0]>, limit: number) {
+  const byCluster = new Map<string, {
+    best: ReturnType<typeof appearanceVectorRowToResult>;
+    support: number;
+    bestScore: number;
+  }>();
+  for (const row of rows) {
+    const hit = appearanceVectorRowToResult(row);
+    const key = hit.clusterId || hit.id;
+    const existing = byCluster.get(key);
+    if (!existing || hit.score > existing.bestScore) {
+      byCluster.set(key, { best: hit, support: (existing?.support ?? 0) + 1, bestScore: hit.score });
+    } else {
+      existing.support += 1;
+    }
+  }
+  return Array.from(byCluster.values())
+    .map(({ best, support, bestScore }) => {
+      const clusterBoost = Math.min(0.04, Math.log2(Math.max(1, best.clusterSize) + 1) * 0.01);
+      const supportBoost = Math.min(0.02, Math.max(0, support - 1) * 0.004);
+      return {
+        ...best,
+        score: Number((bestScore + clusterBoost + supportBoost).toFixed(6))
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 function positiveLimit(value: number) {

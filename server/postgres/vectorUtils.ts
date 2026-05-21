@@ -41,6 +41,9 @@ export type AppearanceVectorRow = {
   keyframe_path: string;
   start_seconds: number;
   end_seconds: number;
+  cluster_id: string;
+  cluster_size: number;
+  cluster_rank: number;
   subject_label: string;
   source: string;
   metadata_tags: string[];
@@ -92,6 +95,9 @@ export function appearanceVectorRowToResult(row: AppearanceVectorRow) {
     keyframePath: row.keyframe_path,
     start: Number(row.start_seconds),
     end: Number(row.end_seconds),
+    clusterId: row.cluster_id,
+    clusterSize: Number(row.cluster_size ?? 1),
+    clusterRank: Number(row.cluster_rank ?? 1),
     subjectLabel: row.subject_label,
     source: row.source,
     metadataTags: row.metadata_tags ?? [],

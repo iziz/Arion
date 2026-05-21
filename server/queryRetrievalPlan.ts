@@ -74,7 +74,7 @@ function fallbackEvidenceTerms(queryPlan: DomainQueryPlan | null | undefined, fa
 
 function normalizeEvidenceTerm(value: string) {
   return normalizeSearchValue(value)
-    .replace(/[^a-z0-9가-힣\s-]/g, " ")
+    .replace(/[^a-z0-9가-힣ぁ-ゟ゠-ヿ一-龯々〆〤\s-]/g, " ")
     .split(/\s+/)
     .map((term) => term.trim().replace(/^-+|-+$/g, ""))
     .filter(Boolean)

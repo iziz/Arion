@@ -1006,6 +1006,14 @@ export type DomainSearchFilters = {
   passType?: string;
   fieldZone?: string;
   role?: "receiver" | "passer" | "shooter" | "any";
+  catalogKey?: string;
+  performer?: string;
+  studio?: string;
+  label?: string;
+  series?: string;
+  genre?: string;
+  scene?: string;
+  appearance?: "similar_person" | "person";
 };
 
 export type DomainParticipantConstraint = {
@@ -1076,6 +1084,14 @@ export type DomainQueryPlan = {
     fieldZone: string | null;
     player: string | null;
     role: "receiver" | "passer" | "shooter" | "any" | null;
+    catalogKey?: string | null;
+    performer?: string | null;
+    studio?: string | null;
+    label?: string | null;
+    series?: string | null;
+    genre?: string | null;
+    scene?: string | null;
+    appearance?: "similar_person" | "person" | null;
   };
   confidence: number;
   warnings: string[];
@@ -1228,7 +1244,22 @@ export type SearchMatchReason = {
 
 export type VerificationCheck = {
   segmentId: string;
-  constraint: "competition" | "season" | "player" | "eventType" | "passType" | "fieldZone" | "role";
+  constraint:
+    | "competition"
+    | "season"
+    | "player"
+    | "eventType"
+    | "passType"
+    | "fieldZone"
+    | "role"
+    | "catalogKey"
+    | "performer"
+    | "studio"
+    | "label"
+    | "series"
+    | "genre"
+    | "scene"
+    | "appearance";
   expected: string;
   observed: string;
   status: "pass" | "soft_pass" | "fail" | "unknown";

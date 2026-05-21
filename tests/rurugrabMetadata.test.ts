@@ -98,7 +98,36 @@ test("Appearance vectors are derived as candidate-only keyframe contexts from ca
 
   assert.equal(records.length, 1);
   assert.equal(records[0]?.subjectLabel, "Example Performer");
+  assert.equal(records[0]?.clusterSize, 1);
+  assert.equal(records[0]?.clusterRank, 1);
   assert.ok(records[0]?.metadataTags.includes("Example Performer"));
+});
+
+test("Appearance vectors assign deterministic clusters for visually similar candidates", () => {
+  const asset = {
+    ...assetFixture(),
+    status: "indexed" as const,
+    externalMetadata: { rurugrab: metadataFixture() },
+    tags: ["ABCD-123", "Example Performer"],
+    timeline: [
+      segmentFixture({ id: "appearance-a", tags: ["metadata:rurugrab", "Example Performer"] }),
+      segmentFixture({ id: "appearance-b", start: 30, end: 60, tags: ["metadata:rurugrab", "Example Performer"] }),
+      segmentFixture({ id: "appearance-c", start: 60, end: 90, tags: ["metadata:rurugrab", "Example Performer"] })
+    ]
+  };
+
+  const records = deriveAppearanceVectors(asset, [
+    visualRecordFixture({ id: "asset-1:keyframe-1", segmentId: "appearance-a", keyframeId: "keyframe-1", start: 0, end: 30, vector: [1, 0] }),
+    visualRecordFixture({ id: "asset-1:keyframe-2", segmentId: "appearance-b", keyframeId: "keyframe-2", start: 30, end: 60, vector: [0.99, 0.01] }),
+    visualRecordFixture({ id: "asset-1:keyframe-3", segmentId: "appearance-c", keyframeId: "keyframe-3", start: 60, end: 90, vector: [0, 1] })
+  ]);
+
+  const firstCluster = records.filter((record) => record.clusterId === "asset-1:appearance-cluster-001");
+  const secondCluster = records.filter((record) => record.clusterId === "asset-1:appearance-cluster-002");
+  assert.equal(firstCluster.length, 2);
+  assert.equal(secondCluster.length, 1);
+  assert.deepEqual(firstCluster.map((record) => record.clusterSize), [2, 2]);
+  assert.deepEqual(firstCluster.map((record) => record.clusterRank).sort(), [1, 2]);
 });
 
 function metadataFixture(): ExternalMediaMetadata {
@@ -188,6 +217,23 @@ function segmentFixture(overrides: Partial<TimelineSegment> = {}): TimelineSegme
     embedding: [1, 0],
     thumbnailPath: null,
     sources: ["metadata"],
+    ...overrides
+  };
+}
+
+function visualRecordFixture(overrides: {
+  id: string;
+  segmentId: string;
+  keyframeId: string;
+  start: number;
+  end: number;
+  vector: number[];
+}) {
+  return {
+    indexId: "index-1",
+    assetId: "asset-1",
+    keyframePath: `generated/${overrides.keyframeId}.jpg`,
+    model: "fixture",
     ...overrides
   };
 }

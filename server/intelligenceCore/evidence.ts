@@ -91,7 +91,7 @@ function matchesLexicalTerm(normalizedHaystack: string, tokens: Set<string>, ter
 
 function normalizeForLexicalMatch(value: string) {
   return normalizeSearchValue(value)
-    .replace(/[^a-z0-9가-힣\s-]/g, " ")
+    .replace(/[^a-z0-9가-힣ぁ-ゟ゠-ヿ一-龯々〆〤\s-]/g, " ")
     .split(/\s+/)
     .map((term) => term.trim().replace(/^-+|-+$/g, ""))
     .filter(Boolean)
@@ -139,7 +139,15 @@ export type SegmentDomainFilterEvaluation = {
 
 export function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearchFilters) {
   if (!filters) return true;
-  const terms = [filters.player].map((value) => value?.trim()).filter(Boolean) as string[];
+  const terms = [
+    filters.player,
+    filters.catalogKey,
+    filters.performer,
+    filters.studio,
+    filters.label,
+    filters.series,
+    filters.genre
+  ].map((value) => value?.trim()).filter(Boolean) as string[];
   if (terms.length === 0) return true;
   const haystack = normalizeSearchValue(
     [
@@ -226,6 +234,7 @@ export function evaluateSegmentDomainFilters(asset: AssetRecord, segment: Timeli
     }
   }
 
+  applyAdultJpFilters(asset, segment, filters, fullSegmentText, { trust, weaken, fail });
   applyEventFilters(segment, filters, fullSegmentText, { trust, weaken, fail });
 
   if (evaluation.failures.length > 0) {
@@ -235,6 +244,105 @@ export function evaluateSegmentDomainFilters(asset: AssetRecord, segment: Timeli
     return { ...evaluation, trust: "weak" };
   }
   return evaluation;
+}
+
+function applyAdultJpFilters(
+  asset: AssetRecord,
+  segment: TimelineSegment,
+  filters: DomainSearchFilters,
+  fullSegmentText: string,
+  record: {
+    trust: (constraint: DomainFilterConstraint) => void;
+    weaken: (constraint: DomainFilterConstraint) => void;
+    fail: (constraint: DomainFilterConstraint) => void;
+  }
+) {
+  const metadataFilters: Array<[DomainFilterConstraint, string | undefined]> = [
+    ["catalogKey", filters.catalogKey],
+    ["performer", filters.performer],
+    ["studio", filters.studio],
+    ["label", filters.label],
+    ["series", filters.series],
+    ["genre", filters.genre]
+  ];
+  for (const [field, value] of metadataFilters) {
+    if (!value?.trim()) continue;
+    if (adultMetadataAllowsFilter(asset, field, value)) {
+      record.trust(field);
+    } else if (textAllowsFilter(fullSegmentText, value)) {
+      record.weaken(field);
+    } else {
+      record.fail(field);
+    }
+  }
+  if (filters.scene?.trim()) {
+    if (textAllowsFilter(segmentSceneFilterText(segment), filters.scene)) record.weaken("scene");
+    else record.fail("scene");
+  }
+  if (filters.appearance) {
+    if (hasAppearanceEvidence(asset, segment)) record.weaken("appearance");
+    else record.fail("appearance");
+  }
+}
+
+function adultMetadataAllowsFilter(asset: AssetRecord, field: DomainFilterConstraint, value: string) {
+  const metadata = asset.externalMetadata?.rurugrab;
+  if (!metadata || metadata.status !== "matched") return false;
+  const values = adultMetadataValues(asset, field);
+  return values.some((candidate) => valueMatchesFilter(candidate, value));
+}
+
+function adultMetadataValues(asset: AssetRecord, field: DomainFilterConstraint) {
+  const metadata = asset.externalMetadata?.rurugrab;
+  if (!metadata || metadata.status !== "matched") return [];
+  switch (field) {
+    case "catalogKey":
+      return [
+        metadata.mediaDisplayKey,
+        metadata.mediaKeyNorm,
+        ...Object.values(metadata.externalIds).map((value) => (value == null ? "" : String(value))),
+        ...asset.tags
+      ].filter(Boolean) as string[];
+    case "performer":
+      return metadata.performers;
+    case "studio":
+      return [metadata.studio].filter(Boolean) as string[];
+    case "label":
+      return [metadata.label].filter(Boolean) as string[];
+    case "series":
+      return [metadata.series].filter(Boolean) as string[];
+    case "genre":
+      return metadata.genres;
+    default:
+      return [];
+  }
+}
+
+function adultMetadataObserved(asset: AssetRecord, field: DomainFilterConstraint) {
+  const values = adultMetadataValues(asset, field);
+  return values.length > 0 ? values.slice(0, 4).join(", ") : null;
+}
+
+function valueMatchesFilter(candidate: string, expected: string) {
+  const normalizedCandidate = normalizeSearchValue(candidate);
+  const normalizedExpected = normalizeSearchValue(expected);
+  if (!normalizedCandidate || !normalizedExpected) return false;
+  const compactCandidate = normalizedCandidate.replace(/[^a-z0-9가-힣ぁ-ゟ゠-ヿ一-龯々〆〤]/g, "");
+  const compactExpected = normalizedExpected.replace(/[^a-z0-9가-힣ぁ-ゟ゠-ヿ一-龯々〆〤]/g, "");
+  return (
+    normalizedCandidate.includes(normalizedExpected) ||
+    normalizedExpected.includes(normalizedCandidate) ||
+    Boolean(compactCandidate && compactExpected && (compactCandidate.includes(compactExpected) || compactExpected.includes(compactCandidate)))
+  );
+}
+
+function hasAppearanceEvidence(asset: AssetRecord, segment: TimelineSegment) {
+  if (asset.externalMetadata?.rurugrab?.performers.length) return true;
+  if (segment.tags.some((tag) => /performer|actor|actress|person|face|metadata:rurugrab/i.test(tag))) return true;
+  const scene = segment.sceneData;
+  if (scene?.vision?.tracking?.playerTracks?.length) return true;
+  if ((scene?.vision?.objects.players.countEstimate ?? 0) > 0) return true;
+  return [...(scene?.image.labels ?? []), ...(scene?.vlm?.objects ?? []), ...(scene?.vlm?.actions ?? [])].some((label) => /person|face|human|portrait/i.test(label));
 }
 
 function segmentDomainFilterText(asset: AssetRecord, segment: TimelineSegment) {
@@ -260,6 +368,25 @@ function segmentDomainFilterText(asset: AssetRecord, segment: TimelineSegment) {
         event.football?.passingPlayer.identity?.name,
         event.americanFootball?.quarterback.identity?.name
       ])
+    ].join(" ")
+  );
+}
+
+function segmentSceneFilterText(segment: TimelineSegment) {
+  return normalizeSearchValue(
+    [
+      segment.label,
+      segment.summary ?? "",
+      segment.transcript,
+      segment.tags.join(" "),
+      segmentSearchText(segment),
+      ...(segment.sceneData?.text.subtitles ?? []),
+      ...(segment.sceneData?.text.screenText ?? []),
+      ...(segment.sceneData?.text.overlays ?? []),
+      segment.sceneData?.vlm?.caption ?? "",
+      segment.sceneData?.vlm?.description ?? "",
+      ...(segment.sceneData?.vlm?.objects ?? []),
+      ...(segment.sceneData?.vlm?.actions ?? [])
     ].join(" ")
   );
 }
@@ -464,6 +591,7 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
       asset.description,
       asset.originalName,
       asset.tags.join(" "),
+      externalMetadataSearchText(asset),
       segment.label,
       segment.transcript,
       segmentSearchText(segment),
@@ -581,6 +709,29 @@ export function buildVerificationChecks(asset: AssetRecord, segment: TimelineSeg
     }
   }
 
+  pushTextBackedCheck("catalogKey", filters.catalogKey, adultMetadataObserved(asset, "catalogKey"), adultMetadataAllowsFilter(asset, "catalogKey", filters.catalogKey ?? "") ? 0.92 : 0, ["Matched local catalog metadata."]);
+  pushTextBackedCheck("performer", filters.performer, adultMetadataObserved(asset, "performer"), adultMetadataAllowsFilter(asset, "performer", filters.performer ?? "") ? 0.88 : 0, ["Matched local performer metadata."]);
+  pushTextBackedCheck("studio", filters.studio, adultMetadataObserved(asset, "studio"), adultMetadataAllowsFilter(asset, "studio", filters.studio ?? "") ? 0.82 : 0, ["Matched local studio metadata."]);
+  pushTextBackedCheck("label", filters.label, adultMetadataObserved(asset, "label"), adultMetadataAllowsFilter(asset, "label", filters.label ?? "") ? 0.8 : 0, ["Matched local label metadata."]);
+  pushTextBackedCheck("series", filters.series, adultMetadataObserved(asset, "series"), adultMetadataAllowsFilter(asset, "series", filters.series ?? "") ? 0.84 : 0, ["Matched local series metadata."]);
+  pushTextBackedCheck("genre", filters.genre, adultMetadataObserved(asset, "genre"), adultMetadataAllowsFilter(asset, "genre", filters.genre ?? "") ? 0.78 : 0, ["Matched local genre metadata."]);
+  if (filters.scene) {
+    const sceneText = segmentSceneFilterText(segment);
+    pushTextBackedCheck("scene", filters.scene, textAllowsFilter(sceneText, filters.scene) ? filters.scene : null, textAllowsFilter(sceneText, filters.scene) ? 0.5 : 0, ["Matched indexed scene text."]);
+  }
+  if (filters.appearance) {
+    const appearanceEvidence = hasAppearanceEvidence(asset, segment);
+    checks.push({
+      segmentId: segment.id,
+      constraint: "appearance",
+      expected: filters.appearance,
+      observed: appearanceEvidence ? "appearance candidate evidence" : "missing",
+      status: appearanceEvidence ? "soft_pass" : "unknown",
+      confidence: appearanceEvidence ? 0.5 : 0,
+      evidence: appearanceEvidence ? ["Matched candidate-only appearance evidence."] : ["No indexed appearance candidate evidence."]
+    });
+  }
+
   const firstMatchingEvent = events[0];
   if (filters.eventType) {
     const match = events.find((event) => event.eventType === filters.eventType);
@@ -668,6 +819,7 @@ export function buildSearchMatchReasons(
     [
       asset.title,
       asset.description,
+      externalMetadataSearchText(asset),
       segment.label,
       segment.transcript,
       segment.tags.join(" "),
@@ -714,6 +866,22 @@ export function buildSearchMatchReasons(
   }
   if (filters?.player && segmentText.includes(normalizeSearchValue(filters.player))) {
     reasons.push({ segmentId: segment.id, kind: "domain_filter", label: "Player", value: filters.player });
+  }
+  for (const [field, label] of [
+    ["catalogKey", "Catalog"],
+    ["performer", "Performer"],
+    ["studio", "Studio"],
+    ["label", "Label"],
+    ["series", "Series"],
+    ["genre", "Genre"],
+    ["scene", "Scene"],
+    ["appearance", "Appearance"]
+  ] as const) {
+    const value = filters?.[field];
+    const text = field === "scene" ? segmentSceneFilterText(segment) : segmentText;
+    if (value && (field === "appearance" ? hasAppearanceEvidence(asset, segment) : text.includes(normalizeSearchValue(value)))) {
+      reasons.push({ segmentId: segment.id, kind: "domain_filter", label, value });
+    }
   }
 
   for (const event of events) {

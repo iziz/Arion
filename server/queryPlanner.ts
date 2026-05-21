@@ -1,12 +1,14 @@
 import type { DomainQueryPlan, DomainSearchFilters } from "../shared/types";
 import { buildRetrievalPlan } from "./queryRetrievalPlan";
 import { matchKnowledgeCompetition, matchKnowledgePlayer, resolveRecentSeasons } from "./knowledge/registry";
+import { planAdultJpSearchQuery } from "./queryProfiles/adultJpSearch";
 
 const ignoredPlayerAliases = new Set(["query", "search", "match", "video", "clip", "clips", "moment", "moments", "speed", "top", "best", "goal", "goals", "save", "saves", "play", "plays"]);
 
 export function planDomainQuery(query: string, explicitFilters: DomainSearchFilters = {}): DomainQueryPlan {
   const originalQuery = query.trim();
   const normalized = normalize(originalQuery);
+  const adultProfile = planAdultJpSearchQuery(originalQuery);
   const playerInventory = isPlayerInventoryQuery(originalQuery);
   const inferred: DomainSearchFilters = {};
   const warnings: string[] = [];
@@ -103,17 +105,38 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
     warnings.push("Field zone is matched from indexed domain labels, not calibrated pitch geometry.");
   }
 
+  if (adultProfile.active) {
+    Object.assign(inferred, adultProfile.filters);
+    warnings.push(...adultProfile.warnings);
+    confidence += adultProfile.confidenceBoost;
+  }
+
   const domainFilters = compactFilters({ ...inferred, ...compactFilters(explicitFilters) });
-  const semanticQuery = playerInventory ? "mentioned player names" : buildSemanticQuery(originalQuery, domainFilters);
+  const semanticQuery = playerInventory
+    ? "mentioned player names"
+    : adultProfile.active
+      ? adultProfile.textQuery
+      : buildSemanticQuery(originalQuery, domainFilters);
   const rewrittenQuery = playerInventory ? "Extract mentioned player names from indexed timeline text and domain scopes." : buildRewrittenQuery(domainFilters, semanticQuery);
   const routePlan = inferQueryRoute(originalQuery, statQuestion, domainFilters, playerInventory);
-  const retrieval = buildRetrievalPlan(originalQuery, semanticQuery);
+  const retrieval = buildRetrievalPlan(
+    originalQuery,
+    semanticQuery,
+    adultProfile.active
+      ? {
+          textQuery: adultProfile.textQuery,
+          visualQuery: adultProfile.visualQuery,
+          evidenceTerms: adultProfile.evidenceTerms
+        }
+      : undefined
+  );
 
   return {
     originalQuery,
     semanticQuery,
     rewrittenQuery,
     retrieval,
+    filterEvidence: adultProfile.active ? adultProfile.filterEvidence : undefined,
     domainFilters,
     route: routePlan.route,
     responseMode: routePlan.responseMode,
@@ -126,7 +149,15 @@ export function planDomainQuery(query: string, explicitFilters: DomainSearchFilt
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
       player: domainFilters.player ?? null,
-      role: domainFilters.role ?? null
+      role: domainFilters.role ?? null,
+      catalogKey: domainFilters.catalogKey ?? null,
+      performer: domainFilters.performer ?? null,
+      studio: domainFilters.studio ?? null,
+      label: domainFilters.label ?? null,
+      series: domainFilters.series ?? null,
+      genre: domainFilters.genre ?? null,
+      scene: domainFilters.scene ?? null,
+      appearance: domainFilters.appearance ?? null
     },
     confidence: Number(Math.min(0.92, confidence).toFixed(2)),
     warnings
@@ -155,7 +186,22 @@ function inferQueryRoute(
 }
 
 function hasDomainFilterEvidence(filters: DomainSearchFilters) {
-  return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || filters.role);
+  return Boolean(
+    filters.competition ||
+      filters.player ||
+      filters.eventType ||
+      filters.passType ||
+      filters.fieldZone ||
+      filters.role ||
+      filters.catalogKey ||
+      filters.performer ||
+      filters.studio ||
+      filters.label ||
+      filters.series ||
+      filters.genre ||
+      filters.scene ||
+      filters.appearance
+  );
 }
 
 function hasRelatedKnowledgeIntentContext(normalized: string, explicitFilters: DomainSearchFilters, competition: string | undefined, hasPlayerMatch: boolean) {
@@ -233,7 +279,15 @@ export function parseDomainFilters(value: Record<string, unknown>): DomainSearch
     eventType: stringValue(value.eventType),
     passType: stringValue(value.passType),
     fieldZone: stringValue(value.fieldZone),
-    role: roleValue(value.role)
+    role: roleValue(value.role),
+    catalogKey: stringValue(value.catalogKey),
+    performer: stringValue(value.performer),
+    studio: stringValue(value.studio),
+    label: stringValue(value.label),
+    series: stringValue(value.series),
+    genre: stringValue(value.genre),
+    scene: stringValue(value.scene),
+    appearance: appearanceValue(value.appearance)
   });
 }
 
@@ -329,7 +383,15 @@ function buildSemanticQuery(query: string, filters: DomainSearchFilters) {
     filters.eventType === "pocket_escape" ? "pocket escape out of the pocket quarterback" : "",
     filters.eventType === "throw_on_run" ? "throw on the run rolling right rolling left" : "",
     filters.passType === "through_ball" ? "through ball ball in behind 스루패스 침투패스" : "",
-    filters.fieldZone === "final_third" ? "final third attacking third 파이널 서드" : ""
+    filters.fieldZone === "final_third" ? "final third attacking third 파이널 서드" : "",
+    filters.catalogKey,
+    filters.performer,
+    filters.studio,
+    filters.label,
+    filters.series,
+    filters.genre,
+    filters.scene,
+    filters.appearance ? "similar person appearance face" : ""
   ]
     .filter(Boolean)
     .join(" ");
@@ -357,7 +419,15 @@ function buildRewrittenQuery(filters: DomainSearchFilters, semanticQuery: string
     filters.role ? `role=${filters.role}` : "",
     filters.eventType ? `event=${filters.eventType}` : "",
     filters.passType ? `pass=${filters.passType}` : "",
-    filters.fieldZone ? `zone=${filters.fieldZone}` : ""
+    filters.fieldZone ? `zone=${filters.fieldZone}` : "",
+    filters.catalogKey ? `catalog=${filters.catalogKey}` : "",
+    filters.performer ? `performer=${filters.performer}` : "",
+    filters.studio ? `studio=${filters.studio}` : "",
+    filters.label ? `label=${filters.label}` : "",
+    filters.series ? `series=${filters.series}` : "",
+    filters.genre ? `genre=${filters.genre}` : "",
+    filters.scene ? `scene=${filters.scene}` : "",
+    filters.appearance ? `appearance=${filters.appearance}` : ""
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : semanticQuery || "No structured query";
 }
@@ -369,6 +439,7 @@ function compactFilters(filters: DomainSearchFilters): DomainSearchFilters {
 }
 
 function domainFromFilters(filters: DomainSearchFilters) {
+  if (filters.catalogKey || filters.performer || filters.studio || filters.label || filters.series || filters.genre || filters.scene || filters.appearance) return "adult.jp_search";
   if (filters.competition === "NFL" || ["scramble", "pocket_escape", "throw_on_run", "pressure"].includes(filters.eventType ?? "")) return "sports.american_football";
   return "sports.football";
 }
@@ -379,6 +450,10 @@ function stringValue(value: unknown) {
 
 function roleValue(value: unknown): DomainSearchFilters["role"] | undefined {
   return value === "receiver" || value === "passer" || value === "shooter" || value === "any" ? value : undefined;
+}
+
+function appearanceValue(value: unknown): DomainSearchFilters["appearance"] | undefined {
+  return value === "similar_person" || value === "person" ? value : undefined;
 }
 
 function normalize(value: string) {

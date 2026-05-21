@@ -3,6 +3,7 @@ import { buildRetrievalPlan, sanitizeEvidenceTerms, sanitizeRequiredEvidence } f
 import { getKnowledgeSnapshot, matchKnowledgeCompetition, matchKnowledgePlayer } from "./knowledge/registry";
 import { genAiAttributes, traceAsync } from "./observability";
 import { planQueryWithVlmWorker } from "./vlmWorkerClient";
+import { planDomainQuery } from "./queryPlanner";
 
 type ModelQueryPlan = {
   route?: string;
@@ -186,7 +187,7 @@ const openAiQueryPlannerSchema = {
 } as const;
 
 export async function planDomainQueryWithLlm(query: string, explicitFilters: DomainSearchFilters = {}): Promise<DomainQueryPlan> {
-  const base = buildNeutralQueryPlan(query, explicitFilters);
+  const base = planDomainQuery(query, explicitFilters);
   const openAiDisabledReason = getOpenAiPlannerDisabledReason(query);
   if (openAiDisabledReason && !query.trim()) return plannerUnavailable(query, explicitFilters, [openAiDisabledReason], openAiDisabledReason);
 
@@ -387,7 +388,7 @@ function mergeModelPlan(
   planner: { source: Exclude<PlannerSource, "unavailable">; model: string | null; fallbackReason?: string; warnings?: string[] }
 ): DomainQueryPlan {
   const explicit = compactFilters(explicitFilters);
-  const filterEvidence = sanitizeFilterEvidence(llm.filterEvidence);
+  const filterEvidence = { ...(base.filterEvidence ?? {}), ...sanitizeFilterEvidence(llm.filterEvidence) };
   const participants = sanitizeParticipantConstraints(llm.participants ?? llm.participantConstraints, base.originalQuery);
   const directFilters = compactFilters({
     competition: resolveCompetition(llm.competition),
@@ -482,10 +483,11 @@ function mergeModelPlan(
   const domainFilters = sanitizedFilters.filters;
   const semanticQuery = !llmRoute && !legacyPlan && hasActiveDomainFilters(base.domainFilters) && !hasActiveDomainFilters(llmFilters) ? base.semanticQuery : selectSemanticQuery(llm.semanticQuery, base);
   const llmRequiredEvidence = sanitizeRequiredEvidence(llm.retrieval?.requiredEvidence ?? []);
+  const llmEvidenceTerms = sanitizeEvidenceTerms(llm.retrieval?.evidenceTerms ?? []);
   const retrieval = buildRetrievalPlan(base.originalQuery, semanticQuery, {
-    textQuery: llm.retrieval?.textQuery ?? semanticQuery,
-    visualQuery: llm.retrieval?.visualQuery ?? semanticQuery,
-    evidenceTerms: sanitizeEvidenceTerms(llm.retrieval?.evidenceTerms ?? []),
+    textQuery: llm.retrieval?.textQuery ?? base.retrieval?.textQuery ?? semanticQuery,
+    visualQuery: llm.retrieval?.visualQuery ?? base.retrieval?.visualQuery ?? semanticQuery,
+    evidenceTerms: llmEvidenceTerms.length > 0 ? llmEvidenceTerms : base.retrieval?.evidenceTerms ?? [],
     requiredEvidence: llmRequiredEvidence.length > 0 ? llmRequiredEvidence : base.retrieval?.requiredEvidence ?? []
   });
   const llmConfidence = normalizedConfidence(llm.confidence, base.confidence);
@@ -515,7 +517,15 @@ function mergeModelPlan(
       passType: domainFilters.passType ?? null,
       fieldZone: domainFilters.fieldZone ?? null,
       player: domainFilters.player ?? null,
-      role: domainFilters.role ?? null
+      role: domainFilters.role ?? null,
+      catalogKey: domainFilters.catalogKey ?? null,
+      performer: domainFilters.performer ?? null,
+      studio: domainFilters.studio ?? null,
+      label: domainFilters.label ?? null,
+      series: domainFilters.series ?? null,
+      genre: domainFilters.genre ?? null,
+      scene: domainFilters.scene ?? null,
+      appearance: domainFilters.appearance ?? null
     },
     confidence: Number(confidence.toFixed(2)),
     warnings: [...base.warnings, ...(planner.warnings ?? []), ...normalizationWarnings, ...sanitizedFilters.warnings, ...llmWarnings],
@@ -547,6 +557,14 @@ function sanitizeInferredFilters(
   if (!explicitFilters.eventType && !hasFilterEvidence(filterEvidence, "eventType")) delete next.eventType;
   if (!explicitFilters.passType && !hasFilterEvidence(filterEvidence, "passType")) delete next.passType;
   if (!explicitFilters.role && !hasFilterEvidence(filterEvidence, "role")) delete next.role;
+  if (!explicitFilters.catalogKey && !hasFilterEvidence(filterEvidence, "catalogKey")) delete next.catalogKey;
+  if (!explicitFilters.performer && !hasFilterEvidence(filterEvidence, "performer")) delete next.performer;
+  if (!explicitFilters.studio && !hasFilterEvidence(filterEvidence, "studio")) delete next.studio;
+  if (!explicitFilters.label && !hasFilterEvidence(filterEvidence, "label")) delete next.label;
+  if (!explicitFilters.series && !hasFilterEvidence(filterEvidence, "series")) delete next.series;
+  if (!explicitFilters.genre && !hasFilterEvidence(filterEvidence, "genre")) delete next.genre;
+  if (!explicitFilters.scene && !hasFilterEvidence(filterEvidence, "scene")) delete next.scene;
+  if (!explicitFilters.appearance && !hasFilterEvidence(filterEvidence, "appearance")) delete next.appearance;
   if (responseMode === "structured_answer") {
     delete next.eventType;
     delete next.passType;
@@ -601,7 +619,22 @@ function legacyRoutePlan(route: unknown): Pick<DomainQueryPlan, "route" | "respo
 }
 
 function hasActiveDomainFilters(filters: DomainSearchFilters) {
-  return Boolean(filters.competition || filters.player || filters.eventType || filters.passType || filters.fieldZone || (filters.role && filters.role !== "any"));
+  return Boolean(
+    filters.competition ||
+      filters.player ||
+      filters.eventType ||
+      filters.passType ||
+      filters.fieldZone ||
+      (filters.role && filters.role !== "any") ||
+      filters.catalogKey ||
+      filters.performer ||
+      filters.studio ||
+      filters.label ||
+      filters.series ||
+      filters.genre ||
+      filters.scene ||
+      filters.appearance
+  );
 }
 
 function hasVideoMomentRetrievalIntent(query: string) {
@@ -719,6 +752,14 @@ function sanitizeFilterEvidence(value: unknown): DomainQueryFilterEvidence {
     "passType",
     "fieldZone",
     "role",
+    "catalogKey",
+    "performer",
+    "studio",
+    "label",
+    "series",
+    "genre",
+    "scene",
+    "appearance",
     "statMode",
     "analysisSubject"
   ];
@@ -886,12 +927,21 @@ function buildRewrittenQuery(filters: DomainSearchFilters, semanticQuery: string
     filters.role ? `role=${filters.role}` : "",
     filters.eventType ? `event=${filters.eventType}` : "",
     filters.passType ? `pass=${filters.passType}` : "",
-    filters.fieldZone ? `zone=${filters.fieldZone}` : ""
+    filters.fieldZone ? `zone=${filters.fieldZone}` : "",
+    filters.catalogKey ? `catalog=${filters.catalogKey}` : "",
+    filters.performer ? `performer=${filters.performer}` : "",
+    filters.studio ? `studio=${filters.studio}` : "",
+    filters.label ? `label=${filters.label}` : "",
+    filters.series ? `series=${filters.series}` : "",
+    filters.genre ? `genre=${filters.genre}` : "",
+    filters.scene ? `scene=${filters.scene}` : "",
+    filters.appearance ? `appearance=${filters.appearance}` : ""
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : semanticQuery || "No structured query";
 }
 
 function domainFromFilters(filters: DomainSearchFilters) {
+  if (filters.catalogKey || filters.performer || filters.studio || filters.label || filters.series || filters.genre || filters.scene || filters.appearance) return "adult.jp_search";
   if (filters.competition === "NFL" || ["scramble", "pocket_escape", "throw_on_run", "pressure"].includes(filters.eventType ?? "")) return "sports.american_football";
   return "sports.football";
 }
