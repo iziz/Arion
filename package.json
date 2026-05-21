@@ -45,6 +45,8 @@
     "knowledge:statsbomb": "tsx scripts/import_statsbomb_open_data.ts",
     "knowledge:statbunker": "tsx scripts/import_statbunker.ts",
     "knowledge:vectors:rebuild": "tsx scripts/rebuild_knowledge_vectors.ts",
+    "library:preview": "tsx scripts/import_local_library.ts --preview",
+    "library:import": "npm run dev:infra && ARION_DOCKER_INFRA=true tsx scripts/import_local_library.ts",
     "embeddings:rebuild": "tsx scripts/rebuild_embeddings.ts",
     "indexes:rebuild": "tsx scripts/rebuild_all_indexes.ts",
     "domain:vlm:refine": "tsx scripts/refine_vlm_domain.ts",

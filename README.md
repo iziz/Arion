@@ -171,12 +171,32 @@ npm run eval:vlm -- --fixture path/to/vlm-fixture.json
 | Run model diagnostics | `npm run models:doctor:ai` |
 | Evaluate VLM worker fixtures | `npm run eval:vlm -- --fixture path/to/vlm-fixture.json` |
 | Benchmark detector backends | `npm run benchmark:detectors -- --manifest path/to/detector-manifest.json` |
+| Preview a local video library import | `npm run library:preview -- --path /path/to/videos --limit 25` |
+| Import a local video library | `npm run library:import -- --path /path/to/videos --indexName "Local video library"` |
 | Rebuild embeddings | `npm run embeddings:rebuild` |
 | Rebuild indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` |
 | Run containerized app stack | `npm run docker:up` |
 | Run containerized app + AI stack | `npm run docker:full` |
 
 The full script reference is in [docs/npm-scripts.md](docs/npm-scripts.md).
+
+## Local Library Import
+
+Use the local library importer when source videos already exist on disk and should become Arion assets without uploading each file through the console.
+
+Preview candidate files and metadata matches:
+
+```bash
+npm run library:preview -- --path /path/to/videos --limit 25
+```
+
+Import videos into local object storage, create asset records, and queue indexing jobs:
+
+```bash
+npm run library:import -- --path /path/to/videos --indexName "Local video library"
+```
+
+The importer scans common video extensions recursively, skips files that already match by source path, filename and size, or checksum, enriches matched Rurugrab metadata when available, and dispatches queued indexing jobs through the existing Redis outbox. Use `--no-queue` to create assets without starting indexing, or `--no-dispatch` to leave queued jobs in the outbox for a worker to publish later.
 
 ## Docker Runtime
 

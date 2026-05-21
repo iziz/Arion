@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, stat } from "node:fs/promises";
+import { copyFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import type { StorageProvider } from "../shared/types";
 
@@ -32,6 +32,34 @@ export async function putUploadedObject(tempPath: string, originalName: string, 
     checksum: await sha256File(absolutePath),
     size: info.size
   };
+}
+
+export async function putLocalFileObject(
+  sourcePath: string,
+  originalName: string,
+  assetId: string,
+  options: { checksum?: string } = {}
+): Promise<StoredObject> {
+  const provider = normalizeProvider(process.env.LOCAL_OBJECT_PROVIDER);
+  const bucket = process.env.LOCAL_OBJECT_BUCKET || "video-assets";
+  const extension = path.extname(originalName);
+  const objectKey = `assets/${assetId}/source${extension}`;
+  const absolutePath = path.join(rootDir, provider, bucket, objectKey);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await copyFile(sourcePath, absolutePath);
+  const info = await stat(absolutePath);
+  return {
+    provider,
+    bucket,
+    objectKey,
+    absolutePath,
+    checksum: options.checksum ?? (await sha256File(absolutePath)),
+    size: info.size
+  };
+}
+
+export function checksumLocalFile(filePath: string) {
+  return sha256File(filePath);
 }
 
 export function getObjectPath(provider: StorageProvider, bucket: string, objectKey: string) {

@@ -105,6 +105,12 @@ export type AssetExternalMetadata = {
   rurugrab?: ExternalMediaMetadata;
 };
 
+export type AssetImportSource = {
+  type: "local-library";
+  path: string;
+  importedAt: string;
+};
+
 export type DomainEvent = {
   id: string;
   domain: string;
@@ -862,6 +868,7 @@ export type AssetRecord = {
   rawMatchProfile?: RawMatchVideoProfile;
   compliance?: AssetComplianceRecord;
   externalMetadata?: AssetExternalMetadata;
+  importSource?: AssetImportSource;
   technicalMetadata: {
     storageProvider: StorageProvider;
     bucket: string;
@@ -927,6 +934,7 @@ export type AssetSummaryRecord = Pick<
   | "updatedAt"
   | "compliance"
   | "externalMetadata"
+  | "importSource"
 > & {
   timelineCount: number;
   keyframeCount: number;

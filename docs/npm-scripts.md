@@ -1,6 +1,6 @@
 # npm Scripts
 
-Last checked against `package.json`: 2026-05-11.
+Last checked against `package.json`: 2026-05-21.
 
 This document is the canonical reference for `package.json` scripts. Keep it in sync when scripts are added, renamed, or removed.
 
@@ -15,6 +15,8 @@ This document is the canonical reference for `package.json` scripts. Keep it in 
 | Run tests | `npm test` / `npm run test` | Runs Node's test runner against `tests/**/*.test.ts`. |
 | Type-check and build frontend | `npm run build` | Runs `tsc --noEmit` and `vite build`. |
 | Rebuild all indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` | Reindexes source assets and rebuilds related knowledge vectors. |
+| Preview a local video library import | `npm run library:preview -- --path /path/to/videos --limit 25` | Scans disk media and reports candidate catalog metadata without importing. |
+| Import a local video library | `npm run library:import -- --path /path/to/videos --indexName "Local video library"` | Copies disk media into local object storage, creates assets, and queues indexing jobs. |
 | Run model dependency diagnostics | `npm run models:doctor:ai` | Uses `.venv-ai/bin/python`; use `models:doctor` for the system Python. |
 
 ## Development Runtime
@@ -79,10 +81,26 @@ The current package script includes `tests/**/*.test.ts` before forwarded argume
 | `npm run legacy:migrate` | `dev:infra`, then `tsx scripts/migrate_legacy_to_docker.ts --copy-app-data --archive-legacy-stores` | One-way migration from legacy local JSON stores into Docker PostgreSQL/object storage. |
 | `npm run docker:migrate:legacy` | `npm run legacy:migrate` | Alias for legacy migration. |
 | `npm run video:purge` | `dev:infra`, then `tsx scripts/purge_video_data.ts` | Purges video assets, jobs, queues, vectors, tracking records, and media while preserving knowledge/users. |
+| `npm run library:preview` | `tsx scripts/import_local_library.ts --preview` | Recursively scans a local media directory or single file and prints candidate import metadata. |
+| `npm run library:import` | `dev:infra`, then `tsx scripts/import_local_library.ts` | Imports local media files as assets and queues indexing jobs through the outbox. |
 | `npm run db:seed` | `ARION_DOCKER_INFRA=true tsx scripts/postgres_seed.ts` | Seeds default local database records. |
 | `npm run db:reset` | `ARION_DOCKER_INFRA=true tsx scripts/postgres_reset.ts` | Resets app tables and default records without deleting object-storage files. |
 
 Use `db:reset` only when local data loss is intended. Use `video:purge` when knowledge vectors and user records should remain intact.
+
+Typical local library import:
+
+```bash
+npm run library:preview -- --path /path/to/videos --limit 25
+npm run library:import -- --path /path/to/videos --indexName "Local video library"
+```
+
+Useful options:
+
+```bash
+npm run library:import -- --path /path/to/video.mp4 --indexId default-index --no-dispatch
+npm run library:import -- --path /path/to/videos --limit 100 --no-queue
+```
 
 ## Docker Application Runtime
 
