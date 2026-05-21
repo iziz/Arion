@@ -173,6 +173,8 @@ npm run eval:vlm -- --fixture path/to/vlm-fixture.json
 | Benchmark detector backends | `npm run benchmark:detectors -- --manifest path/to/detector-manifest.json` |
 | Preview a local video library import | `npm run library:preview -- --path /path/to/videos --limit 25` |
 | Import a local video library | `npm run library:import -- --path /path/to/videos --indexName "Local video library"` |
+| Preview a Rurugrab VVV catalog import | `npm run rurugrab:catalog:preview -- --limit 25` |
+| Import Rurugrab catalog metadata only | `npm run rurugrab:catalog:import -- --metadata-only --limit 100 --indexName "Rurugrab metadata catalog"` |
 | Rebuild embeddings | `npm run embeddings:rebuild` |
 | Rebuild indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` |
 | Run containerized app stack | `npm run docker:up` |
@@ -197,6 +199,28 @@ npm run library:import -- --path /path/to/videos --indexName "Local video librar
 ```
 
 The importer scans common video extensions recursively, skips files that already match by source path, filename and size, or checksum, enriches matched Rurugrab metadata when available, and dispatches queued indexing jobs through the existing Redis outbox. Use `--no-queue` to create assets without starting indexing, or `--no-dispatch` to leave queued jobs in the outbox for a worker to publish later.
+
+## Rurugrab Catalog Import
+
+Use the Rurugrab catalog importer when the local Rurugrab VVV catalog already knows owned media paths but the source volumes are not mounted in the same path format.
+
+Preview catalog rows and metadata matches:
+
+```bash
+npm run rurugrab:catalog:preview -- --limit 25
+```
+
+Import catalog rows as searchable metadata-only assets without copying video files:
+
+```bash
+npm run rurugrab:catalog:import -- --metadata-only --limit 100 --indexName "Rurugrab metadata catalog"
+```
+
+Metadata-only assets support catalog, performer, studio, label, series, and genre search. Scene-level and appearance search still require the source video to be mounted and indexed. For mounted Windows-style catalog paths, map roots before importing videos:
+
+```bash
+npm run rurugrab:catalog:import -- --catalogName "AV8192-05.AV" --map-root 'G:\=/Volumes/AV/G' --indexName "Rurugrab catalog"
+```
 
 ## Docker Runtime
 

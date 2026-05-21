@@ -1,6 +1,7 @@
 import "../server/env";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
 import { publishQueueOutbox } from "../server/services/queueOutboxPublisher";
+import { closeRealtimeEvents } from "../server/services/realtimeEvents";
 import {
   importRurugrabCatalog,
   parseRurugrabRootMapping,
@@ -19,6 +20,7 @@ type CliOptions = {
   limit: number | undefined;
   rootMappings: RurugrabCatalogRootMapping[];
   onlyAccessible: boolean;
+  metadataOnly: boolean;
   queueJobs: boolean;
   dispatchQueue: boolean;
 };
@@ -65,8 +67,9 @@ try {
       catalogName: options.catalogName ?? undefined,
       limit: options.limit,
       rootMappings: options.rootMappings,
+      metadataOnly: options.metadataOnly,
       indexId: index.id,
-      queueJobs: options.queueJobs,
+      queueJobs: options.metadataOnly ? false : options.queueJobs,
       onProgress: (event) => {
         const subject = event.path ? ` ${event.path}` : "";
         console.error(`[rurugrab-catalog:${event.phase}]${subject} ${event.message}`);
@@ -103,6 +106,7 @@ try {
   console.error(JSON.stringify({ ok: false, error: message }, null, 2));
   process.exitCode = 1;
 } finally {
+  await closeRealtimeEvents();
   if (isPostgresEnabled()) await closePostgresStore();
 }
 
@@ -163,6 +167,7 @@ function parseArgs(argv: string[]): CliOptions {
     limit: undefined,
     rootMappings: [],
     onlyAccessible: false,
+    metadataOnly: false,
     queueJobs: true,
     dispatchQueue: true
   };
@@ -175,6 +180,12 @@ function parseArgs(argv: string[]): CliOptions {
     }
     if (arg === "--only-accessible") {
       options.onlyAccessible = true;
+      continue;
+    }
+    if (arg === "--metadata-only") {
+      options.metadataOnly = true;
+      options.queueJobs = false;
+      options.dispatchQueue = false;
       continue;
     }
     if (arg === "--no-queue" || arg === "--queue=false") {
@@ -283,6 +294,7 @@ function usage() {
     "  --catalogName <name>       Limit to one VVV catalog.",
     "  --map-root <FROM=TO>       Map an offline catalog root such as G:\\\\ to a mounted macOS path.",
     "  --only-accessible          In preview mode, show only files accessible after root mapping.",
+    "  --metadata-only            Import catalog rows as searchable metadata-only assets without copying video files.",
     "  --indexId <id>             Import into an existing index.",
     "  --indexName <name>         Use or create an index by name.",
     "  --limit <n>                Limit scanned catalog rows.",

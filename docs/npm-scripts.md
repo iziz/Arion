@@ -17,6 +17,8 @@ This document is the canonical reference for `package.json` scripts. Keep it in 
 | Rebuild all indexed assets and knowledge vectors | `npm run indexes:rebuild -- --all` | Reindexes source assets and rebuilds related knowledge vectors. |
 | Preview a local video library import | `npm run library:preview -- --path /path/to/videos --limit 25` | Scans disk media and reports candidate catalog metadata without importing. |
 | Import a local video library | `npm run library:import -- --path /path/to/videos --indexName "Local video library"` | Copies disk media into local object storage, creates assets, and queues indexing jobs. |
+| Preview a Rurugrab catalog import | `npm run rurugrab:catalog:preview -- --limit 25` | Reads the local Rurugrab VVV catalog and reports metadata matches and path accessibility. |
+| Import Rurugrab catalog metadata only | `npm run rurugrab:catalog:import -- --metadata-only --limit 100 --indexName "Rurugrab metadata catalog"` | Creates searchable metadata-only catalog assets without copying video files. |
 | Run model dependency diagnostics | `npm run models:doctor:ai` | Uses `.venv-ai/bin/python`; use `models:doctor` for the system Python. |
 
 ## Development Runtime
@@ -83,6 +85,8 @@ The current package script includes `tests/**/*.test.ts` before forwarded argume
 | `npm run video:purge` | `dev:infra`, then `tsx scripts/purge_video_data.ts` | Purges video assets, jobs, queues, vectors, tracking records, and media while preserving knowledge/users. |
 | `npm run library:preview` | `tsx scripts/import_local_library.ts --preview` | Recursively scans a local media directory or single file and prints candidate import metadata. |
 | `npm run library:import` | `dev:infra`, then `tsx scripts/import_local_library.ts` | Imports local media files as assets and queues indexing jobs through the outbox. |
+| `npm run rurugrab:catalog:preview` | `tsx scripts/import_rurugrab_catalog.ts --preview` | Reads `localdb.sqlite3` VVV catalog rows and prints candidate Rurugrab metadata plus mapped-path accessibility. |
+| `npm run rurugrab:catalog:import` | `dev:infra`, then `tsx scripts/import_rurugrab_catalog.ts` | Imports accessible catalog files, or metadata-only catalog assets when `--metadata-only` is set. |
 | `npm run db:seed` | `ARION_DOCKER_INFRA=true tsx scripts/postgres_seed.ts` | Seeds default local database records. |
 | `npm run db:reset` | `ARION_DOCKER_INFRA=true tsx scripts/postgres_reset.ts` | Resets app tables and default records without deleting object-storage files. |
 
@@ -101,6 +105,16 @@ Useful options:
 npm run library:import -- --path /path/to/video.mp4 --indexId default-index --no-dispatch
 npm run library:import -- --path /path/to/videos --limit 100 --no-queue
 ```
+
+Typical Rurugrab catalog import:
+
+```bash
+npm run rurugrab:catalog:preview -- --limit 25
+npm run rurugrab:catalog:import -- --metadata-only --limit 100 --indexName "Rurugrab metadata catalog"
+npm run rurugrab:catalog:import -- --catalogName "AV8192-05.AV" --map-root 'G:\=/Volumes/AV/G' --indexName "Rurugrab catalog"
+```
+
+Metadata-only catalog assets are searchable by catalog key, performer, studio, label, series, and genre. Scene-level and appearance search require a mounted source video and normal indexing.
 
 ## Docker Application Runtime
 

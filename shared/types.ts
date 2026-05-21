@@ -106,9 +106,13 @@ export type AssetExternalMetadata = {
 };
 
 export type AssetImportSource = {
-  type: "local-library";
+  type: "local-library" | "rurugrab-catalog";
   path: string;
   importedAt: string;
+  catalogName?: string;
+  originalPath?: string;
+  mappedPath?: string | null;
+  metadataOnly?: boolean;
 };
 
 export type DomainEvent = {

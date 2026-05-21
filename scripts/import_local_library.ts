@@ -1,6 +1,7 @@
 import "../server/env";
 import { closePostgresStore, isPostgresEnabled } from "../server/postgresStore";
 import { publishQueueOutbox } from "../server/services/queueOutboxPublisher";
+import { closeRealtimeEvents } from "../server/services/realtimeEvents";
 import { importLocalLibrary, previewLocalLibrary } from "../server/services/localLibraryImport";
 import { createDefaultIndex, ensureStore, getIndex, listIndexes, newId, saveIndex } from "../server/store";
 import type { ExternalMediaMetadata, IndexRecord } from "../shared/types";
@@ -84,6 +85,7 @@ try {
   console.error(JSON.stringify({ ok: false, error: message }, null, 2));
   process.exitCode = 1;
 } finally {
+  await closeRealtimeEvents();
   if (isPostgresEnabled()) await closePostgresStore();
 }
 
