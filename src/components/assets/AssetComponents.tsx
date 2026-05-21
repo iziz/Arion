@@ -249,6 +249,7 @@ function buildAssetGroupMetaChips(
   const indexedCount = assets.filter((asset) => asset.status === "indexed").length;
   const vlm = configured?.videoVlm;
   const vlmConfigured = vlm?.enabled ?? modelCapabilities?.runtimeTopology?.vlm?.enabled;
+  const compliance = summarizeAssetGroupCompliance(assets);
   return [
     {
       label: "Knowledge",
@@ -271,8 +272,30 @@ function buildAssetGroupMetaChips(
       tooltip: `Related knowledge VLM refinement uses ${vlm?.model ?? modelCapabilities?.runtimeTopology?.vlm?.model ?? "qwen-vl-local-worker"} when enabled. Policy ${policy?.domainVlmRefinement ?? "optional"}, service ${vlmConfigured ? "enabled" : "not configured"}, indexed assets ${indexedCount}/${assets.length}.`,
       kind: "model",
       disabled: policy?.domainVlmRefinement === "disabled" || vlmConfigured === false
-    }
-  ];
+    },
+    compliance
+      ? {
+          label: "Compliance",
+          value: compliance.value,
+          tooltip: compliance.tooltip,
+          kind: "policy",
+          disabled: compliance.disabled
+        }
+      : null
+  ].filter((chip): chip is AssetGroupMetaChip => Boolean(chip));
+}
+
+function summarizeAssetGroupCompliance(assets: AssetSummaryRecord[]) {
+  const complianceAssets = assets.filter((asset) => asset.compliance && asset.compliance.status !== "not_applicable");
+  if (complianceAssets.length === 0) return null;
+  const cleared = complianceAssets.filter((asset) => asset.compliance?.status === "cleared").length;
+  const review = complianceAssets.filter((asset) => asset.compliance?.status === "review_required").length;
+  const blocked = complianceAssets.filter((asset) => asset.compliance?.status === "blocked").length;
+  return {
+    value: `${cleared}/${complianceAssets.length} cleared${review ? ` · ${review} review` : ""}${blocked ? ` · ${blocked} blocked` : ""}`,
+    tooltip: "Japan legal adult content compliance is metadata-gated; review_required and blocked assets are excluded from retrieval.",
+    disabled: review > 0 || blocked > 0
+  };
 }
 
 function formatCapabilityPolicyTooltip(policy: NonNullable<IndexRecord["capabilityPolicy"]>) {
@@ -282,6 +305,9 @@ function formatCapabilityPolicyTooltip(policy: NonNullable<IndexRecord["capabili
 }
 
 export function VideoStatusSummary({ asset }: { asset: AssetRecord }) {
+  const searchable = isAssetSearchableInUi(asset);
+  const compliance = asset.compliance;
+  const activeCompliance = compliance && compliance.status !== "not_applicable" ? compliance : null;
   return (
     <div className="video-status-summary" aria-label="Selected video status">
       <span className={asset.status ? "complete" : ""}>
@@ -289,13 +315,80 @@ export function VideoStatusSummary({ asset }: { asset: AssetRecord }) {
         <strong>영상 확인</strong>
         <em>{asset.status}</em>
       </span>
-      <span className={asset.status === "indexed" ? "complete" : ""}>
+      <span className={searchable ? "complete" : ""}>
         <Search size={15} />
         <strong>검색 준비</strong>
-        <em>{asset.status === "indexed" ? "사용 가능" : asset.status}</em>
+        <em>{searchable ? "사용 가능" : activeCompliance ? formatComplianceStatus(activeCompliance.status) : asset.status}</em>
       </span>
+      {activeCompliance && (
+        <span className={activeCompliance.status === "cleared" ? "complete" : ""}>
+          {activeCompliance.status === "cleared" ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+          <strong>Compliance</strong>
+          <em>{formatComplianceStatus(activeCompliance.status)}</em>
+        </span>
+      )}
     </div>
   );
+}
+
+export function AssetComplianceSummary({ asset }: { asset: AssetRecord }) {
+  const compliance = asset.compliance;
+  if (!compliance || compliance.status === "not_applicable") return null;
+  const failedChecks = compliance.checks.filter((check) => check.status === "missing" || check.status === "review" || check.status === "blocked");
+  const passedChecks = compliance.checks.filter((check) => check.status === "passed").length;
+  const tone = complianceTone(compliance.status);
+  return (
+    <section className={`asset-compliance-card ${tone}`} aria-label="Japan legal adult content compliance">
+      <div className="asset-compliance-header">
+        <span>
+          {tone === "good" ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+          <strong>Japan legal adult content compliance</strong>
+        </span>
+        <em>{formatComplianceStatus(compliance.status)}</em>
+      </div>
+      <p>{compliance.summary}</p>
+      <div className="asset-compliance-metrics">
+        <span>
+          <b>Passed</b>
+          {passedChecks}
+        </span>
+        <span>
+          <b>Review</b>
+          {compliance.checks.filter((check) => check.status === "missing" || check.status === "review").length}
+        </span>
+        <span>
+          <b>Blocked</b>
+          {compliance.checks.filter((check) => check.status === "blocked").length}
+        </span>
+      </div>
+      {failedChecks.length > 0 && (
+        <div className="asset-compliance-checks">
+          {failedChecks.slice(0, 5).map((check) => (
+            <span key={check.id}>
+              <b>{check.label}</b>
+              <em>{check.status}</em>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function isAssetSearchableInUi(asset: Pick<AssetRecord, "status" | "compliance">) {
+  const compliance = asset.compliance;
+  const complianceSearchable = !compliance || compliance.status === "not_applicable" || compliance.status === "cleared";
+  return asset.status === "indexed" && complianceSearchable;
+}
+
+function formatComplianceStatus(status: NonNullable<AssetRecord["compliance"]>["status"]) {
+  return status.replace(/_/g, " ");
+}
+
+function complianceTone(status: NonNullable<AssetRecord["compliance"]>["status"]): NodeMetricTone {
+  if (status === "cleared") return "good";
+  if (status === "blocked") return "bad";
+  return "warning";
 }
 
 export function AssetFlow({

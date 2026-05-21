@@ -429,5 +429,131 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
         "playMetadata, participants, and tracking fields are added only from aligned evidence."
       ]
     }
+  },
+  "adult.jp_legal": {
+    sourceId: "adult.jp_legal",
+    strategy: {
+      baseTemplateId: "adult.jp_legal.compliance.base.v1",
+      strategyId: "adult.jp_legal.compliance.strategy.v1",
+      sharedRules: [
+        "Use explicit metadata, tags, contracts, and operator review records as compliance evidence.",
+        "Do not infer performer age, consent, or rights status from face, body, voice, title, or model prediction.",
+        "Route missing or contradictory compliance evidence to human review instead of treating the asset as cleared.",
+        "Keep compliance, search, OCR, ASR, and visual evidence separated for auditability."
+      ],
+      specializationRules: [
+        "Apply Japan AV appearance harm prevention and relief workflow checks for contract documents, explanation, waiting periods, preview, cancellation, and takedown readiness.",
+        "Apply Article 175 distribution review as a metadata gate for Japan-facing distribution.",
+        "Block assets carrying explicit minor-risk, age-unverified, withdrawn-consent, takedown, unmosaiced, or illegal-source block tags."
+      ]
+    },
+    manifest: {
+      id: "adult.jp_legal.manifest.v1",
+      label: "Japan legal adult content compliance template",
+      domain: "Japan legal adult content",
+      version: "adult-jp-legal-template-v1",
+      summary: "Checks metadata-driven Japan legal adult content compliance evidence without making age, consent, or rights claims from model inference.",
+      providerContracts: [
+        {
+          name: "Performer release package",
+          role: "Primary compliance source",
+          contract: "age verification, performer identity, consent contract, contract explanation, preview, and revocation tracking records"
+        },
+        {
+          name: "Distribution rights package",
+          role: "Rights and publication source",
+          contract: "studio/source rights, distribution permission, takedown readiness, and publication lifecycle records"
+        },
+        {
+          name: "Japan distribution review",
+          role: "Article 175 review source",
+          contract: "mosaic/obscenity review status and reviewer timestamp"
+        }
+      ],
+      requiredEvidence: [
+        { name: "Age verification", role: "Critical performer eligibility gate", required: true, contract: "jp-adult:age-verified and jp-adult:performer-id-verified tags or equivalent records" },
+        { name: "Consent and contract records", role: "AV performance agreement gate", required: true, contract: "jp-adult:consent-contract and jp-adult:contract-explained tags or equivalent records" },
+        { name: "Waiting period records", role: "AV law publication lifecycle gate", required: true, contract: "jp-adult:cooling-period-1m and jp-adult:publication-delay-4m tags or equivalent records" },
+        { name: "Preview and cancellation workflow", role: "Performer relief workflow gate", required: true, contract: "jp-adult:performer-preview, jp-adult:revocation-window-tracked, and jp-adult:takedown-ready tags or equivalent records" },
+        { name: "Article 175 review", role: "Japan distribution review gate", required: true, contract: "jp-adult:mosaic-reviewed tag or equivalent legal review record" },
+        { name: "Rights clearance", role: "Source and distribution rights gate", required: true, contract: "jp-adult:rights-cleared tag or equivalent rights record" }
+      ],
+      outputSchema: [
+        "asset.compliance.jurisdiction",
+        "asset.compliance.domainGroup",
+        "asset.compliance.status",
+        "asset.compliance.summary",
+        "asset.compliance.checks[].id",
+        "asset.compliance.checks[].status",
+        "asset.compliance.blockers[]",
+        "asset.compliance.requiredTags[]",
+        "asset.compliance.references[]"
+      ],
+      runtimeGates: [
+        "Knowledge action spotting is disabled for this source.",
+        "Domain VLM refinement is disabled for this source until an explicit non-sports compliance prompt is added.",
+        "Vision tracking is disabled by default to avoid biometric identity inference without a verified roster and consent workflow.",
+        "Compliance checks run during asset finalize when the asset group source is adult.jp_legal."
+      ],
+      skipConditions: [
+        "Compliance output is omitted when the asset group does not use adult.jp_legal.",
+        "A missing required tag produces review_required instead of cleared.",
+        "Explicit block tags produce blocked until a human compliance operator removes or resolves the block."
+      ],
+      limitations: [
+        "This template is not legal advice and does not replace counsel or formal review.",
+        "The system intentionally does not determine performer age or consent from generated captions, face embeddings, or appearance.",
+        "The Article 175 review gate records operator/legal review status; it does not algorithmically decide obscenity."
+      ]
+    },
+    generator: {
+      id: "adult.jp_legal.generator.compliance.v1",
+      adapter: "adult.jp_legal.compliance",
+      kind: "inline-template-generator",
+      timing: "Runs during asset finalization after OCR, ASR, timeline, and summary artifacts are available.",
+      outputVersion: "adult-jp-legal-compliance-v1",
+      consumes: ["asset title/description/originalName", "asset tags", "ASR transcript", "OCR tokens", "timeline text evidence"],
+      pipeline: [
+        "Confirm adult.jp_legal is enabled on the asset group.",
+        "Read explicit compliance tags and block tags from asset metadata.",
+        "Scan text evidence only for review indicators that require human attention.",
+        "Emit cleared, review_required, or blocked compliance status with check-level evidence."
+      ],
+      emits: ["asset.compliance record", "compliance modelTrace entry", "review/blocker checklist"],
+      actionSpotting: {
+        minCandidateConfidence: 1,
+        alignment: {
+          minScore: 1,
+          minStrongScore: 1,
+          requireProviderContext: true,
+          teamTermStrategy: "not-applicable"
+        }
+      }
+    },
+    evaluator: {
+      benchmarkCoverage: [
+        {
+          name: "Japan adult compliance metadata gates",
+          source: "Arion regression fixtures",
+          role: "Metadata and blocker gate validation",
+          status: "active",
+          coverage: "Required tag, missing tag, explicit block tag, and non-applicable asset group fixtures are covered.",
+          metrics: ["cleared/review/blocked classification", "required tag coverage", "blocker count"],
+          notes: "Fixtures validate deterministic gate logic only; legal validity depends on external records."
+        }
+      ],
+      validationGates: [
+        "All required tags must be present before an asset is marked cleared.",
+        "Explicit block tags must force blocked status.",
+        "Non-adult asset groups must not receive adult compliance records.",
+        "No model-derived age, consent, or rights claim may satisfy a required compliance check."
+      ],
+      fixtures: ["adult.jp_legal cleared metadata fixture", "adult.jp_legal missing metadata fixture", "adult.jp_legal explicit blocker fixture"],
+      regressionChecks: [
+        "Missing metadata never clears an adult.jp_legal asset.",
+        "Block tags override otherwise complete metadata.",
+        "Capability defaults disable sports action spotting and domain VLM refinement for adult.jp_legal."
+      ]
+    }
   }
 };

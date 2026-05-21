@@ -31,7 +31,7 @@ export type WebhookEventType =
   | "analysis.completed";
 
 export type KnowledgeSourceId = string;
-export type KnowledgeDomainGroup = "sports.football" | "sports.american_football";
+export type KnowledgeDomainGroup = "sports.football" | "sports.american_football" | "adult.jp_legal";
 
 export type EvidenceTrustTier = "observed" | "detected" | "aligned" | "candidate" | "inferred" | "heuristic" | "unavailable";
 export type CapabilityMode = "disabled" | "optional" | "required";
@@ -43,6 +43,32 @@ export type CapabilityPolicy = {
   visionTracker: CapabilityMode;
   knowledgeActionSpotting: CapabilityMode;
   domainVlmRefinement: CapabilityMode;
+};
+
+export type AssetComplianceStatus = "not_applicable" | "cleared" | "review_required" | "blocked";
+export type AssetComplianceCheckStatus = "passed" | "missing" | "review" | "blocked" | "not_applicable";
+export type AssetComplianceSeverity = "info" | "warning" | "critical";
+
+export type AssetComplianceCheck = {
+  id: string;
+  label: string;
+  status: AssetComplianceCheckStatus;
+  severity: AssetComplianceSeverity;
+  requirement: string;
+  evidence: string[];
+  source: "metadata" | "ocr" | "asr" | "visual" | "system";
+};
+
+export type AssetComplianceRecord = {
+  jurisdiction: "JP";
+  domainGroup: "adult.jp_legal";
+  status: AssetComplianceStatus;
+  summary: string;
+  checkedAt: string;
+  checks: AssetComplianceCheck[];
+  blockers: string[];
+  requiredTags: string[];
+  references: Array<{ label: string; url: string }>;
 };
 
 export type DomainEvent = {
@@ -800,6 +826,7 @@ export type AssetRecord = {
   keyframes: KeyframeRecord[];
   identity?: AssetIdentityIndex;
   rawMatchProfile?: RawMatchVideoProfile;
+  compliance?: AssetComplianceRecord;
   technicalMetadata: {
     storageProvider: StorageProvider;
     bucket: string;
@@ -863,6 +890,7 @@ export type AssetSummaryRecord = Pick<
   | "error"
   | "createdAt"
   | "updatedAt"
+  | "compliance"
 > & {
   timelineCount: number;
   keyframeCount: number;

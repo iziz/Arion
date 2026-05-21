@@ -1,6 +1,6 @@
 # Domain-Adaptive Video Intelligence Platform
 
-Last checked against code: 2026-05-11.
+Last checked against code: 2026-05-21.
 
 ## Context
 
@@ -9,7 +9,7 @@ The interview brief describes a platform layer above two foundation-model capabi
 - **Retrieval model**: finds semantically relevant video moments.
 - **Generation model**: summarizes or analyzes selected video moments.
 
-The platform problem is that sports analyst queries require facts the base models do not reliably own: player identity, roster/team history, competition, season, sport-specific event semantics, and confidence-aware grounding.
+The platform problem is that domain workflows require facts and operating constraints the base models do not reliably own. Sports analyst queries need player identity, roster/team history, competition, season, sport-specific event semantics, and confidence-aware grounding. Legal adult content operations need explicit compliance records for age, identity, consent, contracts, waiting periods, distribution readiness, obscenity review, and rights clearance.
 
 Arion implements this as an application-layer orchestration system rather than as model retraining.
 
@@ -22,9 +22,16 @@ Arion implements this as an application-layer orchestration system rather than a
 | Related knowledge layer | Generic knowledge facade in `server/knowledge/*` with the current sports adapter under `server/knowledge/adapters/sports/*` plus imported provider data |
 | Query orchestrator | `/api/ask` operation pipeline in `server/workflows/ask/*`, model-backed planning in `server/llmQueryPlanner.ts`, and decision plans in `server/orchestrator.ts` |
 | Domain event indexing | `server/domainIndex/*` football and American-football event builders, plus `server/domainIndex/matchIdentityResolver.ts` for sports context and identity resolution |
+| Compliance domain gate | `server/compliance/japanAdult.ts` writes asset-level `asset.compliance` for `adult.jp_legal` using explicit metadata tags and review/block indicators |
 | Optional visual and planning model | VLM worker bridge in `server/vlmWorkerClient.ts` and `scripts/qwen_vlm_worker.py` for video/domain reasoning and `/plan/query` fallback |
 
 ## Design Changes Applied
+
+### 0. Related Knowledge Is Not Sports-Only
+
+Arion now treats related knowledge source metadata as the capability boundary. A source can use the sports adapter or a compliance adapter, and each source declares whether it supports knowledge action spotting, domain VLM refinement, and vision tracking.
+
+`adult.jp_legal` is the first non-sports source. It disables sports-specific action spotting, detector/tracker defaults, and domain VLM refinement, while preserving generic video analysis as an optional capability.
 
 ### 1. First-Class Sports Domain Groups
 
@@ -117,6 +124,12 @@ Ranking/stat questions that ask for matching video moments use an explicit hybri
 
 The ask workflow first builds a temporary structured knowledge plan, resolves the ranked/stat subject from selected related knowledge, and only then builds the video retrieval plan with concrete player and event filters. If the subject cannot be resolved, Arion returns the knowledge limitation instead of silently broadening to generic moment retrieval.
 
+### 9. Japan Legal Adult Content Compliance
+
+`adult.jp_legal` adds an asset-level compliance gate for lawful Japan adult content workflows. The gate requires explicit metadata tags for performer age/identity verification, consent contracts, contract explanation, one-month shooting wait, four-month publication wait, performer preview, revocation/takedown readiness, Article 175 mosaic review, and rights clearance.
+
+The implementation deliberately does not infer age, consent, Article 175 compliance, source legality, or rights clearance from model output. ASR, OCR, summaries, and VLM text can only surface review indicators. Missing evidence produces `review_required`; explicit block tags produce `blocked`.
+
 ## Query Workflows
 
 ### Haaland Through Ball Search
@@ -160,6 +173,7 @@ The ask workflow first builds a temporary structured knowledge plan, resolves th
 - Provider knowledge should be versioned by weekly roster snapshots and transfer windows.
 
 See [sports-domain-indexing.md](sports-domain-indexing.md) for the implementation and operation details.
+See [japan-legal-adult-content-compliance.md](japan-legal-adult-content-compliance.md) for the Japan legal adult content compliance gate.
 
 ## MVP Execution Order
 

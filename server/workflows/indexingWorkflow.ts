@@ -32,6 +32,7 @@ import { deliverEvent, recordBilling, recordEvent } from "../services/events";
 import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/mediaLifecycle";
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
 import { resolveTimelineMatchIdentity } from "../domainIndex/matchIdentityResolver";
+import { evaluateJapanAdultCompliance, japanAdultComplianceTrace } from "../compliance/japanAdult";
 import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
 import { getWorkflowRetryImpactedEvidence, type WorkflowEvidence } from "../../shared/workflowNodes";
 import type { AssetRecord, IndexRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
@@ -561,6 +562,17 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
       await updateJob(jobId, { stage: "finalize", progress: 98 }, "Saving indexed asset record");
       await updateAsset(assetId, { status: "embedding", progress: 98 });
       const latest = (await getAsset(assetId)) ?? timelineStage.refreshed;
+      const compliance = evaluateJapanAdultCompliance(
+        {
+          ...latest,
+          tags: timelineStage.output.tags,
+          summary: summaryStage.summary,
+          timeline
+        },
+        timelineStage.embeddingIndex
+      );
+      const nextCompliance = compliance.status === "not_applicable" ? latest.compliance : compliance;
+      const complianceTrace = japanAdultComplianceTrace(compliance);
       const nextAsset: AssetRecord = {
         ...latest,
         intelligence: {
@@ -573,7 +585,8 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
             domainStage.knowledgeActionTrace,
             summaryStage.trace,
             `embedding:${getEmbeddingModelName()}`,
-            visualStage.visualEmbeddingTrace
+            visualStage.visualEmbeddingTrace,
+            complianceTrace
           ])
         },
         tags: timelineStage.output.tags,
@@ -581,6 +594,7 @@ export async function runIndexingJob(jobId: string, assetId: string, filePath: s
         timeline,
         keyframes: timelineStage.keyframes,
         rawMatchProfile: buildRawMatchVideoProfile({ ...latest, summary: summaryStage.summary, timeline }, timeline),
+        compliance: nextCompliance,
         status: "indexed",
         progress: 100,
         error: null,

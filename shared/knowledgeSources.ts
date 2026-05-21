@@ -3,9 +3,11 @@ import type { KnowledgeSourceId } from "./types";
 export type KnowledgeSourceMetadata = {
   id: KnowledgeSourceId;
   label: string;
-  adapter: "sports";
+  adapter: "sports" | "adult";
   capabilities: {
     knowledgeActionSpotting: boolean;
+    domainVlmRefinement: boolean;
+    visionTracking: boolean;
   };
 };
 
@@ -15,7 +17,9 @@ export const KNOWLEDGE_SOURCES: KnowledgeSourceMetadata[] = [
     label: "Football",
     adapter: "sports",
     capabilities: {
-      knowledgeActionSpotting: true
+      knowledgeActionSpotting: true,
+      domainVlmRefinement: true,
+      visionTracking: true
     }
   },
   {
@@ -23,7 +27,19 @@ export const KNOWLEDGE_SOURCES: KnowledgeSourceMetadata[] = [
     label: "American football",
     adapter: "sports",
     capabilities: {
-      knowledgeActionSpotting: true
+      knowledgeActionSpotting: true,
+      domainVlmRefinement: true,
+      visionTracking: true
+    }
+  },
+  {
+    id: "adult.jp_legal",
+    label: "Japan legal adult content",
+    adapter: "adult",
+    capabilities: {
+      knowledgeActionSpotting: false,
+      domainVlmRefinement: false,
+      visionTracking: false
     }
   }
 ];
@@ -40,6 +56,26 @@ export function sourceSupportsKnowledgeActionSpotting(sourceId: KnowledgeSourceI
 
 export function sourceListSupportsKnowledgeActionSpotting(sourceIds: readonly KnowledgeSourceId[] | null | undefined) {
   return Boolean(sourceIds?.some(sourceSupportsKnowledgeActionSpotting));
+}
+
+export function sourceSupportsDomainVlmRefinement(sourceId: KnowledgeSourceId | null | undefined) {
+  return Boolean(KNOWLEDGE_SOURCES.find((source) => source.id === sourceId)?.capabilities.domainVlmRefinement);
+}
+
+export function sourceListSupportsDomainVlmRefinement(sourceIds: readonly KnowledgeSourceId[] | null | undefined) {
+  return Boolean(sourceIds?.some(sourceSupportsDomainVlmRefinement));
+}
+
+export function sourceSupportsVisionTracking(sourceId: KnowledgeSourceId | null | undefined) {
+  return Boolean(KNOWLEDGE_SOURCES.find((source) => source.id === sourceId)?.capabilities.visionTracking);
+}
+
+export function sourceListSupportsVisionTracking(sourceIds: readonly KnowledgeSourceId[] | null | undefined) {
+  return Boolean(sourceIds?.some(sourceSupportsVisionTracking));
+}
+
+export function knowledgeSourceAdapter(sourceId: KnowledgeSourceId | null | undefined) {
+  return KNOWLEDGE_SOURCES.find((source) => source.id === sourceId)?.adapter ?? null;
 }
 
 export function formatKnowledgeSourceLabel(sourceId: KnowledgeSourceId | null | undefined) {

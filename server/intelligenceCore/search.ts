@@ -1,6 +1,7 @@
 import { summarizeAssetRecord } from "../../shared/assetSummary";
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, RetrievalEvidenceConstraint, SearchMatchReason, SearchResult, SearchResultSegment, TimelineSegment } from "../../shared/types";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
+import { isAssetSearchableByCompliance } from "../compliance/japanAdult";
 import { isTrustedDomainSegment, trustedDomainEvents } from "../evidenceTrust";
 import { knowledgeEvidenceForNames } from "../knowledgeGrounding";
 import { resolveQueryRetrievalPlan } from "../queryRetrievalPlan";
@@ -57,6 +58,7 @@ export function searchAssets(
 
   return assets
     .filter((asset) => asset.status === "indexed" || asset.timeline.length > 0)
+    .filter(isAssetSearchableByCompliance)
     .filter((asset) => !options.indexId || asset.indexId === options.indexId)
     .filter((asset) => !options.tag || asset.tags.includes(options.tag))
     .filter((asset) => matchesAssetDomainText(asset, options.domainFilters))
@@ -256,6 +258,7 @@ function searchPlayerInventoryResults(
   const inventoryFilters = inventoryDomainFilters(searchOptions.domainFilters);
   return assets
     .filter((asset) => asset.status === "indexed" || asset.timeline.length > 0)
+    .filter(isAssetSearchableByCompliance)
     .filter((asset) => !searchOptions.indexId || asset.indexId === searchOptions.indexId)
     .filter((asset) => !searchOptions.tag || asset.tags.includes(searchOptions.tag))
     .filter((asset) => matchesAssetDomainText(asset, inventoryFilters))

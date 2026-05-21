@@ -37,6 +37,7 @@ import { formatDuration, mediaPath } from "../displayUtils";
 import { type SearchTrustFilters } from "../searchTrust";
 import {
   AssetDetailTabs,
+  AssetComplianceSummary,
   AssetFlow,
   AssetGroupForm,
   AssetGroupSummary,
@@ -951,6 +952,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                       </div>
                     )}
                   </section>
+                  <AssetComplianceSummary asset={selectedAsset} />
                   <div className="chips">
                     {selectedAsset.tags.map((tag) => (
                       <span key={tag}>{tag}</span>

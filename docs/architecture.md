@@ -1,6 +1,6 @@
 # Arion Code Architecture
 
-Last checked against code: 2026-05-11.
+Last checked against code: 2026-05-21.
 
 ## Scope
 
@@ -55,7 +55,7 @@ Primary code references:
 - `scripts/qwen_vlm_worker.py`
 - `shared/types.ts`
 
-Sports-domain indexing details are documented in [sports-domain-indexing.md](sports-domain-indexing.md).
+Sports-domain indexing details are documented in [sports-domain-indexing.md](sports-domain-indexing.md). Japan legal adult content compliance details are documented in [japan-legal-adult-content-compliance.md](japan-legal-adult-content-compliance.md).
 
 ## Operational Runtime Topology
 
@@ -716,7 +716,8 @@ flowchart TD
   TextEmbed --> TextVector["Upsert text vectors"]
   TextVector --> VisualEmbed["Try visual embeddings\nOpenCLIP script"]
   VisualEmbed --> VisualVector["Upsert visual vectors\npossibly empty on unavailable visual embedding"]
-  VisualVector --> Finalize["Save indexed asset\nupsert tracking\ncomplete job\nrecord billing"]
+  VisualVector --> Compliance["Compliance gates\nadult.jp_legal metadata checks when configured"]
+  Compliance --> Finalize["Save indexed asset\nupsert tracking\ncomplete job\nrecord billing"]
 ```
 
 Stage details:
@@ -792,6 +793,9 @@ Stage details:
 16. `vector-upsert-visual`
    - Writes visual vectors to PostgreSQL/pgvector.
 17. `finalize`
+   - When the selected asset group includes `adult.jp_legal`, `evaluateJapanAdultCompliance` writes `asset.compliance` from explicit compliance tags and review/block indicators.
+   - The compliance gate does not infer age, consent, rights, or Article 175 status from model output.
+   - For non-adult asset groups, existing compliance records are preserved and no new adult compliance record is generated.
    - Saves the asset as `indexed`.
    - Upserts tracking records.
    - Marks the job succeeded.
@@ -1078,7 +1082,7 @@ The generic knowledge facade names live in:
 
 The current code still binds that facade directly to the sports adapter. `registry.ts` re-exports sports store functions, `answer.ts` calls `answerSportsKnowledgeQuestion`, and `documents.ts` builds documents from the same sports snapshot. This means the names are domain-generic, but adapter dispatch is not yet pluggable.
 
-The concrete adapter implementation lives under `server/knowledge/adapters/sports/*` because the only configured domain groups today are football and American football. This adapter contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
+The concrete sports adapter implementation lives under `server/knowledge/adapters/sports/*`. This adapter contains built-in competitions, teams, and players, and merges external knowledge from local persistent storage. It supports:
 
 - competition matching
 - player alias matching
@@ -1144,10 +1148,11 @@ The result becomes both retrieval text and structured `KnowledgeEvidence`.
 
 ### Domain Indexing
 
-Related-knowledge domain indexing is configured on `IndexRecord.domainIndexing`. The current configured source IDs are sports-specific:
+Related-knowledge domain indexing is configured on `IndexRecord.domainIndexing`. The current configured source IDs are:
 
 - `sports.football`
 - `sports.american_football`
+- `adult.jp_legal`
 
 When enabled, timeline segments can receive:
 
@@ -1161,6 +1166,8 @@ When enabled, timeline segments can receive:
 - optional domain VLM quality metadata
 
 Capability policies control whether VLM, detector, tracker, adapter action spotting, domain VLM, and diarization steps are disabled, optional, or required.
+
+`adult.jp_legal` is compliance-scoped. It disables sports-specific detector/tracker, action-spotting, and domain VLM defaults, then writes asset-level `asset.compliance` during finalize from deterministic metadata gates.
 
 ### Domain-Specific Sports Templates
 
@@ -1183,6 +1190,14 @@ The frontend exposes this contract in two places:
 
 - `src/components/knowledge/KnowledgePanel.tsx` shows `Overview`, `Manifest`, `Generator`, and `Evaluator` tabs for the selected related knowledge.
 - `src/components/assets/AssetComponents.tsx` shows the same template contract inside the asset workflow `knowledgeAction` node, including runtime gates, skip conditions, output schema count, benchmark coverage, and stored traces.
+
+### Japan Legal Adult Content Compliance Template
+
+`adult.jp_legal` is described in `shared/knowledgeTemplates.ts` as a compliance `manifest + generator + evaluator` contract.
+
+The template requires external metadata tags for age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, revocation/takedown readiness, Article 175 mosaic review, and source/distribution rights clearance. Missing metadata produces `review_required`; explicit block tags produce `blocked`.
+
+The evaluator contract explicitly forbids satisfying required checks from model-derived evidence. ASR, OCR, summaries, and VLM text can surface review indicators, but they cannot clear the asset.
 
 ### Sports Identity Resolution
 

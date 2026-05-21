@@ -1,6 +1,7 @@
 import { BarChart3, Database, Layers3, Route, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { KnowledgeSourceId, KnowledgeVectorStoreStatus, KnowledgeSnapshot } from "../../../shared/types";
+import { KNOWLEDGE_SOURCES } from "../../../shared/knowledgeSources";
 import { knowledgeTemplateDescriptors, sportsBaseTemplateContract, type KnowledgeTemplateDescriptor } from "../../../shared/knowledgeTemplates";
 import { EmptyState } from "../common/ConsolePrimitives";
 
@@ -41,10 +42,13 @@ export function KnowledgePanel({
   const [activeTab, setActiveTab] = useState<KnowledgePanelTab>("overview");
   const normalizedFilter = filter.trim().toLowerCase();
   const domains = knowledgeSnapshot?.domains ?? defaultDomains();
-  const selectedDomainInfo = domains.find((item) => item.id === selectedDomain) ?? domains[0];
+  const selectedSource = KNOWLEDGE_SOURCES.find((source) => source.id === selectedDomain) ?? null;
+  const selectedDomainInfo = domains.find((item) => item.id === selectedDomain) ?? null;
   const selectedTemplate = knowledgeTemplateDescriptors[selectedDomain] ?? null;
   const domainSport = selectedDomainInfo?.sport ?? sportForDomain(selectedDomain);
-  const domainCompetitions = knowledgeSnapshot?.competitions.filter((competition) => competition.domainGroup === selectedDomain || competition.sport === domainSport) ?? [];
+  const domainCompetitions = domainSport
+    ? knowledgeSnapshot?.competitions.filter((competition) => competition.domainGroup === selectedDomain || competition.sport === domainSport) ?? []
+    : [];
   const domainCompetitionSet = new Set(domainCompetitions.map((competition) => competition.value));
   const domainTeams = knowledgeSnapshot?.teams.filter((team) => team.domainGroup === selectedDomain || (team.league && domainCompetitionSet.has(team.league))) ?? [];
   const domainPlayers = knowledgeSnapshot?.players.filter((player) => player.sport === domainSport || domainCompetitionSet.has(player.league)) ?? [];
@@ -96,8 +100,8 @@ export function KnowledgePanel({
           <section className="knowledge-domain-summary" aria-label="Selected related knowledge summary">
             <div>
               <p className="section-label">Related Knowledge</p>
-              <h2>{selectedDomainInfo?.label ?? selectedDomain}</h2>
-              <p>{selectedDomain} · {domainSport.replace(/_/g, " ")}</p>
+              <h2>{selectedDomainInfo?.label ?? selectedSource?.label ?? selectedDomain}</h2>
+              <p>{selectedDomain} · {domainSport ? domainSport.replace(/_/g, " ") : selectedSource?.adapter ?? "custom"}</p>
             </div>
             <div className="knowledge-domain-metrics">
               <KnowledgeMetric label="Players" value={formatCount(domainTotals.players)} numeric />
@@ -500,5 +504,6 @@ function topEntries(values: string[]) {
 }
 
 function sportForDomain(domain: string) {
+  if (!domain.startsWith("sports.")) return null;
   return domain === "sports.american_football" ? "american_football" : "football";
 }

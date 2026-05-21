@@ -1,8 +1,8 @@
 # Arion
 
-Last checked against code: 2026-05-12.
+Last checked against code: 2026-05-21.
 
-Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, and sports-domain context.
+Arion is a local-first video intelligence platform for ingesting videos, indexing multimodal evidence, and retrieving grounded moments with timeline, visual, speech, OCR, related-knowledge, and compliance context.
 
 It is built as an application stack rather than a notebook or single LLM script: uploads become durable jobs, model work runs behind service boundaries, evidence is persisted into PostgreSQL/pgvector, and the React console exposes the indexing and search workflow end to end.
 
@@ -16,6 +16,7 @@ It is built as an application stack rather than a notebook or single LLM script:
 - Supports hybrid retrieval across lexical text, semantic vectors, visual vectors, source quality, domain evidence, and recency.
 - Optionally runs a Qwen VLM worker for keyframe descriptions, domain refinement, and query planning fallback.
 - Optionally enriches sports assets with football and American-football domain events, related knowledge, action spots, match identity, and player/team context.
+- Optionally evaluates Japan legal adult content asset groups with deterministic compliance metadata gates.
 - Exposes a React console for ingest, jobs, workflow inspection, search, clips, analysis, knowledge, webhooks, observability, and runtime capability checks.
 
 ## Current Shape
@@ -333,14 +334,15 @@ Pitch calibration is also opt-in through `FIELD_CALIBRATION_CONFIG`. The config 
 }
 ```
 
-## Sports Knowledge
+## Related Knowledge And Compliance Domains
 
-Sports-domain indexing is asset-group scoped. When enabled, Arion can attach related knowledge and structured events for:
+Related-knowledge and compliance indexing is asset-group scoped. When enabled, Arion can attach related knowledge, structured events, or compliance status for:
 
 - `sports.football`
 - `sports.american_football`
+- `adult.jp_legal`
 
-Supported knowledge and template sources include:
+Supported sports knowledge and template sources include:
 
 - football-data imports
 - UK football-data imports
@@ -349,6 +351,8 @@ Supported knowledge and template sources include:
 - nflverse imports
 - SoccerNet-style action spotting
 - American-football action spot templates
+
+`adult.jp_legal` is a compliance source, not an action-spotting adapter. It evaluates explicit metadata tags for Japan legal adult content workflows, including age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, takedown readiness, mosaic/Article 175 review, and rights clearance. It does not infer age, consent, legality, or rights from ASR/OCR/VLM output.
 
 Useful commands:
 
@@ -362,6 +366,7 @@ npm run knowledge:american-football-action-spots
 More detail is available in:
 
 - [docs/sports-domain-indexing.md](docs/sports-domain-indexing.md)
+- [docs/japan-legal-adult-content-compliance.md](docs/japan-legal-adult-content-compliance.md)
 - [docs/domain-adaptive-video-intelligence.md](docs/domain-adaptive-video-intelligence.md)
 
 ## Configuration
@@ -457,4 +462,5 @@ npm run models:doctor:ai
 - [Architecture](docs/architecture.md)
 - [npm Scripts](docs/npm-scripts.md)
 - [Sports Domain Indexing](docs/sports-domain-indexing.md)
+- [Japan Legal Adult Content Compliance](docs/japan-legal-adult-content-compliance.md)
 - [Domain Adaptive Video Intelligence](docs/domain-adaptive-video-intelligence.md)

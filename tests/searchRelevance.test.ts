@@ -75,6 +75,30 @@ test("generic Korean object search does not rank scenes from request words", () 
   assert.deepEqual(results[0]?.segments.map((segment) => segment.id), ["ring-evidence"]);
 });
 
+test("Japan adult compliance review and blocked assets are excluded from retrieval", () => {
+  const searchable = {
+    ...assetWithSegments([segment({ id: "cleared-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
+    id: "cleared-asset",
+    compliance: complianceRecord("cleared")
+  };
+  const reviewRequired = {
+    ...assetWithSegments([segment({ id: "review-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
+    id: "review-asset",
+    compliance: complianceRecord("review_required")
+  };
+  const blocked = {
+    ...assetWithSegments([segment({ id: "blocked-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
+    id: "blocked-asset",
+    compliance: complianceRecord("blocked")
+  };
+
+  const results = searchAssets([searchable, reviewRequired, blocked], [indexRecord()], "verified compliance evidence", {
+    queryVector: [1, 0]
+  });
+
+  assert.deepEqual(results.map((result) => result.asset.id), ["cleared-asset"]);
+});
+
 test("visible text search requires the literal text inside OCR/subtitle/logo evidence", () => {
   const queryPlan = queryPlanForKoreanVisibleText();
   const results = searchAssets(
@@ -1938,6 +1962,20 @@ function assetWithSegments(timeline: TimelineSegment[]): AssetRecord {
     createdAt: "2026-05-05T00:00:00.000Z",
     updatedAt: "2026-05-05T00:00:00.000Z"
   } as AssetRecord;
+}
+
+function complianceRecord(status: NonNullable<AssetRecord["compliance"]>["status"]): NonNullable<AssetRecord["compliance"]> {
+  return {
+    jurisdiction: "JP",
+    domainGroup: "adult.jp_legal",
+    status,
+    summary: `Fixture compliance status: ${status}`,
+    checkedAt: "2026-05-21T00:00:00.000Z",
+    checks: [],
+    blockers: status === "blocked" ? ["Explicit compliance block tag"] : [],
+    requiredTags: [],
+    references: []
+  };
 }
 
 function segment({

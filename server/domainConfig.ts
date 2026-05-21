@@ -1,5 +1,10 @@
 import type { CapabilityMode, CapabilityPolicy, IndexRecord } from "../shared/types";
-import { isKnownKnowledgeSourceId, sourceListSupportsKnowledgeActionSpotting } from "../shared/knowledgeSources";
+import {
+  isKnownKnowledgeSourceId,
+  sourceListSupportsDomainVlmRefinement,
+  sourceListSupportsKnowledgeActionSpotting,
+  sourceListSupportsVisionTracking
+} from "../shared/knowledgeSources";
 
 export function normalizeDomainIndexing(value: unknown): IndexRecord["domainIndexing"] {
   if (!value || typeof value !== "object") {
@@ -25,27 +30,31 @@ export function normalizeCapabilityPolicy(value: unknown, domainIndexing?: Index
   const defaults = defaultCapabilityPolicy(domainIndexing);
   const relatedKnowledgeEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
   const knowledgeActionSpottingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsKnowledgeActionSpotting(domainIndexing?.groups));
+  const visionTrackingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsVisionTracking(domainIndexing?.groups));
+  const domainVlmRefinementEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsDomainVlmRefinement(domainIndexing?.groups));
   const knowledgeActionSpottingValue = record.knowledgeActionSpotting ?? record.soccerNetActionSpotting;
   return {
     whisperXDiarization: normalizeMode(record.whisperXDiarization, defaults.whisperXDiarization),
     videoVlmAnalysis: normalizeMode(record.videoVlmAnalysis, defaults.videoVlmAnalysis),
-    visionDetector: relatedKnowledgeEnabled ? normalizeMode(record.visionDetector, defaults.visionDetector) : "disabled",
-    visionTracker: relatedKnowledgeEnabled ? normalizeMode(record.visionTracker, defaults.visionTracker) : "disabled",
+    visionDetector: visionTrackingEnabled ? normalizeMode(record.visionDetector, defaults.visionDetector) : "disabled",
+    visionTracker: visionTrackingEnabled ? normalizeMode(record.visionTracker, defaults.visionTracker) : "disabled",
     knowledgeActionSpotting: knowledgeActionSpottingEnabled ? normalizeMode(knowledgeActionSpottingValue, defaults.knowledgeActionSpotting) : "disabled",
-    domainVlmRefinement: relatedKnowledgeEnabled ? normalizeMode(record.domainVlmRefinement, defaults.domainVlmRefinement) : "disabled"
+    domainVlmRefinement: domainVlmRefinementEnabled ? normalizeMode(record.domainVlmRefinement, defaults.domainVlmRefinement) : "disabled"
   };
 }
 
 export function defaultCapabilityPolicy(domainIndexing?: IndexRecord["domainIndexing"]): CapabilityPolicy {
   const relatedKnowledgeEnabled = Boolean(domainIndexing?.enabled && domainIndexing.groups.length > 0);
   const knowledgeActionSpottingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsKnowledgeActionSpotting(domainIndexing?.groups));
+  const visionTrackingEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsVisionTracking(domainIndexing?.groups));
+  const domainVlmRefinementEnabled = Boolean(relatedKnowledgeEnabled && sourceListSupportsDomainVlmRefinement(domainIndexing?.groups));
   return {
     whisperXDiarization: envMode("CAPABILITY_WHISPERX_DIARIZATION", "optional"),
     videoVlmAnalysis: envMode("CAPABILITY_VIDEO_VLM_ANALYSIS", "optional"),
-    visionDetector: relatedKnowledgeEnabled ? envMode("CAPABILITY_VISION_DETECTOR", "optional") : "disabled",
-    visionTracker: relatedKnowledgeEnabled ? envMode("CAPABILITY_VISION_TRACKER", "optional") : "disabled",
+    visionDetector: visionTrackingEnabled ? envMode("CAPABILITY_VISION_DETECTOR", "optional") : "disabled",
+    visionTracker: visionTrackingEnabled ? envMode("CAPABILITY_VISION_TRACKER", "optional") : "disabled",
     knowledgeActionSpotting: knowledgeActionSpottingEnabled ? envMode("CAPABILITY_KNOWLEDGE_ACTION_SPOTTING", envMode("CAPABILITY_SOCCERNET_ACTION_SPOTTING", "optional")) : "disabled",
-    domainVlmRefinement: relatedKnowledgeEnabled ? envMode("CAPABILITY_DOMAIN_VLM_REFINEMENT", "optional") : "disabled"
+    domainVlmRefinement: domainVlmRefinementEnabled ? envMode("CAPABILITY_DOMAIN_VLM_REFINEMENT", "optional") : "disabled"
   };
 }
 

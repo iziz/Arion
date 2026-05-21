@@ -62,6 +62,28 @@ test("american football action spotting can be required when its adapter is sele
   assert.equal(policy.knowledgeActionSpotting, "required");
 });
 
+test("Japan legal adult content disables sports-specific capabilities by default", () => {
+  const policy = normalizeCapabilityPolicy(
+    {
+      visionDetector: "required",
+      visionTracker: "required",
+      knowledgeActionSpotting: "required",
+      domainVlmRefinement: "required"
+    },
+    {
+      enabled: true,
+      groups: ["adult.jp_legal"],
+      stages: ["domain_caption", "event_label", "structured_event"]
+    }
+  );
+
+  assert.equal(policy.videoVlmAnalysis, "optional");
+  assert.equal(policy.visionDetector, "disabled");
+  assert.equal(policy.visionTracker, "disabled");
+  assert.equal(policy.knowledgeActionSpotting, "disabled");
+  assert.equal(policy.domainVlmRefinement, "disabled");
+});
+
 test("domain-specific knowledge templates expose manifest generator and evaluator contracts", () => {
   const template = knowledgeTemplateDescriptors["sports.american_football"];
 
@@ -72,6 +94,17 @@ test("domain-specific knowledge templates expose manifest generator and evaluato
   assert.equal(template.generator.actionSpotting.alignment.requireProviderContext, true);
   assert.ok(template.manifest.skipConditions.some((condition) => condition.includes("nflverse game/play alignment is skipped")));
   assert.ok(template.evaluator.benchmarkCoverage.some((coverage) => coverage.name.includes("NFL Big Data Bowl")));
+});
+
+test("Japan adult compliance template exposes deterministic metadata gates", () => {
+  const template = knowledgeTemplateDescriptors["adult.jp_legal"];
+
+  assert.ok(template);
+  assert.equal(template.sourceId, "adult.jp_legal");
+  assert.equal(template.manifest.id, "adult.jp_legal.manifest.v1");
+  assert.equal(template.generator.adapter, "adult.jp_legal.compliance");
+  assert.ok(template.manifest.requiredEvidence.some((item) => item.name === "Age verification"));
+  assert.ok(template.evaluator.validationGates.some((gate) => gate.includes("No model-derived age")));
 });
 
 function withDefaultCapabilityEnv(run: () => void) {

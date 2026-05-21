@@ -107,11 +107,13 @@ export async function searchVectors(indexId: string | undefined, queryVector: nu
 
 async function searchVectorRows(indexId: string | undefined, queryVector: number[], limit: number) {
   const result = await getPool().query<VectorRow>(
-    `select *, 1 - (embedding <=> $1::vector) as score
-     from app_vectors
-     where embedding is not null
-       and ($2::text is null or index_id = $2)
-     order by embedding <=> $1::vector
+    `select v.*, 1 - (v.embedding <=> $1::vector) as score
+     from app_vectors v
+     join app_assets a on a.id = v.asset_id
+     where v.embedding is not null
+       and ($2::text is null or v.index_id = $2)
+       and ${assetComplianceSearchableSql}
+     order by v.embedding <=> $1::vector
      limit $3`,
     [vectorLiteral(queryVector), indexId ?? null, limit]
   );
@@ -120,11 +122,13 @@ async function searchVectorRows(indexId: string | undefined, queryVector: number
 
 async function searchLexicalVectorRows(indexId: string | undefined, queryText: string, limit: number) {
   const result = await getPool().query<VectorRow>(
-    `select *, ts_rank_cd(search_tsv, websearch_to_tsquery('simple', $1)) as lexical_score
-     from app_vectors
-     where embedding is not null
-       and ($2::text is null or index_id = $2)
-       and search_tsv @@ websearch_to_tsquery('simple', $1)
+    `select v.*, ts_rank_cd(v.search_tsv, websearch_to_tsquery('simple', $1)) as lexical_score
+     from app_vectors v
+     join app_assets a on a.id = v.asset_id
+     where v.embedding is not null
+       and ($2::text is null or v.index_id = $2)
+       and ${assetComplianceSearchableSql}
+       and v.search_tsv @@ websearch_to_tsquery('simple', $1)
      order by lexical_score desc
      limit $3`,
     [queryText, indexId ?? null, limit]
@@ -184,16 +188,20 @@ export async function searchVisualVectors(indexId: string | undefined, queryVect
     throw new Error(`Visual query embedding is incompatible with configured pgvector dimensions: ${queryVector.length}.`);
   }
   const pgvectorRows = await getPool().query(
-    `select *, 1 - (embedding <=> $1::vector) as score
-     from app_visual_vectors
-     where embedding is not null
-       and ($2::text is null or index_id = $2)
-     order by embedding <=> $1::vector
+    `select v.*, 1 - (v.embedding <=> $1::vector) as score
+     from app_visual_vectors v
+     join app_assets a on a.id = v.asset_id
+     where v.embedding is not null
+       and ($2::text is null or v.index_id = $2)
+       and ${assetComplianceSearchableSql}
+     order by v.embedding <=> $1::vector
      limit $3`,
     [vectorLiteral(queryVector), indexId ?? null, limit]
   );
   return pgvectorRows.rows.map(visualVectorRowToResult);
 }
+
+const assetComplianceSearchableSql = "((a.data #>> '{compliance,status}') is null or (a.data #>> '{compliance,status}') in ('not_applicable', 'cleared'))";
 
 export async function getVectorCount() {
   await ensurePostgresStore();
