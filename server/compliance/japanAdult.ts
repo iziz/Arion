@@ -13,7 +13,7 @@ export const japanAdultRequiredTags = [
   "jp-adult:revocation-window-tracked",
   "jp-adult:takedown-ready",
   "jp-adult:mosaic-reviewed",
-  "jp-adult:rights-cleared"
+  "jp-adult:rights-documented"
 ] as const;
 
 const explicitBlockTags = [
@@ -72,7 +72,7 @@ export function evaluateJapanAdultCompliance(
   const checks = buildChecks(tags, explicitBlockers, reviewIndicators);
   const criticalBlockers = checks.filter((check) => check.status === "blocked").map((check) => check.label);
   const missing = checks.filter((check) => check.status === "missing" || check.status === "review");
-  const status = criticalBlockers.length > 0 ? "blocked" : missing.length > 0 ? "review_required" : "cleared";
+  const status = criticalBlockers.length > 0 ? "blocked" : missing.length > 0 ? "review_required" : "metadata_complete";
 
   return {
     jurisdiction: "JP",
@@ -97,7 +97,7 @@ export function japanAdultComplianceTrace(compliance: AssetComplianceRecord) {
 
 export function isAssetSearchableByCompliance(asset: Pick<AssetRecord, "compliance">) {
   const compliance = asset.compliance;
-  return !compliance || compliance.status === "not_applicable" || compliance.status === "cleared";
+  return !compliance || compliance.status === "not_applicable" || compliance.status === "metadata_complete";
 }
 
 export function assetComplianceSearchBlockReason(asset: Pick<AssetRecord, "compliance">) {
@@ -116,7 +116,7 @@ function buildChecks(tags: Set<string>, explicitBlockers: readonly string[], rev
     requiredTagCheck(tags, "revocation-window", "Revocation window tracking", "The publication workflow tracks the statutory voluntary cancellation window.", "jp-adult:revocation-window-tracked"),
     requiredTagCheck(tags, "takedown-readiness", "Takedown and stop-distribution readiness", "The operator can stop sales/distribution when cancellation, rescission, or no-contract publication is asserted.", "jp-adult:takedown-ready"),
     requiredTagCheck(tags, "article-175-review", "Article 175 mosaic/obscenity review", "A Japan distribution review for Article 175 exposure has been completed.", "jp-adult:mosaic-reviewed"),
-    requiredTagCheck(tags, "rights-clearance", "Studio and distribution rights", "Source, studio, distribution, and storage rights are documented.", "jp-adult:rights-cleared")
+    requiredTagCheck(tags, "rights-documentation", "Studio and distribution rights", "Source, studio, distribution, and storage rights are documented.", "jp-adult:rights-documented")
   ];
 
   if (explicitBlockers.length > 0) {
@@ -185,9 +185,9 @@ function collectTextEvidence(asset: Pick<AssetRecord, "title" | "description" | 
 }
 
 function complianceSummary(status: AssetComplianceRecord["status"], blockers: number, missing: number) {
-  if (status === "cleared") return "All required Japan legal adult content compliance metadata is present.";
+  if (status === "metadata_complete") return "Required Japan adult content review metadata is present; this is not a legal clearance.";
   if (status === "blocked") return `${blockers} critical compliance blocker(s) require removal or legal review before use.`;
-  return `${missing} compliance check(s) require review before this asset should be considered cleared.`;
+  return `${missing} metadata check(s) require review before this asset should be searchable.`;
 }
 
 function complianceReferences() {

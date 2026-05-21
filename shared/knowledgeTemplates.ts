@@ -438,7 +438,7 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
       sharedRules: [
         "Use explicit metadata, tags, contracts, and operator review records as compliance evidence.",
         "Do not infer performer age, consent, or rights status from face, body, voice, title, or model prediction.",
-        "Route missing or contradictory compliance evidence to human review instead of treating the asset as cleared.",
+        "Route missing or contradictory compliance evidence to human review instead of treating the asset as metadata-complete.",
         "Keep compliance, search, OCR, ASR, and visual evidence separated for auditability."
       ],
       specializationRules: [
@@ -476,7 +476,7 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
         { name: "Waiting period records", role: "AV law publication lifecycle gate", required: true, contract: "jp-adult:cooling-period-1m and jp-adult:publication-delay-4m tags or equivalent records" },
         { name: "Preview and cancellation workflow", role: "Performer relief workflow gate", required: true, contract: "jp-adult:performer-preview, jp-adult:revocation-window-tracked, and jp-adult:takedown-ready tags or equivalent records" },
         { name: "Article 175 review", role: "Japan distribution review gate", required: true, contract: "jp-adult:mosaic-reviewed tag or equivalent legal review record" },
-        { name: "Rights clearance", role: "Source and distribution rights gate", required: true, contract: "jp-adult:rights-cleared tag or equivalent rights record" }
+        { name: "Rights documentation", role: "Source and distribution rights gate", required: true, contract: "jp-adult:rights-documented tag or equivalent rights record" }
       ],
       outputSchema: [
         "asset.compliance.jurisdiction",
@@ -497,7 +497,7 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
       ],
       skipConditions: [
         "Compliance output is omitted when the asset group does not use adult.jp_legal.",
-        "A missing required tag produces review_required instead of cleared.",
+        "A missing required tag produces review_required instead of metadata_complete.",
         "Explicit block tags produce blocked until a human compliance operator removes or resolves the block."
       ],
       limitations: [
@@ -517,7 +517,7 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
         "Confirm adult.jp_legal is enabled on the asset group.",
         "Read explicit compliance tags and block tags from asset metadata.",
         "Scan text evidence only for review indicators that require human attention.",
-        "Emit cleared, review_required, or blocked compliance status with check-level evidence."
+        "Emit metadata_complete, review_required, or blocked compliance status with check-level evidence."
       ],
       emits: ["asset.compliance record", "compliance modelTrace entry", "review/blocker checklist"],
       actionSpotting: {
@@ -538,19 +538,19 @@ export const knowledgeTemplateDescriptors: Partial<Record<KnowledgeSourceId, Kno
           role: "Metadata and blocker gate validation",
           status: "active",
           coverage: "Required tag, missing tag, explicit block tag, and non-applicable asset group fixtures are covered.",
-          metrics: ["cleared/review/blocked classification", "required tag coverage", "blocker count"],
+          metrics: ["metadata_complete/review/blocked classification", "required tag coverage", "blocker count"],
           notes: "Fixtures validate deterministic gate logic only; legal validity depends on external records."
         }
       ],
       validationGates: [
-        "All required tags must be present before an asset is marked cleared.",
+        "All required tags must be present before an asset is marked metadata_complete.",
         "Explicit block tags must force blocked status.",
         "Non-adult asset groups must not receive adult compliance records.",
         "No model-derived age, consent, or rights claim may satisfy a required compliance check."
       ],
-      fixtures: ["adult.jp_legal cleared metadata fixture", "adult.jp_legal missing metadata fixture", "adult.jp_legal explicit blocker fixture"],
+      fixtures: ["adult.jp_legal metadata_complete fixture", "adult.jp_legal missing metadata fixture", "adult.jp_legal explicit blocker fixture"],
       regressionChecks: [
-        "Missing metadata never clears an adult.jp_legal asset.",
+        "Missing metadata never marks an adult.jp_legal asset metadata_complete.",
         "Block tags override otherwise complete metadata.",
         "Capability defaults disable sports action spotting and domain VLM refinement for adult.jp_legal."
       ]

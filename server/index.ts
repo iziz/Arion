@@ -42,7 +42,7 @@ registerJobRoutes(app);
 registerAskRoutes(app);
 registerKnowledgeRoutes(app);
 registerOrchestrationRoutes(app);
-registerVectorRoutes(app);
+registerVectorRoutes(app, upload);
 registerAnalysisRoutes(app);
 registerWebhookRoutes(app);
 registerVideoRoutes(app, upload);

@@ -288,11 +288,11 @@ function buildAssetGroupMetaChips(
 function summarizeAssetGroupCompliance(assets: AssetSummaryRecord[]) {
   const complianceAssets = assets.filter((asset) => asset.compliance && asset.compliance.status !== "not_applicable");
   if (complianceAssets.length === 0) return null;
-  const cleared = complianceAssets.filter((asset) => asset.compliance?.status === "cleared").length;
+  const complete = complianceAssets.filter((asset) => asset.compliance?.status === "metadata_complete").length;
   const review = complianceAssets.filter((asset) => asset.compliance?.status === "review_required").length;
   const blocked = complianceAssets.filter((asset) => asset.compliance?.status === "blocked").length;
   return {
-    value: `${cleared}/${complianceAssets.length} cleared${review ? ` · ${review} review` : ""}${blocked ? ` · ${blocked} blocked` : ""}`,
+    value: `${complete}/${complianceAssets.length} metadata complete${review ? ` · ${review} review` : ""}${blocked ? ` · ${blocked} blocked` : ""}`,
     tooltip: "Japan legal adult content compliance is metadata-gated; review_required and blocked assets are excluded from retrieval.",
     disabled: review > 0 || blocked > 0
   };
@@ -321,8 +321,8 @@ export function VideoStatusSummary({ asset }: { asset: AssetRecord }) {
         <em>{searchable ? "사용 가능" : activeCompliance ? formatComplianceStatus(activeCompliance.status) : asset.status}</em>
       </span>
       {activeCompliance && (
-        <span className={activeCompliance.status === "cleared" ? "complete" : ""}>
-          {activeCompliance.status === "cleared" ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+        <span className={activeCompliance.status === "metadata_complete" ? "complete" : ""}>
+          {activeCompliance.status === "metadata_complete" ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
           <strong>Compliance</strong>
           <em>{formatComplianceStatus(activeCompliance.status)}</em>
         </span>
@@ -375,9 +375,50 @@ export function AssetComplianceSummary({ asset }: { asset: AssetRecord }) {
   );
 }
 
+export function AssetCatalogMetadataSummary({ asset }: { asset: AssetRecord }) {
+  const metadata = asset.externalMetadata?.rurugrab;
+  if (!metadata || metadata.status !== "matched") return null;
+  const chips = [metadata.studio, metadata.label, metadata.series, ...metadata.performers.slice(0, 4), ...metadata.genres.slice(0, 4)].filter(Boolean);
+  return (
+    <section className="asset-catalog-card" aria-label="External catalog metadata">
+      <div className="asset-compliance-header">
+        <span>
+          <Search size={18} />
+          <strong>Catalog metadata</strong>
+        </span>
+        <em>{metadata.mediaDisplayKey ?? metadata.mediaKeyNorm ?? "matched"}</em>
+      </div>
+      <p>{metadata.title ?? "Matched external media metadata for title, performer, studio, and scene search ranking."}</p>
+      <div className="asset-compliance-metrics">
+        <span>
+          <b>Providers</b>
+          {metadata.providerCount}
+        </span>
+        <span>
+          <b>Performers</b>
+          {metadata.performers.length}
+        </span>
+        <span>
+          <b>Genres</b>
+          {metadata.genres.length}
+        </span>
+      </div>
+      {chips.length > 0 && (
+        <div className="asset-compliance-checks">
+          {chips.map((item) => (
+            <span key={item}>
+              <b>{item}</b>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function isAssetSearchableInUi(asset: Pick<AssetRecord, "status" | "compliance">) {
   const compliance = asset.compliance;
-  const complianceSearchable = !compliance || compliance.status === "not_applicable" || compliance.status === "cleared";
+  const complianceSearchable = !compliance || compliance.status === "not_applicable" || compliance.status === "metadata_complete";
   return asset.status === "indexed" && complianceSearchable;
 }
 
@@ -386,7 +427,7 @@ function formatComplianceStatus(status: NonNullable<AssetRecord["compliance"]>["
 }
 
 function complianceTone(status: NonNullable<AssetRecord["compliance"]>["status"]): NodeMetricTone {
-  if (status === "cleared") return "good";
+  if (status === "metadata_complete") return "good";
   if (status === "blocked") return "bad";
   return "warning";
 }

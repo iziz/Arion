@@ -77,9 +77,9 @@ test("generic Korean object search does not rank scenes from request words", () 
 
 test("Japan adult compliance review and blocked assets are excluded from retrieval", () => {
   const searchable = {
-    ...assetWithSegments([segment({ id: "cleared-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
-    id: "cleared-asset",
-    compliance: complianceRecord("cleared")
+    ...assetWithSegments([segment({ id: "metadata-complete-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
+    id: "metadata-complete-asset",
+    compliance: complianceRecord("metadata_complete")
   };
   const reviewRequired = {
     ...assetWithSegments([segment({ id: "review-evidence", transcript: "The catalog notes verified production compliance evidence.", embedding: [1, 0] })]),
@@ -96,7 +96,7 @@ test("Japan adult compliance review and blocked assets are excluded from retriev
     queryVector: [1, 0]
   });
 
-  assert.deepEqual(results.map((result) => result.asset.id), ["cleared-asset"]);
+  assert.deepEqual(results.map((result) => result.asset.id), ["metadata-complete-asset"]);
 });
 
 test("visible text search requires the literal text inside OCR/subtitle/logo evidence", () => {

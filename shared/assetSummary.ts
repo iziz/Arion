@@ -32,6 +32,7 @@ export function summarizeAssetRecord(asset: AssetRecord): AssetSummaryRecord {
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
     compliance: asset.compliance,
+    externalMetadata: asset.externalMetadata,
     timelineCount: asset.timeline.length,
     keyframeCount: asset.keyframes.length,
     domainEventCount: asset.timeline.reduce((count, segment) => count + (segment.domain?.events.length ?? 0), 0),

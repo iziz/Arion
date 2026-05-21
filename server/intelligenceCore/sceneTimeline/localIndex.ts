@@ -1,4 +1,5 @@
 import type { AssetRecord, IndexRecord, TimelineSegment } from "../../../shared/types";
+import { externalMetadataSearchText, externalMetadataTags } from "../../../shared/externalMetadata";
 import { withDomainSegment } from "../../domainIndex";
 import { createShotWindows, type SceneBoundary } from "../../sceneDetection";
 import { extractKeywords, unique, vectorize } from "../textUtils";
@@ -7,12 +8,14 @@ import { fuseTimelineBasis, normalizeWhisperTimeline, overlappingWhisperText } f
 
 export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBoundaries: SceneBoundary[] = []) {
   const visualLabels = trustedVisualLabels(asset);
+  const metadataText = externalMetadataSearchText(asset);
+  const metadataTags = externalMetadataTags(asset.externalMetadata?.rurugrab);
   const keywords = extractKeywords(
     `${asset.title} ${asset.description} ${asset.originalName.replace(/\.[^.]+$/, "")} ${index.name} ${
       asset.intelligence.asr.transcript
-    } ${asset.intelligence.ocr.tokens.join(" ")} ${visualLabels.join(" ")}`
+    } ${asset.intelligence.ocr.tokens.join(" ")} ${visualLabels.join(" ")} ${metadataText}`
   );
-  const tags = unique([...keywords, ...visualLabels, ...asset.intelligence.ocr.tokens]).slice(0, 24);
+  const tags = unique([...metadataTags, ...keywords, ...visualLabels, ...asset.intelligence.ocr.tokens]).slice(0, 48);
   const safeTags = tags.length > 0 ? tags : ["general", "uploaded", "media"];
   const duration = Math.max(asset.duration ?? 180, 1);
   const whisperSegments = normalizeWhisperTimeline(asset);
@@ -49,10 +52,10 @@ export function buildLocalIndex(asset: AssetRecord, index: IndexRecord, sceneBou
       label: labelForTimelineSegment(sceneData, basis?.text, item),
       transcript,
       sceneData,
-      tags: unique([primary, secondary, tertiary, ...visualLabels.slice(0, 2)]),
+      tags: unique([primary, secondary, tertiary, ...metadataTags.slice(0, 4), ...visualLabels.slice(0, 2)]),
       modalities: chooseModalities(index.modalities, item),
       confidence: confidenceFromSources(sources),
-      embedding: vectorize(`${primary} ${secondary} ${tertiary} ${transcript}`),
+      embedding: vectorize(`${primary} ${secondary} ${tertiary} ${metadataTags.slice(0, 8).join(" ")} ${transcript}`),
       thumbnailPath: null,
       sources: unique(sources),
       scene: {

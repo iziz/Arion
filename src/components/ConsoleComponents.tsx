@@ -2,6 +2,7 @@ export { EmptyState, InfoTile, Metric, TabButton } from "./common/ConsolePrimiti
 export { KnowledgePanel } from "./knowledge/KnowledgePanel";
 export {
   AssetDetailTabs,
+  AssetCatalogMetadataSummary,
   AssetComplianceSummary,
   AssetFlow,
   AssetGroupForm,

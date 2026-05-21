@@ -20,9 +20,9 @@ The compliance record is written to `asset.compliance` during the indexing final
 | Status | Meaning |
 | --- | --- |
 | `not_applicable` | The asset group is not configured with `adult.jp_legal`. |
-| `cleared` | All required metadata tags are present and no review/block indicators were detected. |
+| `metadata_complete` | Required metadata tags are present and no review/block indicators were detected. This is not a legal clearance. |
 | `review_required` | Required metadata is missing or review terms were found in metadata, ASR, OCR, summary, or segment text. |
-| `blocked` | An explicit block tag is present. The asset should not be searched, distributed, or treated as cleared until a human compliance operator resolves the block. |
+| `blocked` | An explicit block tag is present. The asset should not be searched or distributed until a human compliance operator resolves the block. |
 
 ## Required Metadata Tags
 
@@ -38,7 +38,7 @@ The compliance gate requires these explicit tags:
 - `jp-adult:revocation-window-tracked`
 - `jp-adult:takedown-ready`
 - `jp-adult:mosaic-reviewed`
-- `jp-adult:rights-cleared`
+- `jp-adult:rights-documented`
 
 These tags represent external operator evidence. Model output, filenames, captions, OCR, ASR, or visual detections cannot satisfy a required tag.
 
@@ -71,7 +71,7 @@ This keeps compliance evaluation visible in the same operational trace channel a
 
 ## Retrieval Enforcement
 
-Assets with `review_required` or `blocked` compliance status are excluded from retrieval in both the in-memory ranking path and PostgreSQL text/visual vector search. Operators can still inspect the asset record and compliance checklist in the console, but the asset is not treated as searchable evidence until the compliance status is `cleared`.
+Assets with `review_required` or `blocked` compliance status are excluded from retrieval in both the in-memory ranking path and PostgreSQL text/visual vector search. Operators can still inspect the asset record and compliance checklist in the console, but the asset is not treated as searchable evidence until the compliance status is `metadata_complete`.
 
 ## References
 

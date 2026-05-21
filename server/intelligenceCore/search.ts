@@ -1,4 +1,5 @@
 import { summarizeAssetRecord } from "../../shared/assetSummary";
+import { externalMetadataSearchText } from "../../shared/externalMetadata";
 import type { AssetRecord, DomainQueryPlan, DomainScopeValue, DomainSearchFilters, IndexRecord, KnowledgeEvidence, PlayerIdentity, RetrievalEvidenceConstraint, SearchMatchReason, SearchResult, SearchResultSegment, TimelineSegment } from "../../shared/types";
 import { expandDomainQuery, scoreDomainMatch } from "../domainIndex";
 import { isAssetSearchableByCompliance } from "../compliance/japanAdult";
@@ -63,7 +64,7 @@ export function searchAssets(
     .filter((asset) => !options.tag || asset.tags.includes(options.tag))
     .filter((asset) => matchesAssetDomainText(asset, options.domainFilters))
     .map((asset) => {
-      const assetText = `${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary}`;
+      const assetText = `${asset.title} ${asset.description} ${asset.tags.join(" ")} ${asset.summary} ${externalMetadataSearchText(asset)}`;
       const assetLexicalScore = scoreText(assetText, queryTerms);
       const assetKnowledgeScore = scoreText(assetText, knowledgeTerms);
       const assetMetadataScore = Math.max(assetLexicalScore, assetKnowledgeScore);

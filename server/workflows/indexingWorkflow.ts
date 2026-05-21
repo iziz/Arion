@@ -33,6 +33,7 @@ import { discardUploadTempFile, pruneGeneratedAssetMedia } from "../services/med
 import { enrichDomainTimeline } from "./domainVlmWorkflow";
 import { resolveTimelineMatchIdentity } from "../domainIndex/matchIdentityResolver";
 import { evaluateJapanAdultCompliance, japanAdultComplianceTrace } from "../compliance/japanAdult";
+import { enrichAssetWithRurugrabMetadata } from "../metadata/rurugrab";
 import { buildRuntimeStageJobUpdate, type RuntimeStageEvent } from "./runtimeStageState";
 import { getWorkflowRetryImpactedEvidence, type WorkflowEvidence } from "../../shared/workflowNodes";
 import type { AssetRecord, IndexRecord, JobRecord, LocalIntelligence, WebhookEventType } from "../../shared/types";
@@ -65,7 +66,7 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
     throw error;
   }
   const assetId = stored.objectKey.split("/")[1] ?? randomUUID();
-  const asset: AssetRecord = {
+  const asset: AssetRecord = await enrichAssetWithRurugrabMetadata({
     id: assetId,
     indexId: index.id,
     title,
@@ -96,7 +97,7 @@ export async function createAssetFromUpload(req: Request, res: Response, indexId
     error: null,
     createdAt: now,
     updatedAt: now
-  };
+  }, now);
 
   await saveVideo(asset);
   const job = await createQueuedAssetJob("asset.index", index.id, asset.id);
@@ -127,6 +128,7 @@ const indexingCheckpointOrder = [
 
 export async function runIndexingJob(jobId: string, assetId: string, filePath: string, options: RunIndexingJobOptions = {}) {
   try {
+    await enrichAssetMetadataForIndexing(assetId);
     await ensureRetryRebuildScope(jobId, options.retryStage);
     await invalidateRetryStageOutputs(jobId, assetId, options.retryStage);
     await runCheckpointedIndexingStage(jobId, "probe", 38, "Probe and sampling complete", options.retryStage, () => assetHasProbeMetadata(assetId), async () => {
@@ -1177,6 +1179,7 @@ function modelTraceGroup(trace: string) {
   if (trace.startsWith("vision-tracker")) return "vision-tracker";
   if (trace.startsWith("knowledge-action")) return "knowledge-action";
   if (trace.startsWith("soccernet-action")) return "knowledge-action";
+  if (trace.startsWith("metadata:rurugrab")) return "metadata:rurugrab";
   if (trace.startsWith("domain-vlm")) return "domain-vlm";
   if (trace.startsWith(EXTRACTIVE_SUMMARY_TRACE_PREFIX)) return "summary";
   if (trace.startsWith("embedding:")) return "embedding";
@@ -1199,6 +1202,13 @@ async function emitForAsset(
     payload
   });
   await deliverEvent(type, event);
+}
+
+async function enrichAssetMetadataForIndexing(assetId: string) {
+  const asset = await getAsset(assetId);
+  if (!asset) return;
+  const enriched = await enrichAssetWithRurugrabMetadata(asset);
+  if (enriched !== asset) await saveAsset(enriched);
 }
 
 function sleep(ms: number) {

@@ -272,7 +272,8 @@
   overflow-wrap: anywhere;
 }
 
-.asset-compliance-card {
+.asset-compliance-card,
+.asset-catalog-card {
   display: grid;
   gap: 10px;
   border: 1px solid #dfe9e4;
@@ -291,7 +292,8 @@
   background: #fff0ee;
 }
 
-.asset-compliance-card p {
+.asset-compliance-card p,
+.asset-catalog-card p {
   margin: 0;
   color: #405851;
   font-size: 13px;

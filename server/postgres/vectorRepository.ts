@@ -201,7 +201,7 @@ export async function searchVisualVectors(indexId: string | undefined, queryVect
   return pgvectorRows.rows.map(visualVectorRowToResult);
 }
 
-const assetComplianceSearchableSql = "((a.data #>> '{compliance,status}') is null or (a.data #>> '{compliance,status}') in ('not_applicable', 'cleared'))";
+const assetComplianceSearchableSql = "((a.data #>> '{compliance,status}') is null or (a.data #>> '{compliance,status}') in ('not_applicable', 'metadata_complete'))";
 
 export async function getVectorCount() {
   await ensurePostgresStore();

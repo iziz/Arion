@@ -1195,9 +1195,9 @@ The frontend exposes this contract in two places:
 
 `adult.jp_legal` is described in `shared/knowledgeTemplates.ts` as a compliance `manifest + generator + evaluator` contract.
 
-The template requires external metadata tags for age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, revocation/takedown readiness, Article 175 mosaic review, and source/distribution rights clearance. Missing metadata produces `review_required`; explicit block tags produce `blocked`.
+The template requires external metadata tags for age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, revocation/takedown readiness, Article 175 mosaic review, and source/distribution rights documentation. Missing metadata produces `review_required`; explicit block tags produce `blocked`.
 
-The evaluator contract explicitly forbids satisfying required checks from model-derived evidence. ASR, OCR, summaries, and VLM text can surface review indicators, but they cannot clear the asset.
+The evaluator contract explicitly forbids satisfying required checks from model-derived evidence. ASR, OCR, summaries, and VLM text can surface review indicators, but they cannot mark the asset metadata-complete.
 
 ### Sports Identity Resolution
 

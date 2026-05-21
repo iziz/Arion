@@ -10,10 +10,10 @@ test("Japan adult compliance is not applied outside the adult.jp_legal source", 
   assert.equal(result.checks.length, 0);
 });
 
-test("Japan adult compliance clears only when all required metadata tags are present", () => {
+test("Japan adult compliance marks metadata complete only when all required metadata tags are present", () => {
   const result = evaluateJapanAdultCompliance(assetFixture({ tags: [...japanAdultRequiredTags] }), indexFixture(["adult.jp_legal"]));
 
-  assert.equal(result.status, "cleared");
+  assert.equal(result.status, "metadata_complete");
   assert.equal(result.checks.every((check) => check.status === "passed"), true);
 });
 

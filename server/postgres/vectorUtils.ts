@@ -77,6 +77,7 @@ export function vectorRecordText(segment: TimelineSegment) {
     segment.label,
     segment.summary,
     segment.transcript,
+    segment.tags.join(" "),
     domainSearchText,
     ...domainCaptions,
     ...domainLabels,

@@ -56,6 +56,12 @@ export async function embedVisualQuery(text: string) {
   return vector;
 }
 
+export async function embedVisualImage(imagePath: string) {
+  const [vector] = await embedImages([imagePath]);
+  if (!vector) throw new Error("Visual embedding runtime returned no image vector");
+  return vector;
+}
+
 export async function embedKeyframes(indexId: string, assetId: string, timeline: TimelineSegment[], keyframes: KeyframeRecord[]) {
   const usable = keyframes.filter((keyframe) => keyframe.path && keyframe.segmentId);
   const absolutePaths = usable.map((keyframe) => path.join(getPublicMediaRoot(), keyframe.path));

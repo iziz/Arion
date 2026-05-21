@@ -45,7 +45,7 @@ export type CapabilityPolicy = {
   domainVlmRefinement: CapabilityMode;
 };
 
-export type AssetComplianceStatus = "not_applicable" | "cleared" | "review_required" | "blocked";
+export type AssetComplianceStatus = "not_applicable" | "metadata_complete" | "review_required" | "blocked";
 export type AssetComplianceCheckStatus = "passed" | "missing" | "review" | "blocked" | "not_applicable";
 export type AssetComplianceSeverity = "info" | "warning" | "critical";
 
@@ -69,6 +69,40 @@ export type AssetComplianceRecord = {
   blockers: string[];
   requiredTags: string[];
   references: Array<{ label: string; url: string }>;
+};
+
+export type ExternalMediaMetadataStatus = "matched" | "not_found" | "unavailable";
+
+export type ExternalMediaMetadata = {
+  source: "rurugrab";
+  status: ExternalMediaMetadataStatus;
+  matchedAt: string;
+  matchConfidence: number;
+  matchReason: string;
+  mediaKeyNorm: string | null;
+  mediaDisplayKey: string | null;
+  providerCount: number;
+  primaryProvider: string | null;
+  title: string | null;
+  localizedTitles: string[];
+  titleVariants: string[];
+  releaseDate: string | null;
+  runtimeMinutes: number | null;
+  studio: string | null;
+  label: string | null;
+  series: string | null;
+  director: string | null;
+  genres: string[];
+  performers: string[];
+  coverImageUrl: string | null;
+  previewVideoUrl: string | null;
+  sourceUrls: string[];
+  externalIds: Record<string, string | number | boolean | null>;
+  searchText: string;
+};
+
+export type AssetExternalMetadata = {
+  rurugrab?: ExternalMediaMetadata;
 };
 
 export type DomainEvent = {
@@ -827,6 +861,7 @@ export type AssetRecord = {
   identity?: AssetIdentityIndex;
   rawMatchProfile?: RawMatchVideoProfile;
   compliance?: AssetComplianceRecord;
+  externalMetadata?: AssetExternalMetadata;
   technicalMetadata: {
     storageProvider: StorageProvider;
     bucket: string;
@@ -891,6 +926,7 @@ export type AssetSummaryRecord = Pick<
   | "createdAt"
   | "updatedAt"
   | "compliance"
+  | "externalMetadata"
 > & {
   timelineCount: number;
   keyframeCount: number;

@@ -1,4 +1,5 @@
 import type { AssetRecord, ClipResult, DomainQueryPlan, DomainSearchFilters, PlayerIdentity, SearchMatchReason, TimelineSegment, VerificationCheck } from "../../shared/types";
+import { externalMetadataSearchText } from "../../shared/externalMetadata";
 import { isTrustedDomainSegment, isTrustedDomainEvent, isTrustedVisionEvidence, isTrustedVisionFieldZone, trustedDomainEvents } from "../evidenceTrust";
 import { matchKnowledgePlayer, playerTeamForSeason } from "../knowledge/registry";
 import { isObjectEvidenceReady, segmentSearchText } from "./sceneTimeline";
@@ -147,6 +148,7 @@ export function matchesAssetDomainText(asset: AssetRecord, filters?: DomainSearc
       asset.originalName,
       asset.tags.join(" "),
       asset.summary,
+      externalMetadataSearchText(asset),
       asset.intelligence.asr.transcript,
       asset.intelligence.ocr.tokens.join(" "),
       asset.timeline.map((segment) => segmentSearchText(segment)).join(" "),
@@ -242,6 +244,7 @@ function segmentDomainFilterText(asset: AssetRecord, segment: TimelineSegment) {
       asset.description,
       asset.originalName,
       asset.tags.join(" "),
+      externalMetadataSearchText(asset),
       segment.label,
       segment.transcript,
       segment.tags.join(" "),

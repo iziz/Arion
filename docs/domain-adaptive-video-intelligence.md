@@ -9,7 +9,7 @@ The interview brief describes a platform layer above two foundation-model capabi
 - **Retrieval model**: finds semantically relevant video moments.
 - **Generation model**: summarizes or analyzes selected video moments.
 
-The platform problem is that domain workflows require facts and operating constraints the base models do not reliably own. Sports analyst queries need player identity, roster/team history, competition, season, sport-specific event semantics, and confidence-aware grounding. Legal adult content operations need explicit compliance records for age, identity, consent, contracts, waiting periods, distribution readiness, obscenity review, and rights clearance.
+The platform problem is that domain workflows require facts and operating constraints the base models do not reliably own. Sports analyst queries need player identity, roster/team history, competition, season, sport-specific event semantics, and confidence-aware grounding. Legal adult content operations need explicit compliance records for age, identity, consent, contracts, waiting periods, distribution readiness, obscenity review, and rights documentation.
 
 Arion implements this as an application-layer orchestration system rather than as model retraining.
 
@@ -126,9 +126,9 @@ The ask workflow first builds a temporary structured knowledge plan, resolves th
 
 ### 9. Japan Legal Adult Content Compliance
 
-`adult.jp_legal` adds an asset-level compliance gate for lawful Japan adult content workflows. The gate requires explicit metadata tags for performer age/identity verification, consent contracts, contract explanation, one-month shooting wait, four-month publication wait, performer preview, revocation/takedown readiness, Article 175 mosaic review, and rights clearance.
+`adult.jp_legal` adds an asset-level compliance gate for lawful Japan adult content workflows. The gate requires explicit metadata tags for performer age/identity verification, consent contracts, contract explanation, one-month shooting wait, four-month publication wait, performer preview, revocation/takedown readiness, Article 175 mosaic review, and rights documentation.
 
-The implementation deliberately does not infer age, consent, Article 175 compliance, source legality, or rights clearance from model output. ASR, OCR, summaries, and VLM text can only surface review indicators. Missing evidence produces `review_required`; explicit block tags produce `blocked`.
+The implementation deliberately does not infer age, consent, Article 175 compliance, source legality, or rights status from model output. ASR, OCR, summaries, and VLM text can only surface review indicators. Missing evidence produces `review_required`; explicit block tags produce `blocked`.
 
 ## Query Workflows
 

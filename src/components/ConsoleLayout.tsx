@@ -37,6 +37,7 @@ import { formatDuration, mediaPath } from "../displayUtils";
 import { type SearchTrustFilters } from "../searchTrust";
 import {
   AssetDetailTabs,
+  AssetCatalogMetadataSummary,
   AssetComplianceSummary,
   AssetFlow,
   AssetGroupForm,
@@ -952,6 +953,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
                       </div>
                     )}
                   </section>
+                  <AssetCatalogMetadataSummary asset={selectedAsset} />
                   <AssetComplianceSummary asset={selectedAsset} />
                   <div className="chips">
                     {selectedAsset.tags.map((tag) => (

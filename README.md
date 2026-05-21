@@ -352,7 +352,9 @@ Supported sports knowledge and template sources include:
 - SoccerNet-style action spotting
 - American-football action spot templates
 
-`adult.jp_legal` is a compliance source, not an action-spotting adapter. It evaluates explicit metadata tags for Japan legal adult content workflows, including age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, takedown readiness, mosaic/Article 175 review, and rights clearance. It does not infer age, consent, legality, or rights from ASR/OCR/VLM output.
+`adult.jp_legal` is a compliance source, not an action-spotting adapter. It evaluates explicit metadata tags for Japan legal adult content workflows, including age/identity verification, consent and contract evidence, statutory waiting periods, performer preview, takedown readiness, mosaic/Article 175 review, and rights documentation. It does not infer age, consent, legality, or rights from ASR/OCR/VLM output.
+
+For owned catalog search, Arion can enrich uploaded assets from the local Rurugrab metadata SQLite database at `/Users/ishtar/.rurugrab/localdb.metadata.sqlite3` or `RURUGRAB_METADATA_DB_PATH`. Product-code matches add title, studio, label, series, performer, genre, cover, preview, and provider-count metadata to `asset.externalMetadata.rurugrab`, then copy compact catalog tags into timeline segments for title, performer, and scene retrieval.
 
 Useful commands:
 
