@@ -301,22 +301,56 @@ async function ensurePgvectorVersion(db: Pool) {
 async function ensureLexicalVectorIndexes(db: Pool) {
   await db.query(`
     alter table app_vectors
-      add column if not exists search_tsv tsvector generated always as (
-        to_tsvector('simple', coalesce(text, '') || ' ' || array_to_string(tags, ' '))
-      ) stored;
+      add column if not exists search_tsv tsvector;
+    create or replace function app_vectors_search_tsv_update() returns trigger
+      language plpgsql
+      as $$
+      begin
+        new.search_tsv := to_tsvector('simple', coalesce(new.text, '') || ' ' || array_to_string(new.tags, ' '));
+        return new;
+      end
+      $$;
+    drop trigger if exists app_vectors_search_tsv_update_trigger on app_vectors;
+    create trigger app_vectors_search_tsv_update_trigger
+      before insert or update of text, tags on app_vectors
+      for each row execute function app_vectors_search_tsv_update();
+    update app_vectors
+      set search_tsv = to_tsvector('simple', coalesce(text, '') || ' ' || array_to_string(tags, ' '))
+      where search_tsv is null;
     create index if not exists app_vectors_search_tsv_idx on app_vectors using gin(search_tsv);
     alter table app_knowledge_vectors
-      add column if not exists search_tsv tsvector generated always as (
-        to_tsvector(
+      add column if not exists search_tsv tsvector;
+    create or replace function app_knowledge_vectors_search_tsv_update() returns trigger
+      language plpgsql
+      as $$
+      begin
+        new.search_tsv := to_tsvector(
           'simple',
-          coalesce(entity_name, '') || ' ' ||
-          coalesce(competition, '') || ' ' ||
-          coalesce(season, '') || ' ' ||
-          coalesce(team, '') || ' ' ||
-          coalesce(text, '') || ' ' ||
-          coalesce(source_text, '')
-        )
-      ) stored;
+          coalesce(new.entity_name, '') || ' ' ||
+          coalesce(new.competition, '') || ' ' ||
+          coalesce(new.season, '') || ' ' ||
+          coalesce(new.team, '') || ' ' ||
+          coalesce(new.text, '') || ' ' ||
+          coalesce(new.source_text, '')
+        );
+        return new;
+      end
+      $$;
+    drop trigger if exists app_knowledge_vectors_search_tsv_update_trigger on app_knowledge_vectors;
+    create trigger app_knowledge_vectors_search_tsv_update_trigger
+      before insert or update of entity_name, competition, season, team, text, source_text on app_knowledge_vectors
+      for each row execute function app_knowledge_vectors_search_tsv_update();
+    update app_knowledge_vectors
+      set search_tsv = to_tsvector(
+        'simple',
+        coalesce(entity_name, '') || ' ' ||
+        coalesce(competition, '') || ' ' ||
+        coalesce(season, '') || ' ' ||
+        coalesce(team, '') || ' ' ||
+        coalesce(text, '') || ' ' ||
+        coalesce(source_text, '')
+      )
+      where search_tsv is null;
     create index if not exists app_knowledge_vectors_search_tsv_idx on app_knowledge_vectors using gin(search_tsv);
   `);
 }

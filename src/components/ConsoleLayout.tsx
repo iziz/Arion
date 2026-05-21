@@ -31,7 +31,7 @@ import type {
   KnowledgeSnapshot
 } from "../../shared/types";
 import { KNOWLEDGE_SOURCES } from "../../shared/knowledgeSources";
-import type { DatabaseStatus, ModelCapabilitiesSnapshot, ObservabilitySnapshot } from "../api";
+import { api, getFailureMessage, type DatabaseStatus, type ModelCapabilitiesSnapshot, type ObservabilitySnapshot } from "../api";
 import type { ConsoleTab, DialogMode, SearchKnowledgeContext, SearchScopeMode } from "../consoleTypes";
 import { formatDuration, mediaPath } from "../displayUtils";
 import { type SearchTrustFilters } from "../searchTrust";
@@ -134,6 +134,50 @@ type SearchVideoPreview = {
   start?: number;
   end?: number;
   label?: string;
+};
+
+type LocalLibraryMetadataSummary = {
+  status: "matched" | "not_found" | "unavailable";
+  mediaDisplayKey: string | null;
+  matchConfidence: number;
+  matchReason: string;
+  providerCount: number;
+  primaryProvider: string | null;
+  hasTitle: boolean;
+  releaseDate: string | null;
+  runtimeMinutes: number | null;
+  studio: string | null;
+  label: string | null;
+  series: string | null;
+  performers: string[];
+  genres: string[];
+  hasCoverImage: boolean;
+  hasPreviewVideo: boolean;
+};
+
+type LocalLibraryPreviewResponse = {
+  rootPath: string;
+  scanned: number;
+  files: Array<{
+    path: string;
+    originalName: string;
+    title: string;
+    size: number;
+    candidates: Array<{ mediaDisplayKey: string; confidence: number; evidence: string }>;
+    metadata: LocalLibraryMetadataSummary | null;
+  }>;
+};
+
+type LocalLibraryImportResponse = {
+  rootPath: string;
+  indexId: string;
+  scanned: number;
+  imported: number;
+  skipped: number;
+  queueDispatch: { pending: number; published: number; failed: number } | null;
+  jobs: Array<Pick<JobRecord, "id" | "assetId" | "status" | "stage" | "progress" | "updatedAt">>;
+  assets: AssetSummaryRecord[];
+  skippedFiles: Array<{ path: string; reason: string }>;
 };
 
 type ObservabilityMetric = ObservabilitySnapshot["latencyMetrics"][number];
@@ -610,6 +654,214 @@ function availabilityText(value: boolean | undefined) {
   return "not checked";
 }
 
+function LocalLibraryImportPanel({
+  selectedIndex,
+  visibleAssets,
+  jobs,
+  busy,
+  refresh
+}: {
+  selectedIndex: IndexRecord | null;
+  visibleAssets: AssetSummaryRecord[];
+  jobs: JobRecord[];
+  busy: boolean;
+  refresh: () => Promise<void>;
+}) {
+  const [rootPath, setRootPath] = useState("");
+  const [limit, setLimit] = useState("25");
+  const [queueJobs, setQueueJobs] = useState(true);
+  const [dispatchQueue, setDispatchQueue] = useState(true);
+  const [loading, setLoading] = useState<"preview" | "import" | null>(null);
+  const [preview, setPreview] = useState<LocalLibraryPreviewResponse | null>(null);
+  const [importResult, setImportResult] = useState<LocalLibraryImportResponse | null>(null);
+  const [error, setError] = useState("");
+  const localLibraryAssets = visibleAssets.filter((asset) => asset.importSource?.type === "local-library");
+  const localLibraryAssetIds = new Set(localLibraryAssets.map((asset) => asset.id));
+  const activeLocalJobs = jobs.filter((job) => job.assetId && localLibraryAssetIds.has(job.assetId) && (job.status === "queued" || job.status === "running"));
+  const canRun = Boolean(rootPath.trim()) && Boolean(selectedIndex) && !busy && loading === null;
+
+  async function runPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!rootPath.trim()) return;
+    setLoading("preview");
+    setError("");
+    setImportResult(null);
+    try {
+      setPreview(await api.post<LocalLibraryPreviewResponse>("/api/local-library/preview", { rootPath: rootPath.trim(), limit: parseLocalLibraryLimit(limit, 25) }));
+    } catch (previewError) {
+      setPreview(null);
+      setError(getFailureMessage(previewError));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function runImport() {
+    if (!selectedIndex || !rootPath.trim()) return;
+    setLoading("import");
+    setError("");
+    try {
+      const result = await api.post<LocalLibraryImportResponse>("/api/local-library/import", {
+        rootPath: rootPath.trim(),
+        indexId: selectedIndex.id,
+        limit: parseLocalLibraryLimit(limit, 500),
+        queueJobs,
+        dispatchQueue
+      });
+      setImportResult(result);
+      setPreview(null);
+      await refresh();
+    } catch (importError) {
+      setError(getFailureMessage(importError));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  return (
+    <section className="panel local-library-panel" aria-label="Local library import">
+      <div className="local-library-header">
+        <div>
+          <p className="section-label">Local Library</p>
+          <h2>Disk media import</h2>
+        </div>
+        <span className="local-library-target">{selectedIndex?.name ?? "No asset group"}</span>
+      </div>
+
+      <form className="local-library-form" onSubmit={(event) => void runPreview(event)}>
+        <label className="local-library-path-field">
+          Source path
+          <input
+            value={rootPath}
+            onChange={(event) => setRootPath(event.target.value)}
+            placeholder="/Volumes/Media/library"
+            spellCheck={false}
+            disabled={loading !== null}
+          />
+        </label>
+        <label>
+          Limit
+          <input
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            placeholder="25"
+            disabled={loading !== null}
+          />
+        </label>
+        <div className="local-library-options" aria-label="Import options">
+          <label>
+            <input type="checkbox" checked={queueJobs} onChange={(event) => setQueueJobs(event.target.checked)} disabled={loading !== null} />
+            Queue indexing
+          </label>
+          <label>
+            <input type="checkbox" checked={dispatchQueue} onChange={(event) => setDispatchQueue(event.target.checked)} disabled={loading !== null || !queueJobs} />
+            Dispatch queue
+          </label>
+        </div>
+        <div className="local-library-actions">
+          <button type="submit" disabled={!rootPath.trim() || loading !== null}>
+            <Search size={15} />
+            {loading === "preview" ? "Previewing" : "Preview"}
+          </button>
+          <button type="button" disabled={!canRun} onClick={() => void runImport()}>
+            <UploadCloud size={15} />
+            {loading === "import" ? "Importing" : "Import"}
+          </button>
+        </div>
+      </form>
+
+      <div className="local-library-status-grid" aria-label="Local library indexing status">
+        <span>
+          <b>Imported</b>
+          <strong>{formatCount(localLibraryAssets.length)}</strong>
+          <em>{formatLocalLibraryStatusCounts(localLibraryAssets)}</em>
+        </span>
+        <span>
+          <b>Queue</b>
+          <strong>{formatCount(activeLocalJobs.length)}</strong>
+          <em>{activeLocalJobs.length > 0 ? "active local jobs" : "no active local jobs"}</em>
+        </span>
+        <span>
+          <b>Last run</b>
+          <strong>{importResult ? formatCountRatio(importResult.imported, importResult.scanned) : "-"}</strong>
+          <em>{importResult ? `${formatCount(importResult.skipped)} skipped` : "not run"}</em>
+        </span>
+      </div>
+
+      {error && <p className="local-library-message error">{error}</p>}
+      {importResult && (
+        <p className="local-library-message">
+          Imported {formatCount(importResult.imported)} of {formatCount(importResult.scanned)} files. {formatQueueDispatch(importResult.queueDispatch)}
+        </p>
+      )}
+      {preview && (
+        <div className="local-library-preview" aria-label="Local library preview results">
+          <div className="local-library-preview-header">
+            <strong>{formatUnitCount(preview.files.length, "file")}</strong>
+            <span>{preview.rootPath}</span>
+          </div>
+          <div className="local-library-preview-list">
+            {preview.files.slice(0, 6).map((file) => (
+              <article key={file.path} className="local-library-file-row">
+                <div>
+                  <strong>{file.originalName}</strong>
+                  <span>{file.path}</span>
+                </div>
+                <em>{formatFileSize(file.size)}</em>
+                <div className="local-library-file-tags">
+                  {file.candidates.slice(0, 2).map((candidate) => (
+                    <span key={`${file.path}-${candidate.mediaDisplayKey}`}>{candidate.mediaDisplayKey}</span>
+                  ))}
+                  {file.metadata && <span className={file.metadata.status === "matched" ? "matched" : ""}>{formatLocalLibraryMetadata(file.metadata)}</span>}
+                  {file.candidates.length === 0 && !file.metadata && <span>No metadata key</span>}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function parseLocalLibraryLimit(value: string, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 5000) : fallback;
+}
+
+function formatLocalLibraryStatusCounts(assets: AssetSummaryRecord[]) {
+  if (assets.length === 0) return "no local imports";
+  const indexed = assets.filter((asset) => asset.status === "indexed").length;
+  const active = assets.filter((asset) => asset.status !== "indexed" && asset.status !== "failed").length;
+  const failed = assets.filter((asset) => asset.status === "failed").length;
+  return [`${formatCount(indexed)} indexed`, active ? `${formatCount(active)} active` : "", failed ? `${formatCount(failed)} failed` : ""].filter(Boolean).join(" · ");
+}
+
+function formatQueueDispatch(dispatch: LocalLibraryImportResponse["queueDispatch"]) {
+  if (!dispatch) return "Queue dispatch was not requested.";
+  return `${formatCount(dispatch.published)} jobs dispatched, ${formatCount(dispatch.failed)} failed.`;
+}
+
+function formatLocalLibraryMetadata(metadata: LocalLibraryMetadataSummary) {
+  if (metadata.status === "matched") {
+    return metadata.mediaDisplayKey ? `Matched ${metadata.mediaDisplayKey}` : "Matched metadata";
+  }
+  return metadata.status === "not_found" ? "Metadata not found" : "Metadata unavailable";
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  for (const unit of units) {
+    if (value < 1024 || unit === units.at(-1)) return `${value.toFixed(value >= 10 ? 0 : 1)} ${unit}`;
+    value /= 1024;
+  }
+  return `${bytes} B`;
+}
+
 export function ConsoleLayout(props: ConsoleLayoutProps) {
   const {
     activeTab,
@@ -878,6 +1130,7 @@ export function ConsoleLayout(props: ConsoleLayoutProps) {
           deleteDisabled={busy || selectedIndexDeleteDisabled}
           deleteTitle={selectedIndexDeleteDisabled ? "인덱싱 중인 영상이 있어 에셋그룹을 삭제할 수 없습니다." : "에셋그룹 삭제"}
         />
+        <LocalLibraryImportPanel selectedIndex={selectedIndex} visibleAssets={visibleAssets} jobs={jobs} busy={busy} refresh={refresh} />
       <section className="asset-workbench asset-detail-workbench">
         <section className="panel detail-panel">
           {selectedAsset ? (
